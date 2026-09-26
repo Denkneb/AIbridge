@@ -1,14 +1,18 @@
 //! Loader and validation for the `projects.toml` configuration file.
 //!
 //! The crate implements the structural loading stage (task 2.1), the
-//! project-id/workspace validation group (task 2.2) and the endpoint/port
-//! validation group (task 2.3). It reads a UTF-8 TOML file from an explicit
-//! path, requires a top-level `projects` table and, for every project entry,
-//! validates the project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the
-//! `workspace` to an existing directory and parses the required `opencode_url`
-//! and the optional `mcp_url` into typed loopback endpoints. Relative
-//! workspaces resolve against the directory that contains the specific
-//! `projects.toml`, never against the process working directory.
+//! project-id/workspace validation group (task 2.2), the endpoint/port
+//! validation group (task 2.3) and the cross-project uniqueness group
+//! (task 2.4). It reads a UTF-8 TOML file from an explicit path, requires a
+//! top-level `projects` table and, for every project entry, validates the
+//! project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the `workspace` to
+//! an existing directory and parses the required `opencode_url` and the
+//! optional `mcp_url` into typed loopback endpoints. Relative workspaces
+//! resolve against the directory that contains the specific `projects.toml`,
+//! never against the process working directory. After the individual projects
+//! pass, the loader rejects a canonical workspace, a server endpoint or an MCP
+//! token file that is reused, and an MCP token file that coincides with a
+//! password file.
 //!
 //! Both URLs must be `http` URLs on the exact host `127.0.0.1` with an explicit
 //! decimal port in `1..=65535` and no path, query, fragment, username or
@@ -21,8 +25,8 @@
 //! removal, non-standard IPv4 canonicalization, dot-segment folding) cannot
 //! silently widen the contract.
 //!
-//! The remaining validation groups (uniqueness, models, permissions,
-//! credentials and env files) are deliberately out of scope. The raw
+//! The remaining validation groups (max rounds, models, permissions,
+//! credentials readers and env files) are deliberately out of scope. The raw
 //! per-project table is preserved on [`ProjectEntry::values`] so those later
 //! tasks can inspect every key and value without re-parsing.
 //!
@@ -34,9 +38,10 @@
 //! diagnostics are retained only as the error
 //! [`source`](std::error::Error::source).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use bridge_domain::{DomainError, ProjectId, Result};
 use url::Url;
@@ -52,6 +57,12 @@ pub const OPENCODE_URL_KEY: &str = "opencode_url";
 
 /// The optional per-project key that names the MCP endpoint.
 pub const MCP_URL_KEY: &str = "mcp_url";
+
+/// The per-project key that names the OpenCode password file.
+const PASSWORD_FILE_KEY: &str = "password_file";
+
+/// The optional per-project key that names the MCP bearer-token file.
+const MCP_TOKEN_FILE_KEY: &str = "mcp_token_file";
 
 /// The only host accepted in configured endpoints.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
@@ -257,15 +268,20 @@ impl fmt::Debug for Config {
 ///   configured workspace path does not exist;
 /// * [`bridge_domain::ErrorKind::PermissionDenied`] when the file or a
 ///   workspace cannot be accessed because of permissions;
-/// * [`bridge_domain::ErrorKind::Internal`] for any other I/O failure;
+/// * [`bridge_domain::ErrorKind::Internal`] for any other I/O failure,
+///   including an unresolvable symlink (a loop or an unreadable link) in a
+///   credential path;
 /// * [`bridge_domain::ErrorKind::InvalidInput`] when the bytes are not UTF-8,
 ///   when the TOML is syntactically invalid, when the `projects` table is
 ///   missing, when the `projects` value or a project entry has the wrong
 ///   shape, when a project id does not match
 ///   `^[a-z0-9][a-z0-9_-]{0,63}$`, when a workspace is missing, is not a
-///   string, is empty or is not a directory, or when `opencode_url`/`mcp_url`
+///   string, is empty or is not a directory, when `opencode_url`/`mcp_url`
 ///   are missing, have the wrong type or are not a loopback `http` endpoint
-///   with an explicit port in `1..=65535` and the required path.
+///   with an explicit port in `1..=65535` and the required path, when an MCP
+///   token file is not a non-empty string, or when a canonical workspace, a
+///   server endpoint or an MCP token file is reused across projects or an MCP
+///   token file equals a password file.
 ///
 /// None of these errors renders the file contents, credential values, project
 /// ids, workspace paths, URL inputs or the absolute input path.
@@ -308,13 +324,50 @@ fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
 }
 
 /// Validates the raw project tables and builds the public [`Config`].
+///
+/// Each project is validated independently first (tasks 2.2/2.3). Only then are
+/// the cross-project uniqueness rules of task 2.4 applied: a canonical
+/// workspace may not be bound to two projects, a server endpoint may not be
+/// reused (neither between two projects nor by the OpenCode and MCP endpoints
+/// of the same project, because both use the loopback host and are compared by
+/// port), and an MCP token file may not repeat another token file or coincide
+/// with a password file.
+///
+/// The credential paths are resolved like the reference implementation: an
+/// absolute path is used as-is and a relative path is joined onto `config_dir`.
+/// The file itself is not required to exist and its contents are never read;
+/// only the normalized path is compared. Errors are static and never render a
+/// project id, workspace, URL, credential path or config path.
 fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> Result<Config> {
     let mut projects = BTreeMap::new();
+    let mut workspaces: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut ports: BTreeSet<u16> = BTreeSet::new();
+    let mut credentials: Vec<(Option<PathBuf>, Option<PathBuf>)> = Vec::new();
+
     for (raw_id, values) in raw {
         let id = validate_project_id(&raw_id)?;
         let workspace = validate_workspace(&values, config_dir)?;
         let opencode_endpoint = validate_opencode_url(&values)?;
         let mcp_endpoint = validate_mcp_url(&values)?;
+
+        if !workspaces.insert(workspace.clone()) {
+            return Err(DomainError::invalid_input(
+                "project workspace is already used by another project",
+            ));
+        }
+        if !ports.insert(opencode_endpoint.port()) {
+            return Err(duplicate_endpoint_error());
+        }
+        if let Some(mcp) = &mcp_endpoint
+            && !ports.insert(mcp.port())
+        {
+            return Err(duplicate_endpoint_error());
+        }
+
+        let password = resolve_password_file(&values, config_dir)?;
+        let token = resolve_mcp_token_file(&values, config_dir)?;
+        credentials.push((password, token));
+
         projects.insert(
             raw_id,
             ProjectEntry {
@@ -327,7 +380,178 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         );
     }
 
+    validate_credentials(&credentials)?;
+
     Ok(Config { projects })
+}
+
+/// The static error for a reused server endpoint.
+fn duplicate_endpoint_error() -> DomainError {
+    DomainError::invalid_input("project endpoint is already used by another project")
+}
+
+/// Resolves the optional `password_file` into a normalized path.
+///
+/// The key is optional here because the required-key rule belongs to a later
+/// task; when it is absent or not a string this helper simply reports no
+/// password path. The value is never rendered. Resolution is fallible because a
+/// cyclic or unreadable symlink in the path is rejected safely.
+fn resolve_password_file(values: &toml::Table, config_dir: &Path) -> Result<Option<PathBuf>> {
+    let Some(value) = values.get(PASSWORD_FILE_KEY) else {
+        return Ok(None);
+    };
+    let Some(raw) = value.as_str() else {
+        return Ok(None);
+    };
+    Ok(Some(resolve_credential_path(raw, config_dir)?))
+}
+
+/// Resolves the optional `mcp_token_file` into a normalized path.
+///
+/// The token must be a non-empty string when present. Its contents are never
+/// read; only the normalized path participates in the uniqueness rules.
+/// Resolution is fallible because a cyclic or unreadable symlink in the path is
+/// rejected safely.
+fn resolve_mcp_token_file(values: &toml::Table, config_dir: &Path) -> Result<Option<PathBuf>> {
+    let Some(value) = values.get(MCP_TOKEN_FILE_KEY) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project mcp_token_file must be a string"))?;
+    if raw.is_empty() {
+        return Err(DomainError::invalid_input(
+            "project mcp_token_file must not be empty",
+        ));
+    }
+    Ok(Some(resolve_credential_path(raw, config_dir)?))
+}
+
+/// Applies the credential-file uniqueness rules across all projects.
+///
+/// An MCP token file must be separate from every project password file and may
+/// not be shared by two projects. Password files are intentionally not required
+/// to be unique: the reference implementation only collects them to guard the
+/// token rule.
+fn validate_credentials(credentials: &[(Option<PathBuf>, Option<PathBuf>)]) -> Result<()> {
+    let passwords: BTreeSet<&PathBuf> = credentials
+        .iter()
+        .filter_map(|(password, _)| password.as_ref())
+        .collect();
+    let mut tokens: BTreeSet<&PathBuf> = BTreeSet::new();
+
+    for (password, token) in credentials {
+        let Some(token) = token else {
+            continue;
+        };
+        if password.as_ref() == Some(token) || passwords.contains(token) {
+            return Err(DomainError::invalid_input(
+                "project mcp_token_file must differ from the project password_file",
+            ));
+        }
+        if !tokens.insert(token) {
+            return Err(DomainError::invalid_input(
+                "project mcp_token_file is already used by another project",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// The maximum number of symlink hops resolved before giving up.
+///
+/// Mirrors the kernel's `ELOOP` guard so a cyclic symlink cannot make the
+/// loader loop forever. Exceeding it is a safe error, matching the reference
+/// implementation where `Path.resolve(strict=False)` raises on a symlink loop
+/// instead of returning a lexical path; the loader must never fail open.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// Resolves a credential file path against `config_dir` for comparison.
+///
+/// An absolute path is used as-is; a relative path is joined onto the config
+/// directory. The result mirrors the non-strict `Path.resolve()` of the
+/// reference implementation: symlinks in every existing prefix component are
+/// expanded even when the final file is missing, and `.`/`..` are normalized
+/// without ever escaping the root. The path is never required to exist and its
+/// contents are never read.
+///
+/// # Errors
+///
+/// Returns a safe [`DomainError`] when a symlink in the path cannot be read or
+/// the walk exceeds [`MAX_SYMLINK_HOPS`]. The message never renders the path;
+/// the underlying I/O diagnostic is retained only as the error source.
+fn resolve_credential_path(raw: &str, config_dir: &Path) -> Result<PathBuf> {
+    let candidate = Path::new(raw);
+    let absolute = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        config_dir.join(candidate)
+    };
+
+    resolve_non_strict(&absolute)
+}
+
+/// Expands existing symlinks and normalizes a possibly missing tail.
+///
+/// This is the Rust equivalent of Python's `Path.resolve(strict=False)`. Each
+/// component is appended to the result; when the appended component is an
+/// existing symlink, its target replaces it and the walk restarts for the
+/// target while keeping the pending tail. A `..` pops the previously resolved
+/// component, and at the root it is discarded so an absolute path can never
+/// become relative. A symlink cycle is bounded by [`MAX_SYMLINK_HOPS`], and
+/// either exceeding it or failing to read a detected symlink is rejected as a
+/// safe error rather than silently falling back to a lexical path.
+fn resolve_non_strict(path: &Path) -> Result<PathBuf> {
+    let mut resolved = PathBuf::new();
+    let mut pending: VecDeque<OsString> = path
+        .components()
+        .map(|component| component.as_os_str().to_os_string())
+        .collect();
+    let mut hops = 0usize;
+
+    while let Some(name) = pending.pop_front() {
+        match Path::new(&name).components().next() {
+            Some(Component::CurDir) => {}
+            Some(Component::ParentDir) => {
+                if !resolved.pop() && !resolved.is_absolute() {
+                    resolved.push(Component::ParentDir.as_os_str());
+                }
+            }
+            Some(Component::RootDir) => resolved.push(Component::RootDir.as_os_str()),
+            Some(Component::Prefix(prefix)) => resolved.push(prefix.as_os_str()),
+            _ => {
+                resolved.push(&name);
+                let is_symlink = std::fs::symlink_metadata(&resolved)
+                    .map(|metadata| metadata.file_type().is_symlink())
+                    .unwrap_or(false);
+                if is_symlink {
+                    if hops >= MAX_SYMLINK_HOPS {
+                        return Err(DomainError::internal(
+                            "project credential file path could not be resolved",
+                        )
+                        .with_source(std::io::Error::other("symlink loop detected")));
+                    }
+                    hops += 1;
+                    let target = std::fs::read_link(&resolved).map_err(credential_path_error)?;
+                    resolved.pop();
+                    let target_is_absolute = target.is_absolute();
+                    let target_components: Vec<OsString> = target
+                        .components()
+                        .map(|component| component.as_os_str().to_os_string())
+                        .collect();
+                    for component in target_components.into_iter().rev() {
+                        pending.push_front(component);
+                    }
+                    if target_is_absolute {
+                        resolved.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(resolved)
 }
 
 /// Validates a raw project id against `^[a-z0-9][a-z0-9_-]{0,63}$`.
@@ -701,6 +925,27 @@ fn workspace_error(source: std::io::Error) -> DomainError {
                 .with_source(source)
         }
         _ => DomainError::internal("project workspace could not be resolved").with_source(source),
+    }
+}
+
+/// Maps a credential-path resolution failure to a safe, typed [`DomainError`].
+///
+/// Any I/O failure while walking a detected symlink is fail-closed. The message
+/// never renders the credential path; the underlying [`std::io::Error`] is kept
+/// only as the error source, so its path-bearing
+/// [`Display`](std::fmt::Display) text never reaches the safe output.
+fn credential_path_error(source: std::io::Error) -> DomainError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            DomainError::not_found("project credential file path does not exist")
+                .with_source(source)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DomainError::permission_denied("project credential file path could not be accessed")
+                .with_source(source)
+        }
+        _ => DomainError::internal("project credential file path could not be resolved")
+            .with_source(source),
     }
 }
 
@@ -1841,6 +2086,444 @@ mod tests {
         assert!(
             !rendered.contains(workspace.to_str().expect("utf-8 path")),
             "leaked workspace: {rendered}"
+        );
+        assert!(
+            !rendered.contains(config_path.to_str().expect("utf-8 path")),
+            "leaked config path: {rendered}"
+        );
+    }
+
+    /// Builds a two-project table with explicit per-project endpoints and extras.
+    fn two_project_toml(
+        a_ws: &str,
+        a_url: &str,
+        a_extra: &str,
+        b_ws: &str,
+        b_url: &str,
+        b_extra: &str,
+    ) -> String {
+        format!(
+            "[projects.a]\nworkspace = \"{a_ws}\"\nopencode_url = \"{a_url}\"\npassword_file = \"secrets/a.password\"\nmax_rounds = 3\n{a_extra}\n[projects.b]\nworkspace = \"{b_ws}\"\nopencode_url = \"{b_url}\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\n{b_extra}\n"
+        )
+    }
+
+    // Corpus case `invalid-workspace-duplicate`.
+    #[test]
+    fn rejects_duplicate_canonical_workspace_across_projects() {
+        let dir = TempDir::new("dup-workspace");
+        let workspace = dir.mkdir("ws");
+        let ws = workspace.to_str().expect("utf-8 path");
+        let config_path = dir.write(
+            "projects.toml",
+            &two_project_toml(
+                ws,
+                "http://127.0.0.1:4101",
+                "",
+                ws,
+                "http://127.0.0.1:4102",
+                "",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("duplicate workspace must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project workspace is already used by another project"
+        );
+    }
+
+    // Canonical uniqueness also collapses a symlink alias of the same directory.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_workspace_symlink_alias_across_projects() {
+        let dir = TempDir::new("dup-workspace-link");
+        let real = dir.mkdir("real");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let config_path = dir.write(
+            "projects.toml",
+            &two_project_toml(
+                real.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "",
+                link.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4102",
+                "",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("workspace alias must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project workspace is already used by another project"
+        );
+    }
+
+    // Corpus case `invalid-endpoint-duplicate-across-projects` plus the other
+    // collision directions the contract requires.
+    #[test]
+    fn rejects_reused_server_endpoints_table_driven() {
+        let dir = TempDir::new("dup-endpoint");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+        let a = ws_a.to_str().expect("utf-8 path");
+        let b = ws_b.to_str().expect("utf-8 path");
+
+        let mcp_a = "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/a.mcp\"\n";
+        let mcp_b = "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/b.mcp\"\n";
+
+        let cases = [
+            (
+                "opencode/opencode",
+                two_project_toml(
+                    a,
+                    "http://127.0.0.1:4101",
+                    "",
+                    b,
+                    "http://127.0.0.1:4101",
+                    "",
+                ),
+            ),
+            (
+                "mcp/mcp",
+                two_project_toml(
+                    a,
+                    "http://127.0.0.1:4101",
+                    mcp_a,
+                    b,
+                    "http://127.0.0.1:4102",
+                    mcp_b,
+                ),
+            ),
+            (
+                "mcp/opencode",
+                two_project_toml(
+                    a,
+                    "http://127.0.0.1:4101",
+                    "",
+                    b,
+                    "http://127.0.0.1:4102",
+                    "mcp_url = \"http://127.0.0.1:4101/mcp\"\nmcp_token_file = \"secrets/b.mcp\"\n",
+                ),
+            ),
+        ];
+
+        for (name, text) in cases {
+            let config_path = dir.write("projects.toml", &text);
+            let error = load_config(&config_path).expect_err("reused endpoint must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "case: {name}");
+            assert_eq!(
+                error.to_string(),
+                "project endpoint is already used by another project",
+                "case: {name}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-mcp-endpoint-collides-with-opencode-endpoint`.
+    #[test]
+    fn rejects_mcp_endpoint_colliding_with_own_opencode_endpoint() {
+        let dir = TempDir::new("dup-endpoint-self");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:4101/mcp\"\nmcp_token_file = \"secrets/proj.mcp\"\n",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("self endpoint collision must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project endpoint is already used by another project"
+        );
+    }
+
+    // Corpus case `invalid-mcp-token-file-duplicate-across-projects`.
+    #[test]
+    fn rejects_duplicate_mcp_token_file_across_projects() {
+        let dir = TempDir::new("dup-token");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+        let config_path = dir.write(
+            "projects.toml",
+            &two_project_toml(
+                ws_a.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n",
+                ws_b.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4102",
+                "mcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("duplicate token must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file is already used by another project"
+        );
+    }
+
+    // Corpus case `invalid-mcp-token-file-equals-password-file`, plus the
+    // cross-project variant of the same separation rule.
+    #[test]
+    fn rejects_mcp_token_file_matching_a_password_file() {
+        let dir = TempDir::new("token-eq-password");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.password\"\n",
+            ),
+        );
+        let error = load_config(&config_path).expect_err("token equal to own password must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file must differ from the project password_file"
+        );
+
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+        let cross_path = dir.write(
+            "cross.toml",
+            &two_project_toml(
+                ws_a.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "",
+                ws_b.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4102",
+                "mcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"secrets/a.password\"\n",
+            ),
+        );
+        let cross_error =
+            load_config(&cross_path).expect_err("token equal to another password must fail");
+        assert_eq!(cross_error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            cross_error.to_string(),
+            "project mcp_token_file must differ from the project password_file"
+        );
+    }
+
+    // Review round 2: a missing token file reached through a symlinked parent
+    // directory must still collapse onto the real parent, mirroring
+    // `Path.resolve(strict=False)`.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_duplicate_missing_token_files_through_symlink_parent() {
+        let dir = TempDir::new("dup-token-link");
+        let real = dir.mkdir("real");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+
+        let text = format!(
+            "[projects.a]\nworkspace = \"{a}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/a.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"real/shared.token\"\n\n[projects.b]\nworkspace = \"{b}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"link/shared.token\"\n",
+            a = ws_a.to_str().expect("utf-8 path"),
+            b = ws_b.to_str().expect("utf-8 path"),
+        );
+        let config_path = dir.write("projects.toml", &text);
+
+        let error = load_config(&config_path).expect_err("symlinked token alias must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file is already used by another project"
+        );
+    }
+
+    // Review round 2: a token reached through a symlinked parent must match a
+    // password reached through the real parent.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_token_through_symlink_parent_matching_password_through_real_parent() {
+        let dir = TempDir::new("token-link-password");
+        let real = dir.mkdir("real");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+
+        let text = format!(
+            "[projects.a]\nworkspace = \"{a}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"real/shared.cred\"\nmax_rounds = 3\n\n[projects.b]\nworkspace = \"{b}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"link/shared.cred\"\n",
+            a = ws_a.to_str().expect("utf-8 path"),
+            b = ws_b.to_str().expect("utf-8 path"),
+        );
+        let config_path = dir.write("projects.toml", &text);
+
+        let error = load_config(&config_path).expect_err("token/password alias must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file must differ from the project password_file"
+        );
+    }
+
+    // Review round 2: `..` above the root must not turn an absolute credential
+    // path relative; it normalizes to the root-relative path and still collides.
+    #[test]
+    fn normalizes_parent_dir_above_root_for_credentials() {
+        let dir = TempDir::new("root-parent");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+
+        let text = format!(
+            "[projects.a]\nworkspace = \"{a}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"/bridge-config-review2/shared.cred\"\nmax_rounds = 3\n\n[projects.b]\nworkspace = \"{b}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"/../bridge-config-review2/shared.cred\"\n",
+            a = ws_a.to_str().expect("utf-8 path"),
+            b = ws_b.to_str().expect("utf-8 path"),
+        );
+        let config_path = dir.write("projects.toml", &text);
+
+        let error = load_config(&config_path).expect_err("root-escape token must collide");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file must differ from the project password_file"
+        );
+    }
+
+    // Review round 3: a cyclic symlink in a credential path must fail closed
+    // with a safe error, mirroring `Path.resolve(strict=False)`, which raises
+    // on a symlink loop instead of returning a lexical path. Both the password
+    // and the MCP token resolution paths are exercised, and the safe output
+    // must not leak the cyclic path or the config path.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_cyclic_symlink_in_credential_path_without_leaking_path() {
+        for (name, password, token) in [
+            ("password", "loop-a/secret.cred", "secrets/proj.mcp-token"),
+            ("token", "secrets/proj.password", "loop-a/secret.cred"),
+        ] {
+            let dir = TempDir::new("cyclic-cred");
+            let workspace = dir.mkdir("ws");
+            let loop_a = dir.path().join("loop-a");
+            let loop_b = dir.path().join("loop-b");
+            std::os::unix::fs::symlink(&loop_b, &loop_a).expect("symlink must be creatable");
+            std::os::unix::fs::symlink(&loop_a, &loop_b).expect("symlink must be creatable");
+            let text = format!(
+                "[projects.proj]\nworkspace = \"{ws}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"{password}\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"{token}\"\n",
+                ws = workspace.to_str().expect("utf-8 path"),
+            );
+            let config_path = dir.write("projects.toml", &text);
+
+            let error = load_config(&config_path).expect_err("cyclic symlink must be rejected");
+            assert_eq!(error.kind(), ErrorKind::Internal, "case: {name}");
+            assert_eq!(
+                error.to_string(),
+                "project credential file path could not be resolved",
+                "case: {name}"
+            );
+
+            let rendered = format!("{error} {error:?}");
+            assert!(!rendered.contains("loop-a"), "leaked path: {rendered}");
+            assert!(!rendered.contains("loop-b"), "leaked path: {rendered}");
+            assert!(!rendered.contains("secret.cred"), "leaked path: {rendered}");
+            assert!(
+                !rendered.contains(config_path.to_str().expect("utf-8 path")),
+                "leaked config path: {rendered}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-mcp-token-file-empty`.
+    #[test]
+    fn rejects_empty_mcp_token_file() {
+        let error = load_endpoint_config(
+            "proj",
+            "http://127.0.0.1:4101",
+            "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"\"\n",
+        );
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_token_file must not be empty"
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_mcp_token_file() {
+        let error = load_endpoint_config(
+            "proj",
+            "http://127.0.0.1:4101",
+            "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = 7\n",
+        );
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project mcp_token_file must be a string");
+    }
+
+    // Valid multi-project configuration with distinct workspaces, endpoints and
+    // credential files must keep loading.
+    #[test]
+    fn accepts_valid_multi_project_config() {
+        let dir = TempDir::new("valid-multi");
+        let ws_a = dir.mkdir("a");
+        let ws_b = dir.mkdir("b");
+        let config_path = dir.write(
+            "projects.toml",
+            &two_project_toml(
+                ws_a.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "",
+                ws_b.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4102",
+                "mcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"secrets/b.mcp-token\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("valid multi-project config must load");
+
+        assert_eq!(config.len(), 2);
+        assert!(config.project("a").is_some());
+        let b = config.project("b").expect("project 'b' must exist");
+        assert!(b.mcp_endpoint().is_some());
+        assert_eq!(b.opencode_endpoint().port(), 4102);
+    }
+
+    #[test]
+    fn uniqueness_errors_do_not_leak_ids_workspaces_urls_or_paths() {
+        let dir = TempDir::new("unique-redact");
+        let workspace = dir.mkdir("secret-workspace");
+        let ws = workspace.to_str().expect("utf-8 path");
+        let config_path = dir.write(
+            "projects.toml",
+            &two_project_toml(
+                ws,
+                "http://127.0.0.1:4101",
+                "",
+                ws,
+                "http://127.0.0.1:4102",
+                "",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("duplicate workspace must fail");
+        let rendered = format!("{error} {error:?}");
+
+        assert!(
+            !rendered.contains("secret-workspace"),
+            "leaked workspace: {rendered}"
+        );
+        assert!(!rendered.contains("4101"), "leaked endpoint: {rendered}");
+        assert!(
+            !rendered.contains("secrets/a.password"),
+            "leaked path: {rendered}"
         );
         assert!(
             !rendered.contains(config_path.to_str().expect("utf-8 path")),

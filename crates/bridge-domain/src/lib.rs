@@ -2,10 +2,12 @@
 //!
 //! This crate provides the shared, typed error model used by future
 //! components together with the core domain identifiers ([`ProjectId`],
-//! [`TaskId`]) and the frozen [`TaskStatus`] vocabulary. It deliberately
-//! keeps a strict separation between the *safe* message that may be shown
-//! to a user and the *diagnostic* source that may contain sensitive
-//! internal details.
+//! [`TaskId`]), the frozen [`TaskStatus`] vocabulary and the frozen
+//! round/verification vocabulary ([`RoundKind`], [`RoundStatus`],
+//! [`VerifierState`], [`VerificationStatus`]) with the [`Round`] and
+//! [`Verification`] data models. It deliberately keeps a strict separation
+//! between the *safe* message that may be shown to a user and the
+//! *diagnostic* source that may contain sensitive internal details.
 
 use std::error::Error;
 use std::fmt;
@@ -458,10 +460,467 @@ impl TryFrom<String> for TaskStatus {
     }
 }
 
+/// Frozen kind of an implementation round.
+///
+/// The variant set and string spellings are fixed by the external contract:
+/// `kind` is `implement` or `revise` in the persisted round row and in the
+/// MCP round view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+#[non_exhaustive]
+pub enum RoundKind {
+    /// The initial implementation round created by `submit_task`.
+    Implement,
+    /// A revision round created by `request_changes`.
+    Revise,
+}
+
+impl RoundKind {
+    /// All kinds in the frozen vocabulary order.
+    pub const ALL: [RoundKind; 2] = [Self::Implement, Self::Revise];
+
+    /// Returns the exact `snake_case` contract spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Implement => "implement",
+            Self::Revise => "revise",
+        }
+    }
+}
+
+impl fmt::Display for RoundKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for RoundKind {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "implement" => Ok(Self::Implement),
+            "revise" => Ok(Self::Revise),
+            _ => Err(DomainError::invalid_input("unknown round kind")),
+        }
+    }
+}
+
+impl From<RoundKind> for String {
+    fn from(kind: RoundKind) -> Self {
+        kind.as_str().to_owned()
+    }
+}
+
+impl TryFrom<String> for RoundKind {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+/// Frozen lifecycle status of a round.
+///
+/// The variant set and string spellings are fixed by the external contract
+/// (`domain.round_statuses`). Every status is either
+/// [`open`](RoundStatus::is_open) or [`closed`](RoundStatus::is_closed), never
+/// both; the open set is the frozen `domain.round_open_statuses` list.
+///
+/// Round *transitions* are intentionally not modeled here: they are separate
+/// future logic (see `domain.round_transitions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+#[non_exhaustive]
+pub enum RoundStatus {
+    /// The round finished and its outcome is published.
+    Complete,
+    /// The prompt delivery outcome is unknown.
+    DeliveryUnknown,
+    /// The round failed and cannot be recovered automatically.
+    Failed,
+    /// The round is blocked on a user decision.
+    NeedsUser,
+    /// The worker is observing the round.
+    Observing,
+    /// The prompt is about to be delivered.
+    Pending,
+    /// The prompt was delivered.
+    Sent,
+}
+
+impl RoundStatus {
+    /// All statuses in the frozen vocabulary order.
+    pub const ALL: [RoundStatus; 7] = [
+        Self::Complete,
+        Self::DeliveryUnknown,
+        Self::Failed,
+        Self::NeedsUser,
+        Self::Observing,
+        Self::Pending,
+        Self::Sent,
+    ];
+
+    /// The frozen open-status set (`domain.round_open_statuses`).
+    pub const OPEN: [RoundStatus; 5] = [
+        Self::DeliveryUnknown,
+        Self::NeedsUser,
+        Self::Observing,
+        Self::Pending,
+        Self::Sent,
+    ];
+
+    /// Returns the exact `snake_case` contract spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::DeliveryUnknown => "delivery_unknown",
+            Self::Failed => "failed",
+            Self::NeedsUser => "needs_user",
+            Self::Observing => "observing",
+            Self::Pending => "pending",
+            Self::Sent => "sent",
+        }
+    }
+
+    /// Returns `true` for the frozen open statuses.
+    ///
+    /// Open statuses are `delivery_unknown`, `needs_user`, `observing`,
+    /// `pending` and `sent`.
+    #[must_use]
+    pub const fn is_open(self) -> bool {
+        matches!(
+            self,
+            Self::DeliveryUnknown | Self::NeedsUser | Self::Observing | Self::Pending | Self::Sent
+        )
+    }
+
+    /// Returns `true` for statuses that end a round.
+    ///
+    /// Closed statuses are `complete` and `failed`.
+    #[must_use]
+    pub const fn is_closed(self) -> bool {
+        matches!(self, Self::Complete | Self::Failed)
+    }
+}
+
+impl fmt::Display for RoundStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for RoundStatus {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "complete" => Ok(Self::Complete),
+            "delivery_unknown" => Ok(Self::DeliveryUnknown),
+            "failed" => Ok(Self::Failed),
+            "needs_user" => Ok(Self::NeedsUser),
+            "observing" => Ok(Self::Observing),
+            "pending" => Ok(Self::Pending),
+            "sent" => Ok(Self::Sent),
+            _ => Err(DomainError::invalid_input("unknown round status")),
+        }
+    }
+}
+
+impl From<RoundStatus> for String {
+    fn from(status: RoundStatus) -> Self {
+        status.as_str().to_owned()
+    }
+}
+
+impl TryFrom<String> for RoundStatus {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+/// Persisted verifier lifecycle marker (`rounds.verifier_state`).
+///
+/// The storage invariant fixes the vocabulary to `running` and `done`; a
+/// `done` result is never overwritten and is reused by recovery. The absence
+/// of a verifier run is represented by [`Option::None`], not by a variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+#[non_exhaustive]
+pub enum VerifierState {
+    /// A verifier run is in progress and may be re-run after a crash.
+    Running,
+    /// A verifier run completed and its result must be reused.
+    Done,
+}
+
+impl VerifierState {
+    /// All states in the frozen vocabulary order.
+    pub const ALL: [VerifierState; 2] = [Self::Running, Self::Done];
+
+    /// Returns the exact `snake_case` contract spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Done => "done",
+        }
+    }
+}
+
+impl fmt::Display for VerifierState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for VerifierState {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "running" => Ok(Self::Running),
+            "done" => Ok(Self::Done),
+            _ => Err(DomainError::invalid_input("unknown verifier state")),
+        }
+    }
+}
+
+impl From<VerifierState> for String {
+    fn from(state: VerifierState) -> Self {
+        state.as_str().to_owned()
+    }
+}
+
+impl TryFrom<String> for VerifierState {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+/// Outcome status of a completed verifier run (`verification.status`).
+///
+/// The variant set and string spellings are fixed by the reference
+/// implementation (`verifier.py`, the `_STATUSES_*` constants and
+/// `run_round_verification`): `passed`, `failed`, `timed_out`, `unsafe` and
+/// `error`. A run that has not finished is represented by
+/// [`VerifierState::Running`], not by a verification status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+#[non_exhaustive]
+pub enum VerificationStatus {
+    /// Every command exited successfully.
+    Passed,
+    /// At least one command exited non-zero.
+    Failed,
+    /// A command exceeded its timeout and was terminated.
+    TimedOut,
+    /// The agreed commands could not be run safely (policy rejection).
+    Unsafe,
+    /// The verifier itself failed before it could produce a verdict.
+    Error,
+}
+
+impl VerificationStatus {
+    /// All statuses in the frozen vocabulary order.
+    pub const ALL: [VerificationStatus; 5] = [
+        Self::Passed,
+        Self::Failed,
+        Self::TimedOut,
+        Self::Unsafe,
+        Self::Error,
+    ];
+
+    /// Returns the exact `snake_case` contract spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Unsafe => "unsafe",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl fmt::Display for VerificationStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for VerificationStatus {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "passed" => Ok(Self::Passed),
+            "failed" => Ok(Self::Failed),
+            "timed_out" => Ok(Self::TimedOut),
+            "unsafe" => Ok(Self::Unsafe),
+            "error" => Ok(Self::Error),
+            _ => Err(DomainError::invalid_input("unknown verification status")),
+        }
+    }
+}
+
+impl From<VerificationStatus> for String {
+    fn from(status: VerificationStatus) -> Self {
+        status.as_str().to_owned()
+    }
+}
+
+impl TryFrom<String> for VerificationStatus {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+/// Git fingerprint triple captured before and after a verifier run.
+///
+/// The field names and the `String` representation are exactly those proven by
+/// `rounds.verifier_json` in `.docs/fixtures/sqlite/expected.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFingerprint {
+    /// Current commit id.
+    pub head: String,
+    /// Digest of the staged index.
+    pub index_fingerprint: String,
+    /// Digest of the worktree.
+    pub worktree_fingerprint: String,
+}
+
+/// One command executed by the verifier.
+///
+/// Only `command` is always present. The optional fields mirror the keys the
+/// reference implementation adds per outcome (`timed_out` plus
+/// `duration`/`exit_code` for a run command, `output_tail` for a failed
+/// command, `reason` for a command that did not run); absent keys are omitted
+/// on serialization, as in the contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationCommand {
+    /// The exact command string that was (or was not) run.
+    pub command: String,
+    /// Present and `true` only when the command exceeded its timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed_out: Option<bool>,
+    /// Wall-clock duration in seconds; absent when the command did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Process exit code; absent when the command did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Bounded tail of the combined output; present only for failed commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
+    /// Machine-readable reason a command did not run (`not_run`, `spawn_failed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Compact verifier outcome persisted as `rounds.verifier_json` and surfaced as
+/// `verification` in the MCP task result.
+///
+/// # Proven boundary
+///
+/// The modeled fields cover the variants produced by the reference
+/// implementation (`verifier.py:run_round_verification`) that are also proven
+/// by `.docs/fixtures/sqlite/expected.json` and
+/// `.docs/fixtures/mcp-cases.json`: `status`, `commands`, `index`, `reason`,
+/// `log`, `before`, `after` and `side_effects`.
+///
+/// `commands` is absent for the early `unsafe` and `error` variants
+/// (`{status, index, reason, log}` / `{status, reason, log}`), so it is
+/// optional and omitted on serialization when it was absent instead of being
+/// rewritten as an empty array. `index` and `reason` likewise appear only in
+/// some variants. Unknown *keys* (for example `repositories`) are ignored on
+/// deserialization, while unknown enum *values* are rejected safely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Verification {
+    /// Overall outcome status.
+    pub status: VerificationStatus,
+    /// Command entries in execution order; absent in the early `unsafe` and
+    /// `error` variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<VerificationCommand>>,
+    /// Zero-based index of the command rejected by the safety policy; present
+    /// only in the `unsafe` variant (and `-1` for a malformed command list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<i64>,
+    /// Machine-readable reason for an `unsafe` or `error` outcome
+    /// (`git_fingerprint_failed`, or a policy code such as
+    /// `unsafe_shell_invocation`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Relative reference to the full verification log.
+    pub log: String,
+    /// Workspace fingerprint captured before the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<GitFingerprint>,
+    /// Workspace fingerprint captured after the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<GitFingerprint>,
+    /// Repository-qualified paths created or modified by the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<Vec<String>>,
+}
+
+/// Minimal, typed domain view of one persisted round.
+///
+/// # Proven boundary
+///
+/// This is a deliberately minimal subset of the persisted `rounds` row and the
+/// MCP round view: the stable identity/lifecycle fields plus the optional
+/// verifier payload. The change-collection `result_json` payload and the
+/// remaining SQLite-only columns (timestamps, message ids, hashes, `attempted`,
+/// `project_id`) are storage concerns owned by stream 3 and are not modeled
+/// here. Unknown keys are ignored on deserialization.
+///
+/// Nullable scalar fields serialize as `null`, matching the fixture rows; the
+/// nested [`Verification`] object omits absent keys, matching the reference
+/// implementation. `verification` corresponds to the persisted `verifier_json`
+/// / MCP `verification` object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Round {
+    /// Owning task.
+    pub task_id: TaskId,
+    /// One-based round number within the task.
+    pub round_number: u32,
+    /// Whether this is the initial or a revision round.
+    pub kind: RoundKind,
+    /// Current lifecycle status.
+    pub status: RoundStatus,
+    /// Idempotency key that created the round.
+    pub request_id: String,
+    /// Bound OpenCode session, when resolved.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Machine-readable failure code, when the round failed.
+    #[serde(default)]
+    pub error_code: Option<String>,
+    /// Persisted verifier lifecycle marker, when a verifier run exists.
+    #[serde(default)]
+    pub verifier_state: Option<VerifierState>,
+    /// Persisted verifier outcome, when the verifier finished.
+    #[serde(default)]
+    pub verification: Option<Verification>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DomainError, ErrorKind, ProjectId, TASK_TRANSITIONS, TaskId, TaskStatus, crate_name,
+        DomainError, ErrorKind, GitFingerprint, ProjectId, Round, RoundKind, RoundStatus,
+        TASK_TRANSITIONS, TaskId, TaskStatus, Verification, VerificationCommand,
+        VerificationStatus, VerifierState, crate_name,
     };
     use std::any::TypeId;
     use std::error::Error;
@@ -843,5 +1302,525 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn round_kind_strings_match_frozen_vocabulary() {
+        let expected = ["implement", "revise"];
+        let actual: Vec<&str> = RoundKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(actual, expected);
+
+        for kind in RoundKind::ALL {
+            assert_eq!(kind.to_string(), kind.as_str());
+        }
+    }
+
+    #[test]
+    fn round_kind_from_str_round_trips_all() {
+        for kind in RoundKind::ALL {
+            let parsed = RoundKind::from_str(kind.as_str()).expect("known kind must parse");
+            assert_eq!(parsed, kind);
+        }
+    }
+
+    #[test]
+    fn unknown_round_kind_is_rejected_safely() {
+        const SECRET: &str = "bogus_kind_token=secret";
+        let error = RoundKind::from_str(SECRET).expect_err("unknown kind must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.message(), "unknown round kind");
+        assert!(!error.to_string().contains(SECRET));
+        assert!(!format!("{error:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn round_kind_serde_is_a_string() {
+        for kind in RoundKind::ALL {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            let back: RoundKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, kind);
+        }
+
+        let error = serde_json::from_str::<RoundKind>("\"bogus\"").expect_err("unknown must fail");
+        assert!(!error.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn round_status_strings_match_frozen_vocabulary() {
+        let expected = [
+            "complete",
+            "delivery_unknown",
+            "failed",
+            "needs_user",
+            "observing",
+            "pending",
+            "sent",
+        ];
+        let actual: Vec<&str> = RoundStatus::ALL
+            .iter()
+            .map(|status| status.as_str())
+            .collect();
+        assert_eq!(actual, expected);
+
+        for status in RoundStatus::ALL {
+            assert_eq!(status.to_string(), status.as_str());
+        }
+    }
+
+    #[test]
+    fn round_status_from_str_round_trips_all() {
+        for status in RoundStatus::ALL {
+            let parsed = RoundStatus::from_str(status.as_str()).expect("known status must parse");
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn unknown_round_status_is_rejected_safely() {
+        const SECRET: &str = "bogus_round_status_token=secret";
+        let error = RoundStatus::from_str(SECRET).expect_err("unknown status must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.message(), "unknown round status");
+        assert!(!error.to_string().contains(SECRET));
+        assert!(!format!("{error:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn round_status_serde_is_a_string() {
+        for status in RoundStatus::ALL {
+            let json = serde_json::to_string(&status).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+            let back: RoundStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, status);
+        }
+
+        let error =
+            serde_json::from_str::<RoundStatus>("\"bogus\"").expect_err("unknown must fail");
+        assert!(!error.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn round_status_open_set_matches_contract() {
+        let expected_open = [
+            "delivery_unknown",
+            "needs_user",
+            "observing",
+            "pending",
+            "sent",
+        ];
+        let actual_open: Vec<&str> = RoundStatus::OPEN
+            .iter()
+            .map(|status| status.as_str())
+            .collect();
+        assert_eq!(actual_open, expected_open);
+
+        let mut open = Vec::new();
+        let mut closed = Vec::new();
+        for status in RoundStatus::ALL {
+            assert_ne!(status.is_open(), status.is_closed());
+            if status.is_open() {
+                open.push(status);
+            } else {
+                closed.push(status);
+            }
+        }
+
+        assert_eq!(open, RoundStatus::OPEN);
+        assert_eq!(closed, [RoundStatus::Complete, RoundStatus::Failed]);
+    }
+
+    #[test]
+    fn verifier_state_strings_match_frozen_vocabulary() {
+        let expected = ["running", "done"];
+        let actual: Vec<&str> = VerifierState::ALL
+            .iter()
+            .map(|state| state.as_str())
+            .collect();
+        assert_eq!(actual, expected);
+
+        for state in VerifierState::ALL {
+            assert_eq!(state.to_string(), state.as_str());
+        }
+    }
+
+    #[test]
+    fn verifier_state_from_str_round_trips_all() {
+        for state in VerifierState::ALL {
+            let parsed = VerifierState::from_str(state.as_str()).expect("known state must parse");
+            assert_eq!(parsed, state);
+        }
+    }
+
+    #[test]
+    fn unknown_verifier_state_is_rejected_safely() {
+        const SECRET: &str = "bogus_verifier_state_token=secret";
+        let error = VerifierState::from_str(SECRET).expect_err("unknown state must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.message(), "unknown verifier state");
+        assert!(!error.to_string().contains(SECRET));
+        assert!(!format!("{error:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn verifier_state_serde_is_a_string() {
+        for state in VerifierState::ALL {
+            let json = serde_json::to_string(&state).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", state.as_str()));
+            let back: VerifierState = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, state);
+        }
+
+        let error =
+            serde_json::from_str::<VerifierState>("\"bogus\"").expect_err("unknown must fail");
+        assert!(!error.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn verification_status_strings_match_frozen_vocabulary() {
+        let expected = ["passed", "failed", "timed_out", "unsafe", "error"];
+        let actual: Vec<&str> = VerificationStatus::ALL
+            .iter()
+            .map(|status| status.as_str())
+            .collect();
+        assert_eq!(actual, expected);
+
+        for status in VerificationStatus::ALL {
+            assert_eq!(status.to_string(), status.as_str());
+        }
+    }
+
+    #[test]
+    fn verification_status_from_str_round_trips_all() {
+        for status in VerificationStatus::ALL {
+            let parsed =
+                VerificationStatus::from_str(status.as_str()).expect("known status must parse");
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn unknown_verification_status_is_rejected_safely() {
+        const SECRET: &str = "bogus_verification_status_token=secret";
+        let error = VerificationStatus::from_str(SECRET)
+            .expect_err("unknown verification status must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.message(), "unknown verification status");
+        assert!(!error.to_string().contains(SECRET));
+        assert!(!format!("{error:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn verification_status_serde_is_a_string() {
+        for status in VerificationStatus::ALL {
+            let json = serde_json::to_string(&status).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+            let back: VerificationStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, status);
+        }
+
+        // Every reference-implementation status is accepted; only genuinely
+        // unknown values are rejected.
+        for proven in ["timed_out", "unsafe", "error"] {
+            let json = format!("\"{proven}\"");
+            assert!(
+                serde_json::from_str::<VerificationStatus>(&json).is_ok(),
+                "{proven} must be accepted"
+            );
+        }
+
+        let error = serde_json::from_str::<VerificationStatus>("\"bogus\"")
+            .expect_err("unknown status must be rejected");
+        assert!(!error.to_string().contains("bogus"));
+    }
+
+    const FIXTURE_HEAD: &str = "1111111111111111111111111111111111111111";
+    const FIXTURE_INDEX_FP: &str =
+        "3333333333333333333333333333333333333333333333333333333333333333";
+    const FIXTURE_WORKTREE_FP: &str =
+        "4444444444444444444444444444444444444444444444444444444444444444";
+
+    fn fingerprint_json() -> serde_json::Value {
+        serde_json::json!({
+            "head": FIXTURE_HEAD,
+            "index_fingerprint": FIXTURE_INDEX_FP,
+            "worktree_fingerprint": FIXTURE_WORKTREE_FP,
+        })
+    }
+
+    #[test]
+    fn verification_round_trips_persisted_fixture_payload() {
+        // Mirrors `rounds.verifier_json` in `.docs/fixtures/sqlite/expected.json`.
+        let payload = serde_json::json!({
+            "after": fingerprint_json(),
+            "before": fingerprint_json(),
+            "commands": [
+                {"command": "pytest -q", "duration": 1.234, "exit_code": 0}
+            ],
+            "log": "verification/task-1/round_1",
+            "status": "passed"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.status, VerificationStatus::Passed);
+        let commands = parsed.commands.as_ref().expect("commands must be present");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].exit_code, Some(0));
+        assert_eq!(commands[0].duration, Some(1.234));
+        assert_eq!(commands[0].timed_out, None);
+        assert!(parsed.before.is_some());
+        assert!(parsed.after.is_some());
+        assert!(parsed.side_effects.is_none());
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_round_trips_mcp_failed_payload_with_side_effects() {
+        // Mirrors the compact `verification` object in `.docs/fixtures/mcp-cases.json`.
+        let payload = serde_json::json!({
+            "after": fingerprint_json(),
+            "before": fingerprint_json(),
+            "commands": [
+                {
+                    "command": "pytest -q",
+                    "duration": 0.5,
+                    "exit_code": 1,
+                    "output_tail": "1 failed"
+                }
+            ],
+            "log": "verification/task-1/round_1",
+            "side_effects": [".pytest_cache/v"],
+            "status": "failed"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.status, VerificationStatus::Failed);
+        assert_eq!(
+            parsed.side_effects,
+            Some(vec![".pytest_cache/v".to_owned()])
+        );
+        let commands = parsed.commands.as_ref().expect("commands must be present");
+        assert_eq!(commands[0].output_tail.as_deref(), Some("1 failed"));
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_omits_absent_optional_keys() {
+        let payload = serde_json::json!({
+            "status": "passed",
+            "commands": [],
+            "log": "verification/task-1/round_1"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.commands, Some(Vec::new()));
+        assert!(parsed.before.is_none());
+        assert!(parsed.after.is_none());
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_rejects_unknown_status_safely() {
+        let payload = serde_json::json!({
+            "status": "bogus_status",
+            "commands": [],
+            "log": "verification/task-1/round_1"
+        });
+
+        let error = serde_json::from_value::<Verification>(payload)
+            .expect_err("unknown status must be rejected");
+        assert!(!error.to_string().contains("bogus_status"));
+    }
+
+    #[test]
+    fn verification_round_trips_timed_out_payload() {
+        // Mirrors `run_round_verification`: a timed-out command carries
+        // `timed_out: true` plus `exit_code`/`duration`, and every command
+        // after it is recorded as `not_run`.
+        let payload = serde_json::json!({
+            "status": "timed_out",
+            "commands": [
+                {
+                    "command": "pytest -q",
+                    "timed_out": true,
+                    "exit_code": -9,
+                    "duration": 900.0
+                },
+                {"command": "ruff check .", "reason": "not_run"}
+            ],
+            "log": "verification/task-1/round_1"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.status, VerificationStatus::TimedOut);
+        let commands = parsed.commands.as_ref().expect("commands must be present");
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].timed_out, Some(true));
+        assert_eq!(commands[0].exit_code, Some(-9));
+        assert_eq!(commands[0].duration, Some(900.0));
+        assert_eq!(commands[1].reason.as_deref(), Some("not_run"));
+        assert_eq!(commands[1].timed_out, None);
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_round_trips_unsafe_payload_without_commands() {
+        // Mirrors the early `unsafe` return: no `commands` key at all.
+        let payload = serde_json::json!({
+            "status": "unsafe",
+            "index": 0,
+            "reason": "unsafe_shell_invocation",
+            "log": "verification/task-1/round_1"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.status, VerificationStatus::Unsafe);
+        assert!(parsed.commands.is_none());
+        assert_eq!(parsed.index, Some(0));
+        assert_eq!(parsed.reason.as_deref(), Some("unsafe_shell_invocation"));
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_round_trips_error_payload_without_commands() {
+        // Mirrors the early `error` return: no `commands` key at all.
+        let payload = serde_json::json!({
+            "status": "error",
+            "reason": "git_fingerprint_failed",
+            "log": "verification/task-1/round_1"
+        });
+
+        let parsed: Verification = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.status, VerificationStatus::Error);
+        assert!(parsed.commands.is_none());
+        assert_eq!(parsed.index, None);
+        assert_eq!(parsed.reason.as_deref(), Some("git_fingerprint_failed"));
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn round_round_trips_representative_payload() {
+        let payload = serde_json::json!({
+            "task_id": SAMPLE_UUID,
+            "round_number": 1,
+            "kind": "implement",
+            "status": "complete",
+            "request_id": "req-1",
+            "session_id": "ses-1",
+            "error_code": null,
+            "verifier_state": "done",
+            "verification": {
+                "after": fingerprint_json(),
+                "before": fingerprint_json(),
+                "commands": [
+                    {"command": "pytest -q", "duration": 1.234, "exit_code": 0}
+                ],
+                "log": "verification/task-1/round_1",
+                "status": "passed"
+            }
+        });
+
+        let parsed: Round = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.task_id, TaskId::from_str(SAMPLE_UUID).expect("uuid"));
+        assert_eq!(parsed.round_number, 1);
+        assert_eq!(parsed.kind, RoundKind::Implement);
+        assert_eq!(parsed.status, RoundStatus::Complete);
+        assert_eq!(parsed.request_id, "req-1");
+        assert_eq!(parsed.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(parsed.error_code, None);
+        assert_eq!(parsed.verifier_state, Some(VerifierState::Done));
+        assert!(parsed.verification.is_some());
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn round_preserves_null_optional_scalars() {
+        let payload = serde_json::json!({
+            "task_id": SAMPLE_UUID,
+            "round_number": 2,
+            "kind": "revise",
+            "status": "pending",
+            "request_id": "req-2",
+            "session_id": null,
+            "error_code": null,
+            "verifier_state": null,
+            "verification": null
+        });
+
+        let parsed: Round = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.kind, RoundKind::Revise);
+        assert_eq!(parsed.status, RoundStatus::Pending);
+        assert_eq!(parsed.session_id, None);
+        assert_eq!(parsed.verifier_state, None);
+        assert!(parsed.verification.is_none());
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn round_ignores_unproven_extra_keys() {
+        let payload = serde_json::json!({
+            "task_id": SAMPLE_UUID,
+            "round_number": 1,
+            "kind": "implement",
+            "status": "complete",
+            "request_id": "req-1",
+            "project_id": "proj",
+            "payload_hash": "hash-req-1",
+            "created_at": "2026-01-01T00:00:00.000+00:00"
+        });
+
+        let parsed: Round = serde_json::from_value(payload).expect("extra keys must be ignored");
+        assert_eq!(parsed.round_number, 1);
+        assert_eq!(parsed.kind, RoundKind::Implement);
+    }
+
+    #[test]
+    fn round_and_verification_are_distinct_types() {
+        assert_ne!(TypeId::of::<Round>(), TypeId::of::<Verification>());
+        assert_ne!(TypeId::of::<RoundKind>(), TypeId::of::<RoundStatus>());
+    }
+
+    #[test]
+    fn git_fingerprint_serde_round_trips() {
+        let payload = fingerprint_json();
+        let parsed: GitFingerprint = serde_json::from_value(payload.clone()).expect("deserialize");
+        assert_eq!(parsed.head, FIXTURE_HEAD);
+        assert_eq!(parsed.index_fingerprint, FIXTURE_INDEX_FP);
+        assert_eq!(parsed.worktree_fingerprint, FIXTURE_WORKTREE_FP);
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, payload);
+    }
+
+    #[test]
+    fn verification_command_requires_only_command() {
+        let parsed: VerificationCommand =
+            serde_json::from_value(serde_json::json!({"command": "pytest -q"}))
+                .expect("command-only entry must parse");
+        assert_eq!(parsed.command, "pytest -q");
+        assert_eq!(parsed.timed_out, None);
+        assert_eq!(parsed.duration, None);
+        assert_eq!(parsed.exit_code, None);
+        assert_eq!(parsed.output_tail, None);
+        assert_eq!(parsed.reason, None);
+
+        let encoded = serde_json::to_value(&parsed).expect("serialize");
+        assert_eq!(encoded, serde_json::json!({"command": "pytest -q"}));
     }
 }

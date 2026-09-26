@@ -1,40 +1,63 @@
-//! Minimal loader for the `projects.toml` configuration file.
+//! Loader and validation for the `projects.toml` configuration file.
 //!
-//! This crate implements only the structural loading stage described by task
-//! 2.1: it reads a UTF-8 TOML file from an explicit path, requires a top-level
-//! `projects` table and returns the raw per-project tables for the later,
-//! dedicated validation tasks (2.2–2.9). It deliberately performs no semantic
-//! validation of project ids, workspaces, endpoints, credentials, models or
-//! permissions.
+//! The crate implements the structural loading stage (task 2.1) and the
+//! project-id/workspace validation group (task 2.2). It reads a UTF-8 TOML
+//! file from an explicit path, requires a top-level `projects` table and, for
+//! every project entry, validates the project id against
+//! `^[a-z0-9][a-z0-9_-]{0,63}$` and resolves the `workspace` to an existing
+//! directory. Relative workspaces resolve against the directory that contains
+//! the specific `projects.toml`, never against the process working directory.
+//!
+//! The remaining validation groups (endpoints/ports, uniqueness, models,
+//! permissions, credentials and env files) are deliberately out of scope. The
+//! raw per-project table is preserved on [`ProjectEntry::values`] so those
+//! later tasks can inspect every key and value without re-parsing.
 //!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
 //! and [`Debug`](std::fmt::Debug) output contains only static, developer
-//! authored text: file contents, credential values and the absolute input path
-//! are never rendered, even though the underlying diagnostic is retained as
-//! the error [`source`](std::error::Error::source).
+//! authored text: project ids, workspace paths, config paths, file contents and
+//! credential values are never rendered, even though the underlying diagnostic
+//! is retained as the error [`source`](std::error::Error::source).
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use bridge_domain::{DomainError, Result};
+use bridge_domain::{DomainError, ProjectId, Result};
 
 /// The top-level TOML table that holds the configured projects.
 pub const PROJECTS_TABLE: &str = "projects";
 
-/// A single raw project entry from the `projects` table.
+/// The per-project key that names the project workspace directory.
+pub const WORKSPACE_KEY: &str = "workspace";
+
+/// A validated project entry.
 ///
-/// The entry keeps the parsed TOML table exactly as it appeared in the file so
-/// that later validation tasks can inspect every key and value. No field is
-/// interpreted here, and the entry is not a promise that the project is
-/// semantically valid.
+/// The entry carries the typed, validated [`ProjectId`] and the canonical,
+/// absolute workspace [`Path`] so consumers never have to repeat the task 2.2
+/// validation. The raw TOML table is preserved verbatim for the later
+/// validation groups (2.3–2.9), which inspect every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
+    id: ProjectId,
+    workspace: PathBuf,
     values: toml::Table,
 }
 
 impl ProjectEntry {
+    /// Returns the validated project id.
+    #[must_use]
+    pub fn id(&self) -> &ProjectId {
+        &self.id
+    }
+
+    /// Returns the canonical, absolute workspace directory.
+    #[must_use]
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     /// Returns the raw project table.
     #[must_use]
     pub fn values(&self) -> &toml::Table {
@@ -57,29 +80,30 @@ impl ProjectEntry {
 impl fmt::Debug for ProjectEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProjectEntry")
+            .field("id", &self.id)
             .field("keys", &self.values.keys().collect::<Vec<_>>())
             .finish()
     }
 }
 
-/// A successfully loaded `projects.toml` configuration.
+/// A successfully loaded and validated `projects.toml` configuration.
 ///
-/// The container preserves the raw project tables keyed by their project id.
-/// Iteration order is deterministic (lexicographic by id) because both the
-/// backing [`BTreeMap`] and the default TOML map sort their keys.
+/// The container preserves the raw project tables keyed by their validated
+/// project id. Iteration order is deterministic (lexicographic by id) because
+/// both the backing [`BTreeMap`] and the default TOML map sort their keys.
 #[derive(Clone)]
 pub struct Config {
     projects: BTreeMap<String, ProjectEntry>,
 }
 
 impl Config {
-    /// Returns all projects keyed by their raw project id.
+    /// Returns all validated projects keyed by their project id.
     #[must_use]
     pub fn projects(&self) -> &BTreeMap<String, ProjectEntry> {
         &self.projects
     }
 
-    /// Returns the raw entry for `id`, if present.
+    /// Returns the validated entry for `id`, if present.
     #[must_use]
     pub fn project(&self, id: &str) -> Option<&ProjectEntry> {
         self.projects.get(id)
@@ -106,35 +130,45 @@ impl fmt::Debug for Config {
     }
 }
 
-/// Loads `projects.toml` from the explicit `path`.
+/// Loads and validates `projects.toml` from the explicit `path`.
+///
+/// Relative workspaces are resolved against the directory that contains
+/// `path`. The returned [`Config`] never contains an unvalidated project id or
+/// workspace.
 ///
 /// # Errors
 ///
-/// * [`bridge_domain::ErrorKind::NotFound`] when the file does not exist;
-/// * [`bridge_domain::ErrorKind::PermissionDenied`] when the file cannot be
-///   read because of permissions;
+/// * [`bridge_domain::ErrorKind::NotFound`] when the file does not exist or a
+///   configured workspace path does not exist;
+/// * [`bridge_domain::ErrorKind::PermissionDenied`] when the file or a
+///   workspace cannot be accessed because of permissions;
 /// * [`bridge_domain::ErrorKind::Internal`] for any other I/O failure;
 /// * [`bridge_domain::ErrorKind::InvalidInput`] when the bytes are not UTF-8,
 ///   when the TOML is syntactically invalid, when the `projects` table is
-///   missing, or when the `projects` value or a project entry has the wrong
-///   shape.
+///   missing, when the `projects` value or a project entry has the wrong
+///   shape, when a project id does not match
+///   `^[a-z0-9][a-z0-9_-]{0,63}$`, or when a workspace is missing, is not a
+///   string, is empty or is not a directory.
 ///
-/// None of these errors renders the file contents, credential values or the
-/// absolute input path.
+/// None of these errors renders the file contents, credential values, project
+/// ids, workspace paths or the absolute input path.
 pub fn load_config(path: &Path) -> Result<Config> {
     let bytes = std::fs::read(path).map_err(read_error)?;
     let text = String::from_utf8(bytes).map_err(|source| {
         DomainError::invalid_input("configuration file is not valid UTF-8").with_source(source)
     })?;
-    parse_config(&text)
+    let projects = parse_projects(&text)?;
+    let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
+    validate_projects(projects, config_dir)
 }
 
-/// Parses already-read TOML text into a [`Config`].
+/// Structurally parses already-read TOML text into the raw per-project tables.
 ///
-/// The TOML grammar guarantees that a document root is a table, so the only
-/// structural requirements checked here are the `projects` table and the shape
-/// of its entries.
-fn parse_config(text: &str) -> Result<Config> {
+/// This helper is intentionally separate from the path-aware validation: it
+/// only checks the `projects` table and the shape of its entries, because the
+/// workspace resolution needs the config file directory. The public
+/// [`load_config`] always runs [`validate_projects`] afterwards.
+fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
     let root: toml::Table = toml::from_str(text).map_err(|source| {
         DomainError::invalid_input("configuration file is not valid TOML").with_source(source)
     })?;
@@ -150,15 +184,103 @@ fn parse_config(text: &str) -> Result<Config> {
         let values = value.as_table().ok_or_else(|| {
             DomainError::invalid_input("each 'projects' entry must be a TOML table")
         })?;
-        entries.insert(
-            id.clone(),
+        entries.insert(id.clone(), values.clone());
+    }
+
+    Ok(entries)
+}
+
+/// Validates the raw project tables and builds the public [`Config`].
+fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> Result<Config> {
+    let mut projects = BTreeMap::new();
+    for (raw_id, values) in raw {
+        let id = validate_project_id(&raw_id)?;
+        let workspace = validate_workspace(&values, config_dir)?;
+        projects.insert(
+            raw_id,
             ProjectEntry {
-                values: values.clone(),
+                id,
+                workspace,
+                values,
             },
         );
     }
 
-    Ok(Config { projects: entries })
+    Ok(Config { projects })
+}
+
+/// Validates a raw project id against `^[a-z0-9][a-z0-9_-]{0,63}$`.
+///
+/// The error message is static and never contains the rejected id.
+fn validate_project_id(raw: &str) -> Result<ProjectId> {
+    if !is_valid_project_id(raw) {
+        return Err(DomainError::invalid_input("project id is invalid"));
+    }
+    raw.parse::<ProjectId>()
+        .map_err(|_| DomainError::invalid_input("project id is invalid"))
+}
+
+/// Returns `true` when `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$`.
+///
+/// The rule is applied on ASCII bytes, so Unicode, uppercase letters, dots and
+/// whitespace are rejected. The length is 1..=64 bytes, which is equivalent to
+/// characters because every accepted byte is ASCII.
+fn is_valid_project_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
+    }
+    bytes[1..].iter().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
+    })
+}
+
+/// Validates the required, non-empty string `workspace` and resolves it.
+///
+/// The error messages are static and never contain the workspace value.
+fn validate_workspace(values: &toml::Table, config_dir: &Path) -> Result<PathBuf> {
+    let raw = values
+        .get(WORKSPACE_KEY)
+        .ok_or_else(|| DomainError::invalid_input("project workspace is missing"))?
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project workspace must be a string"))?;
+
+    if raw.is_empty() {
+        return Err(DomainError::invalid_input(
+            "project workspace must not be empty",
+        ));
+    }
+
+    resolve_workspace(raw, config_dir)
+}
+
+/// Resolves `raw` to a canonical, absolute directory.
+///
+/// Absolute paths are used as-is; relative paths are joined onto `config_dir`,
+/// the directory of the specific `projects.toml`. The result must exist and be
+/// a directory; [`std::fs::canonicalize`] makes it canonical and absolute,
+/// which also resolves symlink aliases.
+fn resolve_workspace(raw: &str, config_dir: &Path) -> Result<PathBuf> {
+    let candidate = Path::new(raw);
+    let absolute = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        config_dir.join(candidate)
+    };
+
+    let canonical = std::fs::canonicalize(&absolute).map_err(workspace_error)?;
+    let metadata = std::fs::metadata(&canonical).map_err(workspace_error)?;
+    if !metadata.is_dir() {
+        return Err(DomainError::invalid_input(
+            "project workspace is not a directory",
+        ));
+    }
+
+    Ok(canonical)
 }
 
 /// Maps an I/O failure to a safe, typed [`DomainError`].
@@ -179,78 +301,126 @@ fn read_error(source: std::io::Error) -> DomainError {
     }
 }
 
+/// Maps a workspace resolution failure to a safe, typed [`DomainError`].
+fn workspace_error(source: std::io::Error) -> DomainError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            DomainError::not_found("project workspace does not exist").with_source(source)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DomainError::permission_denied("project workspace could not be accessed")
+                .with_source(source)
+        }
+        _ => DomainError::internal("project workspace could not be resolved").with_source(source),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Config, PROJECTS_TABLE, load_config, parse_config};
-    use bridge_domain::ErrorKind;
-    use std::path::PathBuf;
+    use super::{Config, PROJECTS_TABLE, WORKSPACE_KEY, load_config, parse_projects};
+    use bridge_domain::{ErrorKind, ProjectId};
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Corpus case `valid-minimal-project`: required keys only.
     const MINIMAL: &str = "[projects.proj]\nworkspace = \"ws\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n";
 
-    fn unique_path(tag: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must be after the Unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "bridge-config-{tag}-{}-{nanos}.toml",
-            std::process::id()
-        ))
+    /// A temporary directory removed recursively on drop.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock must be after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "bridge-config-{tag}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("temporary directory must be creatable");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn mkdir(&self, name: &str) -> PathBuf {
+            let path = self.path.join(name);
+            std::fs::create_dir_all(&path).expect("temporary subdirectory must be creatable");
+            path
+        }
+
+        fn write(&self, name: &str, text: &str) -> PathBuf {
+            let path = self.path.join(name);
+            std::fs::write(&path, text).expect("temporary config must be writable");
+            path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Builds a minimal project table with a quoted id key and `workspace`.
+    fn project_toml(id: &str, workspace: &str) -> String {
+        format!(
+            "[projects.\"{id}\"]\nworkspace = \"{workspace}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+        )
+    }
+
+    fn canonical(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).expect("path must canonicalize")
     }
 
     #[test]
-    fn crate_constant_names_the_projects_table() {
+    fn crate_constants_name_the_projects_table_and_workspace_key() {
         assert_eq!(PROJECTS_TABLE, "projects");
+        assert_eq!(WORKSPACE_KEY, "workspace");
     }
 
+    // Corpus case `valid-minimal-project` (structural view).
     #[test]
-    fn parses_minimal_project() {
-        let config = parse_config(MINIMAL).expect("minimal config must load");
+    fn parses_minimal_project_structure() {
+        let projects = parse_projects(MINIMAL).expect("minimal config must parse");
 
-        assert_eq!(config.len(), 1);
-        assert!(!config.is_empty());
-
-        let entry = config.project("proj").expect("project 'proj' must exist");
+        assert_eq!(projects.len(), 1);
+        let values = projects.get("proj").expect("project 'proj' must exist");
         assert_eq!(
-            entry.get("workspace").and_then(toml::Value::as_str),
+            values.get("workspace").and_then(toml::Value::as_str),
             Some("ws")
         );
         assert_eq!(
-            entry.get("opencode_url").and_then(toml::Value::as_str),
+            values.get("opencode_url").and_then(toml::Value::as_str),
             Some("http://127.0.0.1:4101")
         );
         assert_eq!(
-            entry.get("max_rounds").and_then(toml::Value::as_integer),
+            values.get("max_rounds").and_then(toml::Value::as_integer),
             Some(3)
         );
-        assert!(entry.contains_key("password_file"));
-        assert_eq!(entry.get("missing_key"), None);
-        assert_eq!(entry.values().len(), 4);
+        assert!(values.contains_key("password_file"));
+        assert_eq!(values.len(), 4);
     }
 
     #[test]
     fn parses_multiple_projects_in_deterministic_order() {
         let text = "[projects.beta]\nworkspace = \"b\"\n\n[projects.alpha]\nworkspace = \"a\"\n";
-        let config = parse_config(text).expect("multi-project config must load");
+        let projects = parse_projects(text).expect("multi-project config must parse");
 
-        let ids: Vec<&str> = config.projects().keys().map(String::as_str).collect();
+        let ids: Vec<&str> = projects.keys().map(String::as_str).collect();
         assert_eq!(ids, ["alpha", "beta"]);
-        assert_eq!(config.len(), 2);
-        assert_eq!(
-            config
-                .project("alpha")
-                .and_then(|entry| entry.get("workspace"))
-                .and_then(toml::Value::as_str),
-            Some("a")
-        );
+        assert_eq!(projects.len(), 2);
     }
 
     // Corpus case `invalid-toml-syntax`.
     #[test]
     fn rejects_syntactically_invalid_toml() {
-        let error = parse_config("this is not = = = toml\n").expect_err("invalid TOML must fail");
+        let error = parse_projects("this is not = = = toml\n").expect_err("invalid TOML must fail");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(error.to_string(), "configuration file is not valid TOML");
@@ -260,7 +430,7 @@ mod tests {
     #[test]
     fn rejects_missing_projects_table() {
         let error =
-            parse_config("[other]\nkey = \"value\"\n").expect_err("missing projects must fail");
+            parse_projects("[other]\nkey = \"value\"\n").expect_err("missing projects must fail");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(
@@ -271,8 +441,12 @@ mod tests {
 
     #[test]
     fn rejects_non_table_projects_value() {
-        for text in ["projects = \"nope\"\n", "projects = 5\n", "projects = [1, 2]\n"] {
-            let error = parse_config(text).expect_err("non-table projects must fail");
+        for text in [
+            "projects = \"nope\"\n",
+            "projects = 5\n",
+            "projects = [1, 2]\n",
+        ] {
+            let error = parse_projects(text).expect_err("non-table projects must fail");
             assert_eq!(error.kind(), ErrorKind::InvalidInput);
             assert_eq!(error.to_string(), "'projects' must be a TOML table");
         }
@@ -280,7 +454,8 @@ mod tests {
 
     #[test]
     fn rejects_non_table_project_entry() {
-        let error = parse_config("[projects]\nproj = 5\n").expect_err("non-table entry must fail");
+        let error =
+            parse_projects("[projects]\nproj = 5\n").expect_err("non-table entry must fail");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(
@@ -291,37 +466,299 @@ mod tests {
 
     #[test]
     fn empty_projects_table_is_valid() {
-        let config = parse_config("[projects]\n").expect("empty projects table must load");
+        let projects = parse_projects("[projects]\n").expect("empty projects table must parse");
 
-        assert!(config.is_empty());
-        assert!(config.projects().is_empty());
+        assert!(projects.is_empty());
     }
 
     #[test]
     fn unknown_top_level_keys_do_not_break_loading() {
         let text = "[other]\nkey = \"value\"\n\n[projects.proj]\nworkspace = \"ws\"\n";
-        let config = parse_config(text).expect("unknown top-level keys must be ignored");
+        let projects = parse_projects(text).expect("unknown top-level keys must be ignored");
+
+        assert_eq!(projects.len(), 1);
+        assert!(projects.contains_key("proj"));
+    }
+
+    // Corpus case `valid-minimal-project` (validated view).
+    #[test]
+    fn loads_valid_project_with_absolute_workspace() {
+        let dir = TempDir::new("valid-absolute");
+        let workspace = dir.mkdir("workspace");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("config from file must load");
 
         assert_eq!(config.len(), 1);
-        assert!(config.project("proj").is_some());
+        let entry = config.project("proj").expect("project 'proj' must exist");
+        assert_eq!(entry.id().as_str(), "proj");
+        assert_eq!(entry.workspace(), canonical(&workspace).as_path());
+        assert_eq!(
+            entry.get("opencode_url").and_then(toml::Value::as_str),
+            Some("http://127.0.0.1:4101")
+        );
+        assert_eq!(
+            entry.get("max_rounds").and_then(toml::Value::as_integer),
+            Some(3)
+        );
+        assert!(entry.contains_key("password_file"));
+        assert_eq!(entry.values().len(), 4);
+    }
+
+    // Corpus case `valid-workspace-relative-resolved-against-config-dir`.
+    #[test]
+    fn resolves_relative_workspace_against_config_dir() {
+        let dir = TempDir::new("relative");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write("projects.toml", &project_toml("proj", "ws"));
+
+        let config = load_config(&config_path).expect("relative workspace must load");
+
+        let entry = config.project("proj").expect("project must exist");
+        assert_eq!(entry.workspace(), canonical(&workspace).as_path());
+        assert!(entry.workspace().is_absolute());
+    }
+
+    // Corpus case `valid-workspace-symlink-canonicalized`.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_workspace_is_canonicalized() {
+        let dir = TempDir::new("symlink");
+        let real = dir.mkdir("real");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let config_path = dir.write("projects.toml", &project_toml("proj", "link"));
+
+        let config = load_config(&config_path).expect("symlinked workspace must load");
+
+        let entry = config.project("proj").expect("project must exist");
+        assert_eq!(entry.workspace(), canonical(&real).as_path());
+    }
+
+    // Corpus case `invalid-project-id-pattern`.
+    #[test]
+    fn rejects_invalid_project_id_patterns() {
+        let dir = TempDir::new("bad-id");
+        let workspace = dir.mkdir("ws");
+        let ws = workspace.to_str().expect("utf-8 path");
+
+        let invalid = [
+            "Bad_ID",
+            "UPPER",
+            "has.dot",
+            "has space",
+            "юникод",
+            "_leading",
+            "-leading",
+        ];
+        for id in invalid {
+            let config_path = dir.write("projects.toml", &project_toml(id, ws));
+            let error = load_config(&config_path).expect_err("invalid id must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "id: {id}");
+            assert_eq!(error.to_string(), "project id is invalid", "id: {id}");
+        }
     }
 
     #[test]
-    fn loads_config_from_explicit_path() {
-        let path = unique_path("valid");
-        std::fs::write(&path, MINIMAL).expect("temporary config must be writable");
+    fn rejects_empty_project_id() {
+        let dir = TempDir::new("empty-id");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("", workspace.to_str().expect("utf-8 path")),
+        );
 
-        let config = load_config(&path).expect("config from file must load");
+        let error = load_config(&config_path).expect_err("empty id must fail");
 
-        assert_eq!(config.len(), 1);
-        assert!(config.project("proj").is_some());
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project id is invalid");
+    }
 
-        std::fs::remove_file(&path).expect("temporary config must be removable");
+    // Boundary ids: length 1 and 64 are accepted.
+    #[test]
+    fn accepts_project_id_boundary_lengths() {
+        let dir = TempDir::new("id-boundary-ok");
+        let workspace = dir.mkdir("ws");
+        let ws = workspace.to_str().expect("utf-8 path");
+
+        let one = "a";
+        let sixty_four = "a".repeat(64);
+
+        for id in [one, sixty_four.as_str()] {
+            let config_path = dir.write("projects.toml", &project_toml(id, ws));
+            let config = load_config(&config_path).expect("boundary id must load");
+            let entry = config.project(id).expect("project must exist");
+            assert_eq!(entry.id().as_str(), id);
+            assert_eq!(entry.id().as_str().len(), id.len());
+        }
+    }
+
+    // Corpus case `invalid-project-id-too-long`: length 65 is rejected.
+    #[test]
+    fn rejects_project_id_longer_than_64() {
+        let dir = TempDir::new("id-too-long");
+        let workspace = dir.mkdir("ws");
+        let too_long = "p".repeat(65);
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml(&too_long, workspace.to_str().expect("utf-8 path")),
+        );
+
+        let error = load_config(&config_path).expect_err("too-long id must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project id is invalid");
+    }
+
+    #[test]
+    fn accepts_underscore_and_hyphen_after_first_character() {
+        let dir = TempDir::new("id-punct");
+        let workspace = dir.mkdir("ws");
+        let id = "a-b_c-9";
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml(id, workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("valid id must load");
+        assert_eq!(
+            config
+                .project(id)
+                .expect("project must exist")
+                .id()
+                .as_str(),
+            id
+        );
+    }
+
+    #[test]
+    fn rejects_missing_workspace_key() {
+        let dir = TempDir::new("missing-ws");
+        let config_path = dir.write(
+            "projects.toml",
+            "[projects.proj]\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n",
+        );
+
+        let error = load_config(&config_path).expect_err("missing workspace must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project workspace is missing");
+    }
+
+    #[test]
+    fn rejects_non_string_workspace() {
+        let dir = TempDir::new("ws-type");
+        let config_path = dir.write(
+            "projects.toml",
+            "[projects.proj]\nworkspace = 3\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n",
+        );
+
+        let error = load_config(&config_path).expect_err("non-string workspace must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project workspace must be a string");
+    }
+
+    #[test]
+    fn rejects_empty_workspace() {
+        let dir = TempDir::new("ws-empty");
+        let config_path = dir.write("projects.toml", &project_toml("proj", ""));
+
+        let error = load_config(&config_path).expect_err("empty workspace must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project workspace must not be empty");
+    }
+
+    // Corpus case `invalid-workspace-missing`.
+    #[test]
+    fn missing_workspace_path_is_a_safe_not_found_error() {
+        let dir = TempDir::new("ws-missing");
+        let missing = dir.path().join("does-not-exist");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", missing.to_str().expect("utf-8 path")),
+        );
+
+        let error = load_config(&config_path).expect_err("missing workspace path must fail");
+
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "project workspace does not exist");
+    }
+
+    // Corpus case `invalid-workspace-not-a-directory`.
+    #[test]
+    fn file_workspace_is_not_a_directory() {
+        let dir = TempDir::new("ws-file");
+        let file = dir.write("a-file", "not a directory");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", file.to_str().expect("utf-8 path")),
+        );
+
+        let error = load_config(&config_path).expect_err("file workspace must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project workspace is not a directory");
+    }
+
+    #[test]
+    fn project_id_error_does_not_leak_id_workspace_or_config_path() {
+        let dir = TempDir::new("redact-id");
+        let workspace = dir.mkdir("ws");
+        let bad_id = "zzz-secret-project.id";
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml(bad_id, workspace.to_str().expect("utf-8 path")),
+        );
+
+        let error = load_config(&config_path).expect_err("invalid id must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(bad_id), "leaked id: {rendered}");
+        assert!(
+            !rendered.contains(workspace.to_str().expect("utf-8 path")),
+            "leaked workspace: {rendered}"
+        );
+        assert!(
+            !rendered.contains(config_path.to_str().expect("utf-8 path")),
+            "leaked config path: {rendered}"
+        );
+    }
+
+    #[test]
+    fn workspace_error_does_not_leak_workspace_id_or_config_path() {
+        let dir = TempDir::new("redact-ws");
+        let secret_workspace = dir.path().join("super-secret-workspace-dir");
+        let id = "zzzsecretid";
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml(id, secret_workspace.to_str().expect("utf-8 path")),
+        );
+
+        let error = load_config(&config_path).expect_err("missing workspace must fail");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(secret_workspace.to_str().expect("utf-8 path")),
+            "leaked workspace: {rendered}"
+        );
+        assert!(!rendered.contains(id), "leaked id: {rendered}");
+        assert!(
+            !rendered.contains(config_path.to_str().expect("utf-8 path")),
+            "leaked config path: {rendered}"
+        );
     }
 
     #[test]
     fn missing_file_is_a_safe_not_found_error() {
-        let path = unique_path("missing");
+        let dir = TempDir::new("missing-file");
+        let path = dir.path().join("nope.toml");
         let error = load_config(&path).expect_err("missing file must fail");
 
         assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -337,7 +774,8 @@ mod tests {
 
     #[test]
     fn invalid_utf8_is_a_safe_shape_failure() {
-        let path = unique_path("utf8");
+        let dir = TempDir::new("utf8");
+        let path = dir.path().join("projects.toml");
         std::fs::write(&path, [0xff, 0xfe, 0x00]).expect("temporary config must be writable");
 
         let error = load_config(&path).expect_err("invalid UTF-8 must fail");
@@ -351,8 +789,6 @@ mod tests {
             !rendered.contains(path_text),
             "safe error output leaked the input path: {rendered}"
         );
-
-        std::fs::remove_file(&path).expect("temporary config must be removable");
     }
 
     #[test]
@@ -360,13 +796,18 @@ mod tests {
         const SECRET: &str = "super-secret-token-value";
         const SECRET_PATH: &str = "/abs/secret/workspace/path";
 
-        let text = format!("password_file = \"{SECRET}\"\n[projects.proj\nworkspace = \"{SECRET_PATH}\"\n");
-        let error = parse_config(&text).expect_err("invalid TOML must fail");
+        let text = format!(
+            "password_file = \"{SECRET}\"\n[projects.proj\nworkspace = \"{SECRET_PATH}\"\n"
+        );
+        let error = parse_projects(&text).expect_err("invalid TOML must fail");
 
         let display = error.to_string();
         let debug = format!("{error:?}");
 
-        assert!(!display.contains(SECRET), "Display leaked a secret: {display}");
+        assert!(
+            !display.contains(SECRET),
+            "Display leaked a secret: {display}"
+        );
         assert!(!debug.contains(SECRET), "Debug leaked a secret: {debug}");
         assert!(
             !display.contains(SECRET_PATH),
@@ -380,7 +821,7 @@ mod tests {
         const SECRET: &str = "shape-secret-token-value";
 
         let text = format!("unknown_top_level = \"{SECRET}\"\n");
-        let error = parse_config(&text).expect_err("missing projects must fail");
+        let error = parse_projects(&text).expect_err("missing projects must fail");
 
         let rendered = format!("{error} {error:?}");
         assert!(
@@ -390,20 +831,57 @@ mod tests {
     }
 
     #[test]
-    fn config_debug_does_not_render_values() {
+    fn config_debug_does_not_render_values_or_workspace() {
         const SECRET: &str = "debug-secret-value";
 
-        let text = format!("[projects.proj]\npassword_file = \"{SECRET}\"\n");
-        let config = parse_config(&text).expect("config must load");
+        let dir = TempDir::new("debug");
+        let workspace = dir.mkdir("workspace-dir");
+        let text = format!(
+            "[projects.proj]\nworkspace = \"{}\"\npassword_file = \"{SECRET}\"\n",
+            workspace.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write("projects.toml", &text);
+        let config = load_config(&config_path).expect("config must load");
 
         let debug = format!("{config:?}");
-        assert!(!debug.contains(SECRET), "Config Debug leaked a value: {debug}");
+        assert!(
+            !debug.contains(SECRET),
+            "Config Debug leaked a value: {debug}"
+        );
+        assert!(
+            !debug.contains(workspace.to_str().expect("utf-8 path")),
+            "Config Debug leaked a workspace: {debug}"
+        );
         assert!(debug.contains("proj"));
 
         let entry_debug = format!("{:?}", config.project("proj").expect("project exists"));
         assert!(
             !entry_debug.contains(SECRET),
             "ProjectEntry Debug leaked a value: {entry_debug}"
+        );
+        assert!(
+            !entry_debug.contains(workspace.to_str().expect("utf-8 path")),
+            "ProjectEntry Debug leaked a workspace: {entry_debug}"
+        );
+    }
+
+    #[test]
+    fn validated_project_id_is_typed() {
+        fn id_str(id: &ProjectId) -> &str {
+            id.as_str()
+        }
+
+        let dir = TempDir::new("typed-id");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+
+        assert_eq!(
+            id_str(config.project("proj").expect("project exists").id()),
+            "proj"
         );
     }
 

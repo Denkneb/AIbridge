@@ -1,30 +1,45 @@
 //! Loader and validation for the `projects.toml` configuration file.
 //!
-//! The crate implements the structural loading stage (task 2.1) and the
-//! project-id/workspace validation group (task 2.2). It reads a UTF-8 TOML
-//! file from an explicit path, requires a top-level `projects` table and, for
-//! every project entry, validates the project id against
-//! `^[a-z0-9][a-z0-9_-]{0,63}$` and resolves the `workspace` to an existing
-//! directory. Relative workspaces resolve against the directory that contains
-//! the specific `projects.toml`, never against the process working directory.
+//! The crate implements the structural loading stage (task 2.1), the
+//! project-id/workspace validation group (task 2.2) and the endpoint/port
+//! validation group (task 2.3). It reads a UTF-8 TOML file from an explicit
+//! path, requires a top-level `projects` table and, for every project entry,
+//! validates the project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the
+//! `workspace` to an existing directory and parses the required `opencode_url`
+//! and the optional `mcp_url` into typed loopback endpoints. Relative
+//! workspaces resolve against the directory that contains the specific
+//! `projects.toml`, never against the process working directory.
 //!
-//! The remaining validation groups (endpoints/ports, uniqueness, models,
-//! permissions, credentials and env files) are deliberately out of scope. The
-//! raw per-project table is preserved on [`ProjectEntry::values`] so those
-//! later tasks can inspect every key and value without re-parsing.
+//! Both URLs must be `http` URLs on the exact host `127.0.0.1` with an explicit
+//! decimal port in `1..=65535` and no path, query, fragment, username or
+//! password; `mcp_url` must additionally end with `/mcp`. This mirrors the
+//! reference Python implementation (`src/agent_bridge/config.py`,
+//! `_parse_endpoint`), including that an empty path and `/` are both accepted
+//! for the OpenCode endpoint. The `url` crate validates the general syntax, but
+//! the contract-sensitive scheme, host, explicit port and path are checked
+//! against the original spelling so that WHATWG normalization (default-port
+//! removal, non-standard IPv4 canonicalization, dot-segment folding) cannot
+//! silently widen the contract.
+//!
+//! The remaining validation groups (uniqueness, models, permissions,
+//! credentials and env files) are deliberately out of scope. The raw
+//! per-project table is preserved on [`ProjectEntry::values`] so those later
+//! tasks can inspect every key and value without re-parsing.
 //!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
 //! and [`Debug`](std::fmt::Debug) output contains only static, developer
-//! authored text: project ids, workspace paths, config paths, file contents and
-//! credential values are never rendered, even though the underlying diagnostic
-//! is retained as the error [`source`](std::error::Error::source).
+//! authored text: project ids, workspace paths, config paths, file contents,
+//! credential values and URL inputs are never rendered. Underlying parser
+//! diagnostics are retained only as the error
+//! [`source`](std::error::Error::source).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use bridge_domain::{DomainError, ProjectId, Result};
+use url::Url;
 
 /// The top-level TOML table that holds the configured projects.
 pub const PROJECTS_TABLE: &str = "projects";
@@ -32,16 +47,104 @@ pub const PROJECTS_TABLE: &str = "projects";
 /// The per-project key that names the project workspace directory.
 pub const WORKSPACE_KEY: &str = "workspace";
 
+/// The required per-project key that names the OpenCode server endpoint.
+pub const OPENCODE_URL_KEY: &str = "opencode_url";
+
+/// The optional per-project key that names the MCP endpoint.
+pub const MCP_URL_KEY: &str = "mcp_url";
+
+/// The only host accepted in configured endpoints.
+pub const LOOPBACK_HOST: &str = "127.0.0.1";
+
+/// The fixed path suffix of a configured MCP endpoint.
+pub const MCP_PATH: &str = "/mcp";
+
+/// A validated OpenCode server endpoint.
+///
+/// The host is always [`LOOPBACK_HOST`] and the port is always explicit and in
+/// `1..=65535`, so a consumer never has to re-parse `opencode_url`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Endpoint {
+    port: u16,
+}
+
+impl Endpoint {
+    /// Returns the explicit port.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Returns the endpoint host, which is always [`LOOPBACK_HOST`].
+    #[must_use]
+    pub fn host(&self) -> &'static str {
+        LOOPBACK_HOST
+    }
+
+    /// Returns the normalized `http://127.0.0.1:<port>` URL.
+    #[must_use]
+    pub fn url(&self) -> String {
+        let port = self.port;
+        format!("http://{LOOPBACK_HOST}:{port}")
+    }
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.url())
+    }
+}
+
+/// A validated MCP endpoint.
+///
+/// It wraps the base [`Endpoint`] and always renders with the fixed
+/// [`MCP_PATH`] suffix. Keeping the base typed (rather than the raw string)
+/// lets later consumers compare endpoints and read the port without parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpEndpoint {
+    base: Endpoint,
+}
+
+impl McpEndpoint {
+    /// Returns the explicit port.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.base.port()
+    }
+
+    /// Returns the base endpoint without the `/mcp` suffix.
+    #[must_use]
+    pub fn base(&self) -> &Endpoint {
+        &self.base
+    }
+
+    /// Returns the normalized `http://127.0.0.1:<port>/mcp` URL.
+    #[must_use]
+    pub fn url(&self) -> String {
+        let base = self.base.url();
+        format!("{base}{MCP_PATH}")
+    }
+}
+
+impl fmt::Display for McpEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.url())
+    }
+}
+
 /// A validated project entry.
 ///
-/// The entry carries the typed, validated [`ProjectId`] and the canonical,
-/// absolute workspace [`Path`] so consumers never have to repeat the task 2.2
-/// validation. The raw TOML table is preserved verbatim for the later
-/// validation groups (2.3–2.9), which inspect every key and value.
+/// The entry carries the typed, validated [`ProjectId`], the canonical,
+/// absolute workspace [`Path`] and the typed [`Endpoint`]/[`McpEndpoint`]
+/// values so consumers never have to repeat the task 2.2/2.3 validation or
+/// re-parse endpoint strings. The raw TOML table is preserved verbatim for the
+/// later validation groups (2.4–2.9), which inspect every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
     id: ProjectId,
     workspace: PathBuf,
+    opencode_endpoint: Endpoint,
+    mcp_endpoint: Option<McpEndpoint>,
     values: toml::Table,
 }
 
@@ -56,6 +159,18 @@ impl ProjectEntry {
     #[must_use]
     pub fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    /// Returns the validated OpenCode server endpoint.
+    #[must_use]
+    pub fn opencode_endpoint(&self) -> &Endpoint {
+        &self.opencode_endpoint
+    }
+
+    /// Returns the validated optional MCP endpoint.
+    #[must_use]
+    pub fn mcp_endpoint(&self) -> Option<&McpEndpoint> {
+        self.mcp_endpoint.as_ref()
     }
 
     /// Returns the raw project table.
@@ -147,11 +262,13 @@ impl fmt::Debug for Config {
 ///   when the TOML is syntactically invalid, when the `projects` table is
 ///   missing, when the `projects` value or a project entry has the wrong
 ///   shape, when a project id does not match
-///   `^[a-z0-9][a-z0-9_-]{0,63}$`, or when a workspace is missing, is not a
-///   string, is empty or is not a directory.
+///   `^[a-z0-9][a-z0-9_-]{0,63}$`, when a workspace is missing, is not a
+///   string, is empty or is not a directory, or when `opencode_url`/`mcp_url`
+///   are missing, have the wrong type or are not a loopback `http` endpoint
+///   with an explicit port in `1..=65535` and the required path.
 ///
 /// None of these errors renders the file contents, credential values, project
-/// ids, workspace paths or the absolute input path.
+/// ids, workspace paths, URL inputs or the absolute input path.
 pub fn load_config(path: &Path) -> Result<Config> {
     let bytes = std::fs::read(path).map_err(read_error)?;
     let text = String::from_utf8(bytes).map_err(|source| {
@@ -196,11 +313,15 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
     for (raw_id, values) in raw {
         let id = validate_project_id(&raw_id)?;
         let workspace = validate_workspace(&values, config_dir)?;
+        let opencode_endpoint = validate_opencode_url(&values)?;
+        let mcp_endpoint = validate_mcp_url(&values)?;
         projects.insert(
             raw_id,
             ProjectEntry {
                 id,
                 workspace,
+                opencode_endpoint,
+                mcp_endpoint,
                 values,
             },
         );
@@ -283,6 +404,274 @@ fn resolve_workspace(raw: &str, config_dir: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// The reason a URL is not an acceptable loopback endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointError {
+    /// The input is not a syntactically valid absolute URL.
+    NotAUrl,
+    /// The scheme is not `http`.
+    Scheme,
+    /// The host is not exactly `127.0.0.1`.
+    Host,
+    /// The URL embeds a username or password.
+    Credentials,
+    /// The URL carries a non-empty query or fragment.
+    QueryOrFragment,
+    /// The URL carries a path other than empty or `/`.
+    Path,
+    /// The URL omits the explicit port.
+    MissingPort,
+    /// The port is outside `1..=65535`.
+    PortRange,
+}
+
+/// A failed endpoint parse, optionally carrying the parser diagnostic.
+struct EndpointFailure {
+    error: EndpointError,
+    source: Option<url::ParseError>,
+}
+
+impl EndpointFailure {
+    const fn new(error: EndpointError) -> Self {
+        Self {
+            error,
+            source: None,
+        }
+    }
+}
+
+/// Which configured key is being validated, used to pick static messages.
+#[derive(Debug, Clone, Copy)]
+enum EndpointKey {
+    Opencode,
+    Mcp,
+}
+
+impl EndpointKey {
+    /// Maps a failure to the static, non-sensitive message for this key.
+    const fn message(self, error: EndpointError) -> &'static str {
+        match (self, error) {
+            (Self::Opencode, EndpointError::NotAUrl) => "project opencode_url is not a valid URL",
+            (Self::Opencode, EndpointError::Scheme) => {
+                "project opencode_url must use the http scheme"
+            }
+            (Self::Opencode, EndpointError::Host) => {
+                "project opencode_url host must be exactly 127.0.0.1"
+            }
+            (Self::Opencode, EndpointError::Credentials) => {
+                "project opencode_url must not embed credentials"
+            }
+            (Self::Opencode, EndpointError::QueryOrFragment) => {
+                "project opencode_url must not contain a query or fragment"
+            }
+            (Self::Opencode, EndpointError::Path) => "project opencode_url must not contain a path",
+            (Self::Opencode, EndpointError::MissingPort) => {
+                "project opencode_url must include an explicit port"
+            }
+            (Self::Opencode, EndpointError::PortRange) => {
+                "project opencode_url port must be within 1..65535"
+            }
+            (Self::Mcp, EndpointError::NotAUrl) => "project mcp_url is not a valid URL",
+            (Self::Mcp, EndpointError::Scheme) => "project mcp_url must use the http scheme",
+            (Self::Mcp, EndpointError::Host) => "project mcp_url host must be exactly 127.0.0.1",
+            (Self::Mcp, EndpointError::Credentials) => "project mcp_url must not embed credentials",
+            (Self::Mcp, EndpointError::QueryOrFragment) => {
+                "project mcp_url must not contain a query or fragment"
+            }
+            (Self::Mcp, EndpointError::Path) => "project mcp_url must not contain a path",
+            (Self::Mcp, EndpointError::MissingPort) => {
+                "project mcp_url must include an explicit port"
+            }
+            (Self::Mcp, EndpointError::PortRange) => "project mcp_url port must be within 1..65535",
+        }
+    }
+}
+
+/// Builds a safe [`DomainError`] from an endpoint failure.
+///
+/// Only the static message is rendered; the parser diagnostic, when present, is
+/// attached solely as the error [`source`](std::error::Error::source).
+fn endpoint_error(key: EndpointKey, failure: EndpointFailure) -> DomainError {
+    let error = DomainError::invalid_input(key.message(failure.error));
+    match failure.source {
+        Some(source) => error.with_source(source),
+        None => error,
+    }
+}
+
+/// The original URL components that the endpoint contract inspects.
+///
+/// [`Url`] is used only to reject syntactically invalid input. Its WHATWG parser
+/// normalizes the default port away, canonicalizes non-standard IPv4 spellings
+/// and folds dot segments, so the contract checks must run on the original
+/// spelling instead. This narrow extractor mirrors the component split of
+/// Python's `urllib.parse.urlsplit` for exactly the pieces the contract needs;
+/// it is deliberately not a general-purpose URL parser.
+struct RawEndpoint<'a> {
+    /// The authority host exactly as written, before any normalization.
+    host: &'a str,
+    /// The explicit port text exactly as written, if any.
+    port: Option<&'a str>,
+    /// `true` when the authority carries a non-empty `user:pass@` prefix.
+    has_credentials: bool,
+    /// The raw query component, if the `?` delimiter is present.
+    query: Option<&'a str>,
+    /// The raw fragment component, if the `#` delimiter is present.
+    fragment: Option<&'a str>,
+    /// The path exactly as written, without the query or fragment.
+    path: &'a str,
+}
+
+/// Splits a URL string that [`Url::parse`] already accepted into its original
+/// components.
+///
+/// Returns `None` when the string does not have the `scheme://authority`
+/// structure the contract relies on. Because the caller only reaches this after
+/// a successful [`Url::parse`], that can only happen for inputs the WHATWG
+/// parser accepted in a non-`urlsplit` shape, which the contract rejects.
+fn split_raw_endpoint(raw: &str) -> Option<RawEndpoint<'_>> {
+    let (_scheme, rest) = raw.split_once(':')?;
+
+    let (before_fragment, fragment) = match rest.split_once('#') {
+        Some((before, fragment)) => (before, Some(fragment)),
+        None => (rest, None),
+    };
+    let (before_query, query) = match before_fragment.split_once('?') {
+        Some((before, query)) => (before, Some(query)),
+        None => (before_fragment, None),
+    };
+
+    let after_scheme_slashes = before_query.strip_prefix("//")?;
+    let (authority, path) = match after_scheme_slashes.find('/') {
+        Some(index) => (
+            after_scheme_slashes.get(..index)?,
+            after_scheme_slashes.get(index..)?,
+        ),
+        None => (after_scheme_slashes, ""),
+    };
+
+    let (userinfo, hostinfo) = match authority.rfind('@') {
+        Some(index) => (authority.get(..index), authority.get(index + 1..)?),
+        None => (None, authority),
+    };
+    let has_credentials = userinfo.is_some_and(|info| !info.is_empty());
+
+    let (host, port) = match hostinfo.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (hostinfo, None),
+    };
+
+    Some(RawEndpoint {
+        host,
+        port,
+        has_credentials,
+        query,
+        fragment,
+        path,
+    })
+}
+
+/// Parses the explicit port text as a decimal integer in `1..=65535`.
+///
+/// Returns `None` for empty, non-decimal or out-of-range text. The contract
+/// calls for a decimal port, so no sign, whitespace or separator is accepted.
+fn parse_explicit_port(raw: &str) -> Option<u16> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match raw.parse::<u16>() {
+        Ok(port) if port != 0 => Some(port),
+        _ => None,
+    }
+}
+
+/// Parses and validates a loopback HTTP endpoint URL.
+///
+/// The rules mirror `_parse_endpoint` in the reference Python implementation:
+/// `http` scheme, exact raw host `127.0.0.1`, no username/password, no query or
+/// fragment, path empty or `/`, and an explicit raw port in `1..=65535`.
+///
+/// [`Url::parse`] provides the general syntactic check, but the
+/// contract-sensitive host, port and path are read from the original string via
+/// [`split_raw_endpoint`] so WHATWG normalization cannot widen the contract:
+/// `:80` keeps its port, `127.1` is not silently rewritten to `127.0.0.1`, and
+/// `/./`, `/a/..` or `/%2e%2e` are not folded to `/`.
+fn parse_endpoint(raw: &str) -> std::result::Result<Endpoint, EndpointFailure> {
+    let url = Url::parse(raw).map_err(|source| EndpointFailure {
+        error: match source {
+            url::ParseError::InvalidPort => EndpointError::PortRange,
+            _ => EndpointError::NotAUrl,
+        },
+        source: Some(source),
+    })?;
+
+    if url.scheme() != "http" {
+        return Err(EndpointFailure::new(EndpointError::Scheme));
+    }
+
+    let Some(parts) = split_raw_endpoint(raw) else {
+        return Err(EndpointFailure::new(EndpointError::NotAUrl));
+    };
+
+    if parts.host != LOOPBACK_HOST {
+        return Err(EndpointFailure::new(EndpointError::Host));
+    }
+    if parts.has_credentials {
+        return Err(EndpointFailure::new(EndpointError::Credentials));
+    }
+    let has_query = parts.query.is_some_and(|query| !query.is_empty());
+    let has_fragment = parts.fragment.is_some_and(|fragment| !fragment.is_empty());
+    if has_query || has_fragment {
+        return Err(EndpointFailure::new(EndpointError::QueryOrFragment));
+    }
+    if !matches!(parts.path, "" | "/") {
+        return Err(EndpointFailure::new(EndpointError::Path));
+    }
+    let Some(port_raw) = parts.port else {
+        return Err(EndpointFailure::new(EndpointError::MissingPort));
+    };
+    let Some(port) = parse_explicit_port(port_raw) else {
+        return Err(EndpointFailure::new(EndpointError::PortRange));
+    };
+
+    Ok(Endpoint { port })
+}
+
+/// Validates the required `opencode_url` into a typed [`Endpoint`].
+///
+/// The error messages are static and never contain the URL input.
+fn validate_opencode_url(values: &toml::Table) -> Result<Endpoint> {
+    let raw = values
+        .get(OPENCODE_URL_KEY)
+        .ok_or_else(|| DomainError::invalid_input("project opencode_url is missing"))?
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project opencode_url must be a string"))?;
+
+    parse_endpoint(raw).map_err(|failure| endpoint_error(EndpointKey::Opencode, failure))
+}
+
+/// Validates the optional `mcp_url` into a typed [`McpEndpoint`].
+///
+/// The value must be a string ending with [`MCP_PATH`]; the base URL before the
+/// suffix obeys exactly the same rules as `opencode_url`. Pairing with
+/// `mcp_token_file` and the token-file path rules are later tasks, so they are
+/// intentionally not checked here.
+fn validate_mcp_url(values: &toml::Table) -> Result<Option<McpEndpoint>> {
+    let Some(value) = values.get(MCP_URL_KEY) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project mcp_url must be a string"))?;
+    let base_raw = raw
+        .strip_suffix(MCP_PATH)
+        .ok_or_else(|| DomainError::invalid_input("project mcp_url must end with '/mcp'"))?;
+
+    let base =
+        parse_endpoint(base_raw).map_err(|failure| endpoint_error(EndpointKey::Mcp, failure))?;
+    Ok(Some(McpEndpoint { base }))
+}
+
 /// Maps an I/O failure to a safe, typed [`DomainError`].
 ///
 /// The original [`std::io::Error`] is kept only as the error source, so its
@@ -317,8 +706,12 @@ fn workspace_error(source: std::io::Error) -> DomainError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, PROJECTS_TABLE, WORKSPACE_KEY, load_config, parse_projects};
-    use bridge_domain::{ErrorKind, ProjectId};
+    use super::{
+        Config, MCP_URL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE, WORKSPACE_KEY, load_config,
+        parse_projects,
+    };
+    use bridge_domain::{DomainError, ErrorKind, ProjectId};
+    use std::error::Error;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -374,8 +767,32 @@ mod tests {
         )
     }
 
+    /// Builds a project table with an explicit `opencode_url` and extra keys.
+    fn project_toml_with(id: &str, workspace: &str, opencode_url: &str, extra: &str) -> String {
+        format!(
+            "[projects.\"{id}\"]\nworkspace = \"{workspace}\"\nopencode_url = \"{opencode_url}\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n{extra}"
+        )
+    }
+
     fn canonical(path: &Path) -> PathBuf {
         std::fs::canonicalize(path).expect("path must canonicalize")
+    }
+
+    /// Loads a one-project config with the given `opencode_url` and extra keys,
+    /// returning the validation error and panicking if it unexpectedly loads.
+    fn load_endpoint_config(id: &str, opencode_url: &str, extra: &str) -> DomainError {
+        let dir = TempDir::new("endpoint-error");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                id,
+                workspace.to_str().expect("utf-8 path"),
+                opencode_url,
+                extra,
+            ),
+        );
+        load_config(&config_path).expect_err("config must be rejected")
     }
 
     #[test]
@@ -837,7 +1254,7 @@ mod tests {
         let dir = TempDir::new("debug");
         let workspace = dir.mkdir("workspace-dir");
         let text = format!(
-            "[projects.proj]\nworkspace = \"{}\"\npassword_file = \"{SECRET}\"\n",
+            "[projects.proj]\nworkspace = \"{}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"{SECRET}\"\n",
             workspace.to_str().expect("utf-8 path")
         );
         let config_path = dir.write("projects.toml", &text);
@@ -891,5 +1308,543 @@ mod tests {
 
         assert_clone::<Config>();
         assert_clone::<super::ProjectEntry>();
+    }
+
+    // Corpus case `valid-minimal-project` (endpoint view).
+    #[test]
+    fn accepts_minimal_opencode_endpoint_and_exposes_typed_port() {
+        let dir = TempDir::new("endpoint-minimal");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("valid endpoint must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let endpoint = entry.opencode_endpoint();
+        assert_eq!(endpoint.port(), 4101);
+        assert_eq!(endpoint.host(), "127.0.0.1");
+        assert_eq!(endpoint.url(), "http://127.0.0.1:4101");
+        assert_eq!(endpoint.to_string(), "http://127.0.0.1:4101");
+        assert!(entry.mcp_endpoint().is_none());
+    }
+
+    // Python accepts both an empty path and `/` for the OpenCode endpoint.
+    #[test]
+    fn accepts_opencode_url_with_trailing_slash() {
+        let dir = TempDir::new("endpoint-slash");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101/",
+                "",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("trailing slash must load");
+        assert_eq!(
+            config
+                .project("proj")
+                .expect("project must exist")
+                .opencode_endpoint()
+                .port(),
+            4101
+        );
+    }
+
+    // Regression: WHATWG drops the default HTTP port, but the contract requires
+    // an explicit port, so `:80` must be accepted and preserved as 80.
+    #[test]
+    fn accepts_explicit_default_port_80() {
+        let dir = TempDir::new("endpoint-default-port");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:80",
+                "",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("explicit port 80 must load");
+        let endpoint = config
+            .project("proj")
+            .expect("project must exist")
+            .opencode_endpoint();
+        assert_eq!(endpoint.port(), 80);
+        assert_eq!(endpoint.url(), "http://127.0.0.1:80");
+    }
+
+    #[test]
+    fn accepts_explicit_default_port_80_for_mcp() {
+        let dir = TempDir::new("mcp-default-port");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:80/mcp\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("mcp explicit port 80 must load");
+        let mcp = config
+            .project("proj")
+            .expect("project must exist")
+            .mcp_endpoint()
+            .expect("mcp endpoint must be present");
+        assert_eq!(mcp.port(), 80);
+        assert_eq!(mcp.url(), "http://127.0.0.1:80/mcp");
+    }
+
+    // Regression: WHATWG canonicalizes non-standard IPv4 spellings to
+    // 127.0.0.1; the reference requires the exact raw host, so reject them.
+    #[test]
+    fn rejects_non_standard_ipv4_spellings() {
+        for url in [
+            "http://127.1:4101",
+            "http://0177.0.0.1:4101",
+            "http://0x7f000001:4101",
+        ] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url host must be exactly 127.0.0.1",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Regression: WHATWG folds dot segments to `/`; the reference compares the
+    // raw path, so disguised paths must be rejected.
+    #[test]
+    fn rejects_dot_segment_disguised_opencode_paths() {
+        for url in [
+            "http://127.0.0.1:4101/./",
+            "http://127.0.0.1:4101/a/..",
+            "http://127.0.0.1:4101/%2e%2e",
+        ] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url must not contain a path",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Regression: a disguised extra path before `/mcp` must not be folded away.
+    #[test]
+    fn rejects_dot_segment_disguised_mcp_paths() {
+        for mcp in [
+            "http://127.0.0.1:4201/./mcp",
+            "http://127.0.0.1:4201/a/../mcp",
+            "http://127.0.0.1:4201/%2e%2e/mcp",
+        ] {
+            let extra = format!("mcp_url = \"{mcp}\"\n");
+            let error = load_endpoint_config("proj", "http://127.0.0.1:4101", &extra);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "mcp: {mcp}");
+            assert_eq!(
+                error.to_string(),
+                "project mcp_url must not contain a path",
+                "mcp: {mcp}"
+            );
+        }
+    }
+
+    // Regression: malformed port text stays rejected and redacted.
+    #[test]
+    fn rejects_malformed_ports_without_leaking_input() {
+        for url in [
+            "http://127.0.0.1:abc",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:0",
+        ] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url port must be within 1..65535",
+                "url: {url}"
+            );
+            let rendered = format!("{error} {error:?}");
+            assert!(!rendered.contains("abc"), "leaked input: {rendered}");
+        }
+    }
+
+    #[test]
+    fn accepts_boundary_ports_one_and_65535() {
+        for port in ["1", "65535"] {
+            let dir = TempDir::new("endpoint-boundary");
+            let workspace = dir.mkdir("ws");
+            let url = format!("http://127.0.0.1:{port}");
+            let config_path = dir.write(
+                "projects.toml",
+                &project_toml_with("proj", workspace.to_str().expect("utf-8 path"), &url, ""),
+            );
+
+            let config = load_config(&config_path).expect("boundary port must load");
+            assert_eq!(
+                config
+                    .project("proj")
+                    .expect("project must exist")
+                    .opencode_endpoint()
+                    .port(),
+                port.parse::<u16>().expect("port must parse")
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-url-port-out-of-range` plus 0 and 65536.
+    #[test]
+    fn rejects_port_zero_and_out_of_range() {
+        for url in [
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:70000",
+        ] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url port must be within 1..65535",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-url-missing-port`.
+    #[test]
+    fn rejects_missing_port() {
+        let error = load_endpoint_config("proj", "http://127.0.0.1", "");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_url must include an explicit port"
+        );
+    }
+
+    // Corpus case `invalid-opencode-url-scheme`.
+    #[test]
+    fn rejects_non_http_scheme() {
+        let error = load_endpoint_config("proj", "https://127.0.0.1:4101", "");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_url must use the http scheme"
+        );
+    }
+
+    // Corpus case `invalid-opencode-url-non-loopback-host` plus other hosts.
+    #[test]
+    fn rejects_non_loopback_hosts() {
+        for url in [
+            "http://localhost:4101",
+            "http://0.0.0.0:4101",
+            "http://[::1]:4101",
+            "http://example.com:4101",
+            "http://127.0.0.2:4101",
+        ] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url host must be exactly 127.0.0.1",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-url-embedded-credentials`.
+    #[test]
+    fn rejects_embedded_credentials_without_leaking_them() {
+        let error = load_endpoint_config("proj", "http://user:pass@127.0.0.1:4101", "");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_url must not embed credentials"
+        );
+
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains("user"), "leaked username: {rendered}");
+        assert!(!rendered.contains("pass"), "leaked password: {rendered}");
+    }
+
+    // Corpus case `invalid-opencode-url-query-or-fragment`.
+    #[test]
+    fn rejects_query_and_fragment() {
+        for url in ["http://127.0.0.1:4101?x=1", "http://127.0.0.1:4101#frag"] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url must not contain a query or fragment",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-url-path`.
+    #[test]
+    fn rejects_path() {
+        for url in ["http://127.0.0.1:4101/api", "http://127.0.0.1:4101//"] {
+            let error = load_endpoint_config("proj", url, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "url: {url}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_url must not contain a path",
+                "url: {url}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-url-non-string`.
+    #[test]
+    fn rejects_non_string_opencode_url() {
+        let dir = TempDir::new("opencode-type");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &format!(
+                "[projects.proj]\nworkspace = \"{}\"\nopencode_url = 4101\npassword_file = \"secrets/proj.password\"\nmax_rounds = 1\n",
+                workspace.to_str().expect("utf-8 path")
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("non-string opencode_url must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project opencode_url must be a string");
+    }
+
+    #[test]
+    fn rejects_missing_opencode_url() {
+        let dir = TempDir::new("opencode-missing");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &format!(
+                "[projects.proj]\nworkspace = \"{}\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n",
+                workspace.to_str().expect("utf-8 path")
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("missing opencode_url must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project opencode_url is missing");
+    }
+
+    #[test]
+    fn malformed_opencode_url_keeps_parser_diagnostic_only_in_source() {
+        let error = load_endpoint_config("proj", "not a url", "");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project opencode_url is not a valid URL");
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains("not a url"),
+            "safe output leaked the input: {rendered}"
+        );
+        assert!(
+            error.source().is_some(),
+            "parser diagnostic must be retained as source"
+        );
+    }
+
+    // Corpus case `valid-mcp-url-and-token-pairing` (endpoint view only; the
+    // token pairing itself belongs to a later task).
+    #[test]
+    fn accepts_valid_mcp_url_and_exposes_typed_port() {
+        let dir = TempDir::new("mcp-valid");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:4201/mcp\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("valid mcp_url must load");
+        let mcp = config
+            .project("proj")
+            .expect("project must exist")
+            .mcp_endpoint()
+            .expect("mcp endpoint must be present");
+
+        assert_eq!(mcp.port(), 4201);
+        assert_eq!(mcp.base().port(), 4201);
+        assert_eq!(mcp.base().url(), "http://127.0.0.1:4201");
+        assert_eq!(mcp.url(), "http://127.0.0.1:4201/mcp");
+        assert_eq!(mcp.to_string(), "http://127.0.0.1:4201/mcp");
+    }
+
+    // Corpus case `invalid-mcp-url-must-end-with-mcp`.
+    #[test]
+    fn rejects_mcp_url_without_mcp_suffix() {
+        let error = load_endpoint_config(
+            "proj",
+            "http://127.0.0.1:4101",
+            "mcp_url = \"http://127.0.0.1:4201/other\"\n",
+        );
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project mcp_url must end with '/mcp'");
+    }
+
+    // Corpus case `invalid-mcp-url-non-loopback-host`.
+    #[test]
+    fn rejects_mcp_url_non_loopback_host() {
+        let error = load_endpoint_config(
+            "proj",
+            "http://127.0.0.1:4101",
+            "mcp_url = \"http://0.0.0.0:4201/mcp\"\n",
+        );
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project mcp_url host must be exactly 127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_url_wrong_type() {
+        let dir = TempDir::new("mcp-type");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = 4201\n",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("non-string mcp_url must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project mcp_url must be a string");
+    }
+
+    #[test]
+    fn rejects_mcp_url_empty() {
+        let error = load_endpoint_config("proj", "http://127.0.0.1:4101", "mcp_url = \"\"\n");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project mcp_url must end with '/mcp'");
+    }
+
+    #[test]
+    fn rejects_mcp_url_bad_parts() {
+        for (extra, expected) in [
+            (
+                "mcp_url = \"https://127.0.0.1:4201/mcp\"\n",
+                "project mcp_url must use the http scheme",
+            ),
+            (
+                "mcp_url = \"http://user:pass@127.0.0.1:4201/mcp\"\n",
+                "project mcp_url must not embed credentials",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1/mcp\"\n",
+                "project mcp_url must include an explicit port",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1:0/mcp\"\n",
+                "project mcp_url port must be within 1..65535",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1:70000/mcp\"\n",
+                "project mcp_url port must be within 1..65535",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1:4201/mcp?x=1\"\n",
+                "project mcp_url must end with '/mcp'",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1:4201/mcp#f\"\n",
+                "project mcp_url must end with '/mcp'",
+            ),
+            (
+                "mcp_url = \"http://127.0.0.1:4201/mcp/x\"\n",
+                "project mcp_url must end with '/mcp'",
+            ),
+        ] {
+            let error = load_endpoint_config("proj", "http://127.0.0.1:4101", extra);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "extra: {extra}");
+            assert_eq!(error.to_string(), expected, "extra: {extra}");
+        }
+    }
+
+    #[test]
+    fn preserves_raw_endpoint_values_for_later_tasks() {
+        let dir = TempDir::new("raw-endpoints");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101/",
+                "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.get(OPENCODE_URL_KEY).and_then(toml::Value::as_str),
+            Some("http://127.0.0.1:4101/")
+        );
+        assert_eq!(
+            entry.get(MCP_URL_KEY).and_then(toml::Value::as_str),
+            Some("http://127.0.0.1:4201/mcp")
+        );
+        assert!(entry.contains_key("mcp_token_file"));
+    }
+
+    #[test]
+    fn endpoint_errors_do_not_leak_url_project_workspace_or_config_path() {
+        const SECRET_URL: &str = "http://user:secret-pass@127.0.0.1:4101";
+        let dir = TempDir::new("endpoint-redact");
+        let workspace = dir.mkdir("secret-workspace");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                SECRET_URL,
+                "",
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("credentials must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(SECRET_URL), "leaked URL: {rendered}");
+        assert!(
+            !rendered.contains("secret-pass"),
+            "leaked password: {rendered}"
+        );
+        assert!(
+            !rendered.contains(workspace.to_str().expect("utf-8 path")),
+            "leaked workspace: {rendered}"
+        );
+        assert!(
+            !rendered.contains(config_path.to_str().expect("utf-8 path")),
+            "leaked config path: {rendered}"
+        );
     }
 }

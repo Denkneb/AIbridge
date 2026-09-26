@@ -17,6 +17,7 @@ bridge-domain = { path = "crates/bridge-domain" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+url = "2"
 uuid = "1"
 
 [workspace.lints.rust]

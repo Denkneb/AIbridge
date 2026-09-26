@@ -2,17 +2,27 @@
 //!
 //! The crate implements the structural loading stage (task 2.1), the
 //! project-id/workspace validation group (task 2.2), the endpoint/port
-//! validation group (task 2.3) and the cross-project uniqueness group
-//! (task 2.4). It reads a UTF-8 TOML file from an explicit path, requires a
-//! top-level `projects` table and, for every project entry, validates the
-//! project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the `workspace` to
-//! an existing directory and parses the required `opencode_url` and the
-//! optional `mcp_url` into typed loopback endpoints. Relative workspaces
-//! resolve against the directory that contains the specific `projects.toml`,
-//! never against the process working directory. After the individual projects
-//! pass, the loader rejects a canonical workspace, a server endpoint or an MCP
-//! token file that is reused, and an MCP token file that coincides with a
-//! password file.
+//! validation group (task 2.3), the cross-project uniqueness group (task 2.4),
+//! the max-rounds/model/optional-path group (task 2.5) and the
+//! auto-approve-permissions group (task 2.6). It reads a UTF-8 TOML file from an
+//! explicit path, requires a top-level `projects` table and, for every project
+//! entry, validates the project id against `^[a-z0-9][a-z0-9_-]{0,63}$`,
+//! resolves the `workspace` to an existing directory, parses the required
+//! `opencode_url` and the optional `mcp_url` into typed loopback endpoints,
+//! requires a positive integer `max_rounds`, parses the optional
+//! `opencode_model` and `opencode_env_file` and collects the optional
+//! `auto_approve_permissions`. Relative workspaces and relative
+//! `opencode_env_file` paths resolve against the directory that contains the
+//! specific `projects.toml`, never against the process working directory. After
+//! the individual projects pass, the loader rejects a canonical workspace, a
+//! server endpoint or an MCP token file that is reused, and an MCP token file
+//! that coincides with a password file.
+//!
+//! `auto_approve_permissions` is an optional TOML array of ordinary permission
+//! names. Every entry must be a non-empty string without surrounding whitespace,
+//! the reserved name `external_directory` is rejected in favour of
+//! `auto_approve_external_directories`, and duplicates collapse while preserving
+//! the first-seen order. An absent key yields an empty collection.
 //!
 //! Both URLs must be `http` URLs on the exact host `127.0.0.1` with an explicit
 //! decimal port in `1..=65535` and no path, query, fragment, username or
@@ -25,8 +35,8 @@
 //! removal, non-standard IPv4 canonicalization, dot-segment folding) cannot
 //! silently widen the contract.
 //!
-//! The remaining validation groups (max rounds, models, permissions,
-//! credentials readers and env files) are deliberately out of scope. The raw
+//! The remaining validation groups (trusted external directories, credential
+//! readers and the project env reader) are deliberately out of scope. The raw
 //! per-project table is preserved on [`ProjectEntry::values`] so those later
 //! tasks can inspect every key and value without re-parsing.
 //!
@@ -57,6 +67,21 @@ pub const OPENCODE_URL_KEY: &str = "opencode_url";
 
 /// The optional per-project key that names the MCP endpoint.
 pub const MCP_URL_KEY: &str = "mcp_url";
+
+/// The required per-project key that bounds the number of worker rounds.
+pub const MAX_ROUNDS_KEY: &str = "max_rounds";
+
+/// The optional per-project key that selects the OpenCode model.
+pub const OPENCODE_MODEL_KEY: &str = "opencode_model";
+
+/// The optional per-project key that names the OpenCode env file.
+pub const OPENCODE_ENV_FILE_KEY: &str = "opencode_env_file";
+
+/// The optional per-project key that lists ordinary permissions to auto-approve.
+pub const AUTO_APPROVE_PERMISSIONS_KEY: &str = "auto_approve_permissions";
+
+/// The reserved permission name that must go through the trusted-directory key.
+const EXTERNAL_DIRECTORY_PERMISSION: &str = "external_directory";
 
 /// The per-project key that names the OpenCode password file.
 const PASSWORD_FILE_KEY: &str = "password_file";
@@ -143,19 +168,52 @@ impl fmt::Display for McpEndpoint {
     }
 }
 
+/// A validated optional OpenCode model selector.
+///
+/// The raw `opencode_model` value must be `'<providerID>/<modelID>'` and is
+/// split on the **first** `/` only, so a model id may itself contain further
+/// slashes. The provider and model components are stored without surrounding
+/// whitespace and are never empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeModel {
+    provider: String,
+    model: String,
+}
+
+impl OpenCodeModel {
+    /// Returns the provider id before the first `/`.
+    #[must_use]
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    /// Returns the model id after the first `/`, which may contain `/` itself.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
+
 /// A validated project entry.
 ///
 /// The entry carries the typed, validated [`ProjectId`], the canonical,
-/// absolute workspace [`Path`] and the typed [`Endpoint`]/[`McpEndpoint`]
-/// values so consumers never have to repeat the task 2.2/2.3 validation or
-/// re-parse endpoint strings. The raw TOML table is preserved verbatim for the
-/// later validation groups (2.4–2.9), which inspect every key and value.
+/// absolute workspace [`Path`], the typed [`Endpoint`]/[`McpEndpoint`] values,
+/// the positive `max_rounds`, the optional [`OpenCodeModel`], the optional
+/// resolved `opencode_env_file` [`Path`] and the deduplicated
+/// `auto_approve_permissions` list, so consumers never have to repeat the
+/// task 2.2–2.6 validation or re-parse raw values. The raw TOML table is
+/// preserved verbatim for the later validation groups (2.7–2.9), which inspect
+/// every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
     id: ProjectId,
     workspace: PathBuf,
     opencode_endpoint: Endpoint,
     mcp_endpoint: Option<McpEndpoint>,
+    max_rounds: u64,
+    opencode_model: Option<OpenCodeModel>,
+    opencode_env_file: Option<PathBuf>,
+    auto_approve_permissions: Vec<String>,
     values: toml::Table,
 }
 
@@ -182,6 +240,37 @@ impl ProjectEntry {
     #[must_use]
     pub fn mcp_endpoint(&self) -> Option<&McpEndpoint> {
         self.mcp_endpoint.as_ref()
+    }
+
+    /// Returns the required positive `max_rounds`.
+    #[must_use]
+    pub fn max_rounds(&self) -> u64 {
+        self.max_rounds
+    }
+
+    /// Returns the validated optional OpenCode model.
+    #[must_use]
+    pub fn opencode_model(&self) -> Option<&OpenCodeModel> {
+        self.opencode_model.as_ref()
+    }
+
+    /// Returns the optional resolved `opencode_env_file` path.
+    ///
+    /// A relative configured path is resolved against the directory that
+    /// contains `projects.toml`; an absolute path is preserved verbatim.
+    #[must_use]
+    pub fn opencode_env_file(&self) -> Option<&Path> {
+        self.opencode_env_file.as_deref()
+    }
+
+    /// Returns the auto-approved ordinary permission names.
+    ///
+    /// The slice is empty when the key is absent. Duplicate names are collapsed
+    /// while preserving the order of their first occurrence, and the reserved
+    /// `external_directory` name never appears.
+    #[must_use]
+    pub fn auto_approve_permissions(&self) -> &[String] {
+        &self.auto_approve_permissions
     }
 
     /// Returns the raw project table.
@@ -278,10 +367,16 @@ impl fmt::Debug for Config {
 ///   `^[a-z0-9][a-z0-9_-]{0,63}$`, when a workspace is missing, is not a
 ///   string, is empty or is not a directory, when `opencode_url`/`mcp_url`
 ///   are missing, have the wrong type or are not a loopback `http` endpoint
-///   with an explicit port in `1..=65535` and the required path, when an MCP
-///   token file is not a non-empty string, or when a canonical workspace, a
-///   server endpoint or an MCP token file is reused across projects or an MCP
-///   token file equals a password file.
+///   with an explicit port in `1..=65535` and the required path, when
+///   `max_rounds` is missing, is not a TOML integer or is not positive, when
+///   `opencode_model` is not a string, is not `'<providerID>/<modelID>'` or has
+///   surrounding whitespace around the value or a component, when
+///   `opencode_env_file` is not a non-empty string, when
+///   `auto_approve_permissions` is not a TOML array of non-empty strings without
+///   surrounding whitespace or contains the reserved `external_directory` name,
+///   when an MCP token file is not a non-empty string, or when a canonical
+///   workspace, a server endpoint or an MCP token file is reused across projects
+///   or an MCP token file equals a password file.
 ///
 /// None of these errors renders the file contents, credential values, project
 /// ids, workspace paths, URL inputs or the absolute input path.
@@ -325,8 +420,8 @@ fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
 
 /// Validates the raw project tables and builds the public [`Config`].
 ///
-/// Each project is validated independently first (tasks 2.2/2.3). Only then are
-/// the cross-project uniqueness rules of task 2.4 applied: a canonical
+/// Each project is validated independently first (tasks 2.2/2.3/2.5/2.6). Only
+/// then are the cross-project uniqueness rules of task 2.4 applied: a canonical
 /// workspace may not be bound to two projects, a server endpoint may not be
 /// reused (neither between two projects nor by the OpenCode and MCP endpoints
 /// of the same project, because both use the loopback host and are compared by
@@ -336,8 +431,11 @@ fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
 /// The credential paths are resolved like the reference implementation: an
 /// absolute path is used as-is and a relative path is joined onto `config_dir`.
 /// The file itself is not required to exist and its contents are never read;
-/// only the normalized path is compared. Errors are static and never render a
-/// project id, workspace, URL, credential path or config path.
+/// only the normalized path is compared. The optional `opencode_env_file` is
+/// resolved the same lexical way (absolute preserved, relative joined onto
+/// `config_dir`) but is not read. Errors are static and never render a project
+/// id, workspace, URL, credential path, model value, permission value or config
+/// path.
 fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> Result<Config> {
     let mut projects = BTreeMap::new();
     let mut workspaces: BTreeSet<PathBuf> = BTreeSet::new();
@@ -364,6 +462,11 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
             return Err(duplicate_endpoint_error());
         }
 
+        let max_rounds = validate_max_rounds(&values)?;
+        let opencode_model = validate_opencode_model(&values)?;
+        let opencode_env_file = validate_opencode_env_file(&values, config_dir)?;
+        let auto_approve_permissions = validate_auto_approve_permissions(&values)?;
+
         let password = resolve_password_file(&values, config_dir)?;
         let token = resolve_mcp_token_file(&values, config_dir)?;
         credentials.push((password, token));
@@ -375,6 +478,10 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 workspace,
                 opencode_endpoint,
                 mcp_endpoint,
+                max_rounds,
+                opencode_model,
+                opencode_env_file,
+                auto_approve_permissions,
                 values,
             },
         );
@@ -896,6 +1003,161 @@ fn validate_mcp_url(values: &toml::Table) -> Result<Option<McpEndpoint>> {
     Ok(Some(McpEndpoint { base }))
 }
 
+/// Validates the required positive integer `max_rounds`.
+///
+/// The value must be present and a TOML integer. TOML booleans and all
+/// non-integer values (strings, floats, arrays, tables) are rejected because
+/// [`toml::Value::as_integer`] only succeeds for an integer. The integer must be
+/// positive; zero and negatives are rejected. The conversion to [`u64`] is
+/// fallible and uses [`u64::try_from`] so an unexpected negative or oversized
+/// value can never wrap into a valid count. The error messages are static and
+/// never contain the supplied value.
+fn validate_max_rounds(values: &toml::Table) -> Result<u64> {
+    let value = values
+        .get(MAX_ROUNDS_KEY)
+        .ok_or_else(|| DomainError::invalid_input("project max_rounds is missing"))?;
+    let raw = value.as_integer().ok_or_else(|| {
+        DomainError::invalid_input("project max_rounds must be a positive integer")
+    })?;
+    let rounds = u64::try_from(raw)
+        .map_err(|_| DomainError::invalid_input("project max_rounds must be a positive integer"))?;
+    if rounds == 0 {
+        return Err(DomainError::invalid_input(
+            "project max_rounds must be a positive integer",
+        ));
+    }
+    Ok(rounds)
+}
+
+/// Parses the optional `opencode_model` into a typed [`OpenCodeModel`].
+///
+/// The key is optional; when absent the entry keeps no model and the bridge
+/// sends no model field. When present the value must be a string, must not have
+/// surrounding whitespace, must be `'<providerID>/<modelID>'` split on the
+/// first `/` only, and neither component may be empty or carry surrounding
+/// whitespace. The error messages are static and never contain the supplied
+/// value.
+fn validate_opencode_model(values: &toml::Table) -> Result<Option<OpenCodeModel>> {
+    let Some(value) = values.get(OPENCODE_MODEL_KEY) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project opencode_model must be a string"))?;
+    parse_opencode_model(raw).map(Some)
+}
+
+/// Splits and validates a raw `'<providerID>/<modelID>'` model selector.
+///
+/// Mirrors the reference implementation: the whole value and each component
+/// must be free of surrounding whitespace, and a missing separator or an empty
+/// provider/model is rejected. Only the first `/` separates the components, so
+/// a model id may itself contain `/`.
+fn parse_opencode_model(raw: &str) -> Result<OpenCodeModel> {
+    if raw.trim() != raw {
+        return Err(DomainError::invalid_input(
+            "project opencode_model must not have surrounding whitespace",
+        ));
+    }
+    let Some((provider, model)) = raw.split_once('/') else {
+        return Err(DomainError::invalid_input(
+            "project opencode_model must be '<providerID>/<modelID>'",
+        ));
+    };
+    if provider.is_empty() || model.is_empty() {
+        return Err(DomainError::invalid_input(
+            "project opencode_model must be '<providerID>/<modelID>'",
+        ));
+    }
+    if provider.trim() != provider || model.trim() != model {
+        return Err(DomainError::invalid_input(
+            "project opencode_model components must not have surrounding whitespace",
+        ));
+    }
+    Ok(OpenCodeModel {
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+    })
+}
+
+/// Validates and resolves the optional `opencode_env_file` into a path.
+///
+/// The key is optional; when present the value must be a non-empty string. An
+/// absolute path is preserved verbatim and a relative path is joined onto
+/// `config_dir`, the directory that contains the specific `projects.toml`. The
+/// path is resolved lexically (it is not required to exist, its contents are
+/// never read and no symlink resolution is performed), matching the documented
+/// contract. The error message is static and never contains the supplied value.
+fn validate_opencode_env_file(values: &toml::Table, config_dir: &Path) -> Result<Option<PathBuf>> {
+    let Some(value) = values.get(OPENCODE_ENV_FILE_KEY) else {
+        return Ok(None);
+    };
+    let raw = value.as_str().ok_or_else(|| {
+        DomainError::invalid_input("project opencode_env_file must be a non-empty string")
+    })?;
+    if raw.is_empty() {
+        return Err(DomainError::invalid_input(
+            "project opencode_env_file must be a non-empty string",
+        ));
+    }
+
+    let candidate = Path::new(raw);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        config_dir.join(candidate)
+    };
+    Ok(Some(resolved))
+}
+
+/// Validates the optional `auto_approve_permissions` TOML array.
+///
+/// The key is optional; when absent the project auto-approves no ordinary
+/// permissions and an empty list is returned. When present the value must be a
+/// TOML array, and every entry must be a string that is neither empty nor
+/// whitespace-only and carries no surrounding whitespace. The reserved
+/// `external_directory` name is rejected because it is controlled solely by
+/// `auto_approve_external_directories`, so a plain permission name can never
+/// bypass the trusted-root check. Duplicates collapse while preserving the order
+/// of their first occurrence. All error messages are static and never contain a
+/// project id, a supplied permission value, config contents or a path.
+fn validate_auto_approve_permissions(values: &toml::Table) -> Result<Vec<String>> {
+    let Some(value) = values.get(AUTO_APPROVE_PERMISSIONS_KEY) else {
+        return Ok(Vec::new());
+    };
+    let array = value.as_array().ok_or_else(|| {
+        DomainError::invalid_input("project auto_approve_permissions must be a list of strings")
+    })?;
+
+    let mut permissions: Vec<String> = Vec::new();
+    for item in array {
+        let raw = item.as_str().ok_or_else(|| {
+            DomainError::invalid_input(
+                "project auto_approve_permissions entries must be non-empty strings",
+            )
+        })?;
+        if raw.trim().is_empty() {
+            return Err(DomainError::invalid_input(
+                "project auto_approve_permissions entries must be non-empty strings",
+            ));
+        }
+        if raw.trim() != raw {
+            return Err(DomainError::invalid_input(
+                "project auto_approve_permissions entries must not have surrounding whitespace",
+            ));
+        }
+        if raw == EXTERNAL_DIRECTORY_PERMISSION {
+            return Err(DomainError::invalid_input(
+                "project external_directory is not accepted in auto_approve_permissions; use auto_approve_external_directories instead",
+            ));
+        }
+        if !permissions.iter().any(|existing| existing == raw) {
+            permissions.push(raw.to_owned());
+        }
+    }
+    Ok(permissions)
+}
+
 /// Maps an I/O failure to a safe, typed [`DomainError`].
 ///
 /// The original [`std::io::Error`] is kept only as the error source, so its
@@ -952,7 +1214,8 @@ fn credential_path_error(source: std::io::Error) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, MCP_URL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE, WORKSPACE_KEY, load_config,
+        AUTO_APPROVE_PERMISSIONS_KEY, Config, MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY,
+        OPENCODE_MODEL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE, WORKSPACE_KEY, load_config,
         parse_projects,
     };
     use bridge_domain::{DomainError, ErrorKind, ProjectId};
@@ -1499,7 +1762,7 @@ mod tests {
         let dir = TempDir::new("debug");
         let workspace = dir.mkdir("workspace-dir");
         let text = format!(
-            "[projects.proj]\nworkspace = \"{}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"{SECRET}\"\n",
+            "[projects.proj]\nworkspace = \"{}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"{SECRET}\"\nmax_rounds = 3\n",
             workspace.to_str().expect("utf-8 path")
         );
         let config_path = dir.write("projects.toml", &text);
@@ -2529,5 +2792,545 @@ mod tests {
             !rendered.contains(config_path.to_str().expect("utf-8 path")),
             "leaked config path: {rendered}"
         );
+    }
+
+    /// Builds a project table with an explicit `max_rounds` literal and extras.
+    fn project_toml_max(id: &str, workspace: &str, max_rounds: &str, extra: &str) -> String {
+        format!(
+            "[projects.\"{id}\"]\nworkspace = \"{workspace}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = {max_rounds}\n{extra}"
+        )
+    }
+
+    /// Loads a one-project config with the given `max_rounds` literal and extras.
+    fn load_max_rounds_config(max_rounds: &str, extra: &str) -> DomainError {
+        let dir = TempDir::new("max-rounds-error");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_max(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                max_rounds,
+                extra,
+            ),
+        );
+        load_config(&config_path).expect_err("config must be rejected")
+    }
+
+    /// Loads a one-project config with the given `opencode_model` literal.
+    fn load_model_config(model: &str) -> DomainError {
+        let extra = format!("opencode_model = {model}\n");
+        let dir = TempDir::new("model-error");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+        load_config(&config_path).expect_err("config must be rejected")
+    }
+
+    // Corpus case `valid-minimal-project` (typed max_rounds/model/env view).
+    #[test]
+    fn exposes_typed_max_rounds_and_absent_optionals() {
+        let dir = TempDir::new("typed-minimal");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("valid project must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(entry.max_rounds(), 3);
+        assert!(entry.opencode_model().is_none());
+        assert!(entry.opencode_env_file().is_none());
+    }
+
+    #[test]
+    fn accepts_max_rounds_boundary_values() {
+        for rounds in ["1", "9223372036854775807"] {
+            let dir = TempDir::new("max-rounds-boundary");
+            let workspace = dir.mkdir("ws");
+            let config_path = dir.write(
+                "projects.toml",
+                &project_toml_max("proj", workspace.to_str().expect("utf-8 path"), rounds, ""),
+            );
+
+            let config = load_config(&config_path).expect("positive max_rounds must load");
+            assert_eq!(
+                config
+                    .project("proj")
+                    .expect("project must exist")
+                    .max_rounds(),
+                rounds.parse::<u64>().expect("rounds must parse")
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_max_rounds() {
+        let dir = TempDir::new("max-rounds-missing");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &format!(
+                "[projects.proj]\nworkspace = \"{}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\n",
+                workspace.to_str().expect("utf-8 path")
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("missing max_rounds must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project max_rounds is missing");
+    }
+
+    // Corpus case `invalid-max-rounds-non-integer`: strings, booleans, floats,
+    // arrays and tables are all rejected as non-integers.
+    #[test]
+    fn rejects_non_integer_max_rounds() {
+        for literal in ["\"3\"", "true", "false", "3.5", "3.0", "[1]", "{ x = 1 }"] {
+            let error = load_max_rounds_config(literal, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project max_rounds must be a positive integer",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-max-rounds-not-positive` plus the negative boundary.
+    #[test]
+    fn rejects_non_positive_max_rounds() {
+        for literal in ["0", "-1", "-9223372036854775808"] {
+            let error = load_max_rounds_config(literal, "");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project max_rounds must be a positive integer",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    // Corpus case `valid-opencode-model-splits-on-first-slash`.
+    #[test]
+    fn accepts_opencode_model_and_splits_on_first_slash() {
+        let dir = TempDir::new("model-first-slash");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "opencode_model = \"opencode/grok-code/1.0\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("valid model must load");
+        let model = config
+            .project("proj")
+            .expect("project must exist")
+            .opencode_model()
+            .expect("model must be present");
+
+        assert_eq!(model.provider(), "opencode");
+        assert_eq!(model.model(), "grok-code/1.0");
+    }
+
+    #[test]
+    fn accepts_simple_opencode_model() {
+        let dir = TempDir::new("model-simple");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "opencode_model = \"anthropic/claude-sonnet\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("valid model must load");
+        let model = config
+            .project("proj")
+            .expect("project must exist")
+            .opencode_model()
+            .expect("model must be present");
+
+        assert_eq!(model.provider(), "anthropic");
+        assert_eq!(model.model(), "claude-sonnet");
+    }
+
+    // Corpus case `invalid-opencode-model-non-string`.
+    #[test]
+    fn rejects_non_string_opencode_model() {
+        let error = load_model_config("3");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project opencode_model must be a string");
+    }
+
+    // Corpus case `invalid-opencode-model-missing-separator`.
+    #[test]
+    fn rejects_opencode_model_missing_separator() {
+        let error = load_model_config("\"noslash\"");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_model must be '<providerID>/<modelID>'"
+        );
+    }
+
+    #[test]
+    fn rejects_opencode_model_empty_components() {
+        for raw in ["/b", "a/", "/", "//"] {
+            let error = load_model_config(&format!("\"{raw}\""));
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "raw: {raw}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_model must be '<providerID>/<modelID>'",
+                "raw: {raw}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-opencode-model-surrounding-whitespace`.
+    #[test]
+    fn rejects_opencode_model_surrounding_whitespace() {
+        for raw in [" a/b", "a/b ", " a/b ", " /b", "a/ "] {
+            let error = load_model_config(&format!("\"{raw}\""));
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "raw: {raw}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_model must not have surrounding whitespace",
+                "raw: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_opencode_model_component_whitespace() {
+        for raw in ["a /b", "a/ b"] {
+            let error = load_model_config(&format!("\"{raw}\""));
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "raw: {raw}");
+            assert_eq!(
+                error.to_string(),
+                "project opencode_model components must not have surrounding whitespace",
+                "raw: {raw}"
+            );
+        }
+    }
+
+    // Corpus case `valid-opencode-env-file-relative`.
+    #[test]
+    fn resolves_relative_opencode_env_file_against_config_dir() {
+        let dir = TempDir::new("env-relative");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "opencode_env_file = \"secrets/proj.env\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("relative env file must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.opencode_env_file(),
+            Some(dir.path().join("secrets/proj.env").as_path())
+        );
+        assert!(entry.opencode_env_file().expect("path").is_absolute());
+    }
+
+    // Corpus case `valid-opencode-env-file-absolute`.
+    #[test]
+    fn preserves_absolute_opencode_env_file_verbatim() {
+        let dir = TempDir::new("env-absolute");
+        let workspace = dir.mkdir("ws");
+        let env_file = dir.path().join("absolute.env");
+        let extra = format!(
+            "opencode_env_file = \"{}\"\n",
+            env_file.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("absolute env file must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(entry.opencode_env_file(), Some(env_file.as_path()));
+    }
+
+    // Corpus case `invalid-opencode-env-file-non-string`.
+    #[test]
+    fn rejects_non_string_opencode_env_file() {
+        let error =
+            load_endpoint_config("proj", "http://127.0.0.1:4101", "opencode_env_file = 3\n");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_env_file must be a non-empty string"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_opencode_env_file() {
+        let error = load_endpoint_config(
+            "proj",
+            "http://127.0.0.1:4101",
+            "opencode_env_file = \"\"\n",
+        );
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project opencode_env_file must be a non-empty string"
+        );
+    }
+
+    #[test]
+    fn max_rounds_model_and_env_errors_do_not_leak_supplied_values() {
+        const SECRET_ROUNDS: &str = "secret-rounds-value";
+        const SECRET_MODEL: &str = "secret-provider/secret-model";
+
+        let rounds_error = load_max_rounds_config(&format!("\"{SECRET_ROUNDS}\""), "");
+        let rendered = format!("{rounds_error} {rounds_error:?}");
+        assert!(
+            !rendered.contains(SECRET_ROUNDS),
+            "leaked max_rounds: {rendered}"
+        );
+
+        let model_error = load_model_config(&format!("\"{SECRET_MODEL} \""));
+        let rendered = format!("{model_error} {model_error:?}");
+        assert!(
+            !rendered.contains("secret-provider"),
+            "leaked model: {rendered}"
+        );
+        assert!(
+            !rendered.contains("secret-model"),
+            "leaked model: {rendered}"
+        );
+    }
+
+    #[test]
+    fn project_entry_debug_does_not_render_typed_values_or_paths() {
+        const SECRET_MODEL: &str = "secret-provider/secret-model";
+        let dir = TempDir::new("debug-typed");
+        let workspace = dir.mkdir("ws");
+        let env_file = dir.path().join("secret-env.env");
+        let extra = format!(
+            "opencode_model = \"{SECRET_MODEL}\"\nopencode_env_file = \"{}\"\n",
+            env_file.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+        let debug = format!("{entry:?}");
+
+        assert!(!debug.contains(SECRET_MODEL), "Debug leaked model: {debug}");
+        assert!(
+            !debug.contains("secret-env.env"),
+            "Debug leaked env path: {debug}"
+        );
+        assert!(debug.contains(MAX_ROUNDS_KEY));
+        assert!(debug.contains(OPENCODE_MODEL_KEY));
+        assert!(debug.contains(OPENCODE_ENV_FILE_KEY));
+    }
+
+    #[test]
+    fn crate_constant_names_the_auto_approve_permissions_key() {
+        assert_eq!(AUTO_APPROVE_PERMISSIONS_KEY, "auto_approve_permissions");
+    }
+
+    /// Loads a one-project config with the given `auto_approve_permissions`
+    /// literal, returning the validation error and panicking if it loads.
+    fn load_auto_approve_config(literal: &str) -> DomainError {
+        let extra = format!("auto_approve_permissions = {literal}\n");
+        load_endpoint_config("proj", "http://127.0.0.1:4101", &extra)
+    }
+
+    /// Loads a one-project config with the given `auto_approve_permissions`
+    /// literal and returns the typed, validated permission names.
+    fn load_auto_approve_permissions(literal: &str) -> Vec<String> {
+        let dir = TempDir::new("auto-approve");
+        let workspace = dir.mkdir("ws");
+        let extra = format!("auto_approve_permissions = {literal}\n");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+        let config = load_config(&config_path).expect("valid permissions must load");
+        config
+            .project("proj")
+            .expect("project must exist")
+            .auto_approve_permissions()
+            .to_vec()
+    }
+
+    // Corpus case `valid-minimal-project`: the optional key defaults to empty.
+    #[test]
+    fn auto_approve_permissions_default_to_empty() {
+        let dir = TempDir::new("auto-approve-default");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("minimal config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert!(entry.auto_approve_permissions().is_empty());
+    }
+
+    #[test]
+    fn parses_auto_approve_permissions_in_order() {
+        let permissions = load_auto_approve_permissions("[\"bash\", \"edit\", \"webfetch\"]");
+        assert_eq!(permissions, ["bash", "edit", "webfetch"]);
+    }
+
+    // Corpus case `valid-auto-approve-permissions-deduplicated`.
+    #[test]
+    fn collapses_duplicate_auto_approve_permissions_stably() {
+        let permissions = load_auto_approve_permissions("[\"bash\", \"bash\", \"edit\"]");
+        assert_eq!(permissions, ["bash", "edit"]);
+    }
+
+    #[test]
+    fn preserves_first_seen_order_across_duplicates() {
+        let permissions = load_auto_approve_permissions("[\"edit\", \"bash\", \"edit\", \"bash\"]");
+        assert_eq!(permissions, ["edit", "bash"]);
+    }
+
+    #[test]
+    fn accepts_empty_auto_approve_permissions_array() {
+        let permissions = load_auto_approve_permissions("[]");
+        assert!(permissions.is_empty());
+    }
+
+    // Corpus case `invalid-auto-approve-permissions-non-list`.
+    #[test]
+    fn rejects_non_array_auto_approve_permissions() {
+        for literal in ["\"bash\"", "3", "true", "3.5", "{ x = 1 }"] {
+            let error = load_auto_approve_config(literal);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_permissions must be a list of strings",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_string_auto_approve_permission_entries() {
+        for literal in ["[1]", "[\"bash\", 2]", "[true]", "[[\"bash\"]]"] {
+            let error = load_auto_approve_config(literal);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_permissions entries must be non-empty strings",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-auto-approve-permissions-empty-entry`.
+    #[test]
+    fn rejects_empty_or_whitespace_only_auto_approve_permission_entries() {
+        for literal in ["[\"\"]", "[\"   \"]", "[\"bash\", \"\\t\"]", "[\"\\n\"]"] {
+            let error = load_auto_approve_config(literal);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_permissions entries must be non-empty strings",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_auto_approve_permission_entries_with_surrounding_whitespace() {
+        for literal in [
+            "[\" bash\"]",
+            "[\"bash \"]",
+            "[\" bash \"]",
+            "[\"bash\", \" edit\"]",
+        ] {
+            let error = load_auto_approve_config(literal);
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_permissions entries must not have surrounding whitespace",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-auto-approve-permissions-external-directory`.
+    #[test]
+    fn rejects_external_directory_permission_with_guidance() {
+        let error = load_auto_approve_config("[\"external_directory\"]");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project external_directory is not accepted in auto_approve_permissions; use auto_approve_external_directories instead"
+        );
+    }
+
+    #[test]
+    fn external_directory_rejection_precedes_deduplication() {
+        let error = load_auto_approve_config("[\"bash\", \"external_directory\"]");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project external_directory is not accepted in auto_approve_permissions; use auto_approve_external_directories instead"
+        );
+    }
+
+    #[test]
+    fn auto_approve_permission_errors_do_not_leak_supplied_values() {
+        const SECRET: &str = "secret-permission-value";
+
+        let entry_error = load_auto_approve_config(&format!("[\"{SECRET} \"]"));
+        let rendered = format!("{entry_error} {entry_error:?}");
+        assert!(!rendered.contains(SECRET), "leaked permission: {rendered}");
+
+        let type_error = load_auto_approve_config(&format!("\"{SECRET}\""));
+        let rendered = format!("{type_error} {type_error:?}");
+        assert!(!rendered.contains(SECRET), "leaked permission: {rendered}");
     }
 }

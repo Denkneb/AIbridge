@@ -1,0 +1,745 @@
+{
+  "databases": {
+    "active-v6.sqlite": {
+      "events": [
+        {
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "kind": "created",
+          "message": "task created (implement)",
+          "round_number": 1,
+          "task_id": "task-1"
+        }
+      ],
+      "meta": {
+        "schema_version": "6"
+      },
+      "rounds": [
+        {
+          "attempted": true,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "error_code": null,
+          "findings": null,
+          "kind": "implement",
+          "outbound_message_id": "msg-1",
+          "payload_hash": "hash-req-1",
+          "project_id": "proj",
+          "request_id": "req-1",
+          "response": null,
+          "response_message_id": null,
+          "result_json": null,
+          "round_number": 1,
+          "session_id": "ses-1",
+          "status": "observing",
+          "task_id": "task-1",
+          "updated_at": "2026-01-01T00:00:01.000+00:00",
+          "verifier_json": null,
+          "verifier_state": null,
+          "worker_deadline_at": "2026-01-01T00:15:01.000+00:00",
+          "worker_started_at": "2026-01-01T00:00:01.000+00:00"
+        }
+      ],
+      "tasks": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "base_head": "1111111111111111111111111111111111111111",
+          "close_reason": null,
+          "close_requested_at": null,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "project_id": "proj",
+          "revision_count": 0,
+          "session_id": "ses-1",
+          "snapshot": {
+            "allow_commit": false,
+            "allow_dirty": false,
+            "dirty_paths": [],
+            "external_repositories": [],
+            "head": "1111111111111111111111111111111111111111",
+            "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+            "manifest": {
+              "module.py": "5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "status": ""
+          },
+          "status": "implementing",
+          "task": "Implement the fixture change",
+          "task_id": "task-1",
+          "test_commands": [
+            "pytest -q"
+          ],
+          "updated_at": "2026-01-01T00:00:01.000+00:00",
+          "workspace": "/fixture/workspace"
+        }
+      ],
+      "user_version": 6
+    },
+    "awaiting-review-v6.sqlite": {
+      "events": [
+        {
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "kind": "created",
+          "message": "task created (implement)",
+          "round_number": 1,
+          "task_id": "task-1"
+        },
+        {
+          "created_at": "2026-01-01T00:00:03.000+00:00",
+          "kind": "complete",
+          "message": "round finished: complete",
+          "round_number": 1,
+          "task_id": "task-1"
+        }
+      ],
+      "meta": {
+        "schema_version": "6"
+      },
+      "rounds": [
+        {
+          "attempted": true,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "error_code": null,
+          "findings": null,
+          "kind": "implement",
+          "outbound_message_id": "msg-1",
+          "payload_hash": "hash-req-1",
+          "project_id": "proj",
+          "request_id": "req-1",
+          "response": "Implemented the change.",
+          "response_message_id": "msg-2",
+          "result_json": {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "1111111111111111111111111111111111111111",
+            "head_before": "1111111111111111111111111111111111111111",
+            "model": {
+              "model_id": "claude-sonnet-4-20250514",
+              "provider_id": "anthropic"
+            },
+            "repositories": [
+              {
+                "baseline_dirty_paths": [],
+                "changed_paths": [
+                  "module.py"
+                ],
+                "committed_paths": [],
+                "git_policy_violations": [],
+                "head_after": "1111111111111111111111111111111111111111",
+                "head_before": "1111111111111111111111111111111111111111",
+                "root": "/fixture/workspace",
+                "scope_violations": []
+              }
+            ],
+            "scope_violations": [],
+            "task_changed_paths": [
+              "module.py"
+            ],
+            "usage": {
+              "cache_read": 0,
+              "cache_write": 0,
+              "cost": 0,
+              "input": 120,
+              "output": 30,
+              "reasoning": 0
+            }
+          },
+          "round_number": 1,
+          "session_id": "ses-1",
+          "status": "complete",
+          "task_id": "task-1",
+          "updated_at": "2026-01-01T00:00:03.000+00:00",
+          "verifier_json": {
+            "after": {
+              "head": "1111111111111111111111111111111111111111",
+              "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+              "worktree_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            "before": {
+              "head": "1111111111111111111111111111111111111111",
+              "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+              "worktree_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            "commands": [
+              {
+                "command": "pytest -q",
+                "duration": 1.234,
+                "exit_code": 0
+              }
+            ],
+            "log": "verification/task-1/round_1",
+            "status": "passed"
+          },
+          "verifier_state": "done",
+          "worker_deadline_at": "2026-01-01T00:15:01.000+00:00",
+          "worker_started_at": "2026-01-01T00:00:01.000+00:00"
+        }
+      ],
+      "tasks": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "base_head": "1111111111111111111111111111111111111111",
+          "close_reason": null,
+          "close_requested_at": null,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "project_id": "proj",
+          "revision_count": 0,
+          "session_id": "ses-1",
+          "snapshot": {
+            "allow_commit": false,
+            "allow_dirty": false,
+            "dirty_paths": [],
+            "external_repositories": [],
+            "head": "1111111111111111111111111111111111111111",
+            "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+            "manifest": {
+              "module.py": "5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "status": ""
+          },
+          "status": "awaiting_review",
+          "task": "Implement the fixture change",
+          "task_id": "task-1",
+          "test_commands": [
+            "pytest -q"
+          ],
+          "updated_at": "2026-01-01T00:00:03.000+00:00",
+          "workspace": "/fixture/workspace"
+        }
+      ],
+      "user_version": 6
+    },
+    "empty-v6.sqlite": {
+      "events": [],
+      "meta": {
+        "schema_version": "6"
+      },
+      "rounds": [],
+      "tasks": [],
+      "user_version": 6
+    },
+    "terminal-v6.sqlite": {
+      "events": [
+        {
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "kind": "created",
+          "message": "task created (implement)",
+          "round_number": 1,
+          "task_id": "task-1"
+        },
+        {
+          "created_at": "2026-01-01T00:00:02.000+00:00",
+          "kind": "complete",
+          "message": "round finished: complete",
+          "round_number": 1,
+          "task_id": "task-1"
+        },
+        {
+          "created_at": "2026-01-01T00:00:03.000+00:00",
+          "kind": "accepted",
+          "message": "task accepted by Codex",
+          "round_number": null,
+          "task_id": "task-1"
+        },
+        {
+          "created_at": "2026-01-01T00:00:02.000+00:00",
+          "kind": "created",
+          "message": "task created (implement)",
+          "round_number": 1,
+          "task_id": "task-2"
+        },
+        {
+          "created_at": "2026-01-01T00:00:04.000+00:00",
+          "kind": "complete",
+          "message": "round finished: complete",
+          "round_number": 1,
+          "task_id": "task-2"
+        },
+        {
+          "created_at": "2026-01-01T00:00:05.000+00:00",
+          "kind": "closed",
+          "message": "task closed: fixture cleanup",
+          "round_number": null,
+          "task_id": "task-2"
+        }
+      ],
+      "meta": {
+        "schema_version": "6"
+      },
+      "rounds": [
+        {
+          "attempted": true,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "error_code": null,
+          "findings": null,
+          "kind": "implement",
+          "outbound_message_id": "msg-1",
+          "payload_hash": "hash-req-1",
+          "project_id": "proj",
+          "request_id": "req-1",
+          "response": "Implemented the change.",
+          "response_message_id": "msg-2",
+          "result_json": {
+            "changed_paths": [],
+            "head_after": "1111111111111111111111111111111111111111",
+            "head_before": "1111111111111111111111111111111111111111"
+          },
+          "round_number": 1,
+          "session_id": "ses-1",
+          "status": "complete",
+          "task_id": "task-1",
+          "updated_at": "2026-01-01T00:00:02.000+00:00",
+          "verifier_json": null,
+          "verifier_state": null,
+          "worker_deadline_at": null,
+          "worker_started_at": null
+        },
+        {
+          "attempted": true,
+          "created_at": "2026-01-01T00:00:02.000+00:00",
+          "error_code": null,
+          "findings": null,
+          "kind": "implement",
+          "outbound_message_id": "msg-3",
+          "payload_hash": "hash-req-2",
+          "project_id": "proj",
+          "request_id": "req-2",
+          "response": "Implemented the second change.",
+          "response_message_id": "msg-4",
+          "result_json": {
+            "changed_paths": [],
+            "head_after": "1111111111111111111111111111111111111111",
+            "head_before": "1111111111111111111111111111111111111111"
+          },
+          "round_number": 1,
+          "session_id": "ses-2",
+          "status": "complete",
+          "task_id": "task-2",
+          "updated_at": "2026-01-01T00:00:04.000+00:00",
+          "verifier_json": null,
+          "verifier_state": null,
+          "worker_deadline_at": null,
+          "worker_started_at": null
+        }
+      ],
+      "tasks": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "base_head": "1111111111111111111111111111111111111111",
+          "close_reason": null,
+          "close_requested_at": null,
+          "created_at": "2026-01-01T00:00:00.000+00:00",
+          "project_id": "proj",
+          "revision_count": 0,
+          "session_id": "ses-1",
+          "snapshot": {
+            "allow_commit": false,
+            "allow_dirty": false,
+            "dirty_paths": [],
+            "external_repositories": [],
+            "head": "1111111111111111111111111111111111111111",
+            "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+            "manifest": {
+              "module.py": "5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "status": ""
+          },
+          "status": "accepted",
+          "task": "Implement the fixture change",
+          "task_id": "task-1",
+          "test_commands": [],
+          "updated_at": "2026-01-01T00:00:03.000+00:00",
+          "workspace": "/fixture/workspace"
+        },
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "base_head": "1111111111111111111111111111111111111111",
+          "close_reason": null,
+          "close_requested_at": null,
+          "created_at": "2026-01-01T00:00:02.000+00:00",
+          "project_id": "proj",
+          "revision_count": 0,
+          "session_id": "ses-2",
+          "snapshot": {
+            "allow_commit": false,
+            "allow_dirty": false,
+            "dirty_paths": [],
+            "external_repositories": [],
+            "head": "1111111111111111111111111111111111111111",
+            "index_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+            "manifest": {
+              "module.py": "5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "status": ""
+          },
+          "status": "closed",
+          "task": "Implement the fixture change",
+          "task_id": "task-2",
+          "test_commands": [],
+          "updated_at": "2026-01-01T00:00:05.000+00:00",
+          "workspace": "/fixture/workspace"
+        }
+      ],
+      "user_version": 6
+    }
+  },
+  "fixture_version": 1,
+  "invariants": [
+    "PRAGMA user_version is 6 and meta.schema_version is '6'",
+    "PRAGMA integrity_check and quick_check return ok; foreign_key_check returns no rows",
+    "at most one unfinished task per project (ux_tasks_active partial unique index)",
+    "every round references an existing task (rounds.task_id -> tasks.task_id)",
+    "rounds(project_id, request_id) is unique for request idempotency (ux_rounds_request)",
+    "task.allowed_paths and task.test_commands are JSON arrays; task.snapshot, round.result_json and round.verifier_json are JSON objects or null",
+    "verifier_state is null, 'running' or 'done'; a 'done' round carries verifier_json",
+    "fixtures are closed and checkpointed: no -wal/-shm sidecar files next to any fixture"
+  ],
+  "schema": {
+    "foreign_keys": [
+      {
+        "from": "task_id",
+        "table": "rounds",
+        "to_column": "task_id",
+        "to_table": "tasks"
+      }
+    ],
+    "indexes": {
+      "ix_events_task": {
+        "columns": [
+          "task_id",
+          "id"
+        ],
+        "partial": false,
+        "table": "events",
+        "unique": false
+      },
+      "ux_rounds_request": {
+        "columns": [
+          "project_id",
+          "request_id"
+        ],
+        "partial": false,
+        "table": "rounds",
+        "unique": true
+      },
+      "ux_tasks_active": {
+        "columns": [
+          "project_id"
+        ],
+        "partial": true,
+        "table": "tasks",
+        "unique": true
+      }
+    },
+    "tables": {
+      "events": [
+        {
+          "name": "id",
+          "notnull": false,
+          "pk": 1,
+          "type": "INTEGER"
+        },
+        {
+          "name": "task_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "round_number",
+          "notnull": false,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "kind",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "message",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "meta": [
+        {
+          "name": "key",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "value",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "rounds": [
+        {
+          "name": "task_id",
+          "notnull": true,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "project_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "round_number",
+          "notnull": true,
+          "pk": 2,
+          "type": "INTEGER"
+        },
+        {
+          "name": "request_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "payload_hash",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "kind",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "outbound_message_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "attempted",
+          "notnull": true,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "response_message_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "response",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "error_code",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "result_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "findings",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "session_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "worker_started_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "worker_deadline_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "verifier_state",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "verifier_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "updated_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "task_id",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "project_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "workspace",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "session_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "task",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "allowed_paths",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "test_commands",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "updated_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "base_head",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "snapshot",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "revision_count",
+          "notnull": true,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "close_requested_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "close_reason",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ]
+    }
+  },
+  "schema_version": 6,
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/mcp_server.py",
+      "src/agent_bridge/storage.py",
+      "src/agent_bridge/verifier.py",
+      "src/agent_bridge/worker.py"
+    ],
+    "python_repo": "agent_bridge",
+    "tests": [
+      "tests/test_mcp.py",
+      "tests/test_storage.py"
+    ]
+  },
+  "synthetic_conventions": {
+    "fingerprints": "64-character lowercase hex sha256 digests (index/worktree/blob)",
+    "heads": "40-character lowercase hex synthetic Git object ids",
+    "message_ids": "msg-<n>",
+    "payload_hash": "hash-<request_id>",
+    "project_id": "proj",
+    "request_ids": "req-<n>",
+    "session_ids": "ses-<n>",
+    "task_ids": "task-<n>",
+    "timestamps": "fixed UTC ISO-8601 with millisecond precision (2026-01-01T00:00:0n.000+00:00)",
+    "workspace": "/fixture/workspace"
+  }
+}

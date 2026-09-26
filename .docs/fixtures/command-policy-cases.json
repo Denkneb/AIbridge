@@ -1,0 +1,663 @@
+{
+  "cases": [
+    {
+      "command": "FOO=bar",
+      "context": "permission",
+      "description": "Assignment-only pattern: the bash permission branch consults only bash_pattern_problem, which proves the tokens safe, so it is auto-approved even though there is no executable.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_permission_decision",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "allow",
+      "id": "allow-assignments-only-permission",
+      "reason_category": "configured"
+    },
+    {
+      "command": "env -i git status",
+      "context": "test_command",
+      "description": "env wrapper with safe options/assignments and a read-only git command is accepted; env -S is not involved.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:env_invocation_problem",
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_safe_commands_are_accepted"
+      ],
+      "expectation": "allow",
+      "id": "allow-env-wrapper-safe",
+      "reason_category": null,
+      "variants": [
+        "env FOO=bar git log",
+        "env -u FOO git status",
+        "env -C /repo git status",
+        "env -- git status"
+      ]
+    },
+    {
+      "command": "git -C /repo status --short",
+      "context": "test_command",
+      "description": "Git value-taking global option is skipped when resolving the subcommand; a read-only subcommand stays allowed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "tests/test_command_policy.py::test_safe_commands_are_accepted"
+      ],
+      "expectation": "allow",
+      "id": "allow-git-global-options-read-only",
+      "reason_category": null
+    },
+    {
+      "command": "FOO=bar .venv/bin/pytest -q",
+      "context": "test_command",
+      "description": "Leading assignments plus a real executable is valid for the verifier and accepted.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:leading_assignments",
+        "src/agent_bridge/verifier.py:validate_test_commands",
+        "tests/test_verifier.py::test_assignments_only_command_is_rejected_without_running"
+      ],
+      "expectation": "allow",
+      "id": "allow-leading-assignment-with-executable",
+      "reason_category": null,
+      "variants": [
+        "A=1 B=two .venv/bin/pytest -q"
+      ]
+    },
+    {
+      "command": ".venv/bin/pytest -q",
+      "context": "test_command",
+      "description": "A path-prefixed executable is tokenized normally and accepted.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_safe_commands_are_accepted"
+      ],
+      "expectation": "allow",
+      "id": "allow-path-prefixed-executable",
+      "reason_category": null
+    },
+    {
+      "command": "ls -la",
+      "context": "permission",
+      "description": "Simple read-only command under a configured bash permission is auto-approved with the stable allow reason.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_permission_decision",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "allow",
+      "id": "allow-permission-simple-command",
+      "reason_category": "configured",
+      "variants": [
+        "pytest -q",
+        "cat module.py",
+        "true",
+        "command ls -la",
+        "sudo ls -la"
+      ]
+    },
+    {
+      "command": "printf '%s\\n' 'a b'",
+      "context": "test_command",
+      "description": "Quoted literal with a backslash and a quoted space is safe; shlex resolves the quoting and no shell metacharacter is present.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:split_command",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "allow",
+      "id": "allow-quoted-backslash-literal",
+      "reason_category": null
+    },
+    {
+      "command": "echo 'a=b'",
+      "context": "test_command",
+      "description": "A quoted literal containing '=' is not mistaken for an assignment and is accepted.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:is_assignment",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "allow",
+      "id": "allow-quoted-equals-literal",
+      "reason_category": null
+    },
+    {
+      "command": "echo 'hello world'",
+      "context": "test_command",
+      "description": "A quoted literal containing spaces is accepted; quoting is resolved by shlex and spaces are not metacharacters.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:split_command",
+        "tests/test_command_policy.py::test_safe_commands_are_accepted"
+      ],
+      "expectation": "allow",
+      "id": "allow-quoted-space-literal",
+      "reason_category": null,
+      "variants": [
+        "grep -n 'foo bar' module.py"
+      ]
+    },
+    {
+      "command": "git status",
+      "context": "test_command",
+      "description": "Read-only git command accepted by the verifier validation.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "src/agent_bridge/verifier.py:validate_test_commands",
+        "tests/test_command_policy.py::test_safe_commands_are_accepted"
+      ],
+      "expectation": "allow",
+      "id": "allow-test-command-read-only-git",
+      "reason_category": null,
+      "variants": [
+        "git log --oneline -5",
+        "git diff --check"
+      ]
+    },
+    {
+      "command": "git status && git commit -m x",
+      "context": "test_command",
+      "description": "&& separator fails closed before any token analysis, so a hidden git write cannot be auto-approved.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem",
+        "tests/test_command_policy.py::test_shell_syntax_fails_closed"
+      ],
+      "expectation": "deny",
+      "id": "deny-and-separator",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "FOO=bar",
+      "context": "test_command",
+      "description": "The verifier requires a real executable after leading assignments; assignment-only input has none.",
+      "evidence": [
+        "src/agent_bridge/verifier.py:validate_test_commands",
+        "tests/test_verifier.py::test_assignments_only_command_is_rejected_without_running"
+      ],
+      "expectation": "deny",
+      "id": "deny-assignments-only-test-command",
+      "reason_category": "missing_executable",
+      "variants": [
+        "FOO=bar BAZ=qux"
+      ]
+    },
+    {
+      "command": "sleep 1 & git push",
+      "context": "test_command",
+      "description": "Background '&' is a shell metacharacter and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-background",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "echo `git push`",
+      "context": "test_command",
+      "description": "Backticks are command substitution and fail closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-backticks",
+      "reason_category": "unprovable_shell_syntax",
+      "variants": [
+        "bash -c 'echo `git push`'"
+      ]
+    },
+    {
+      "command": "echo {a,b}",
+      "context": "test_command",
+      "description": "Brace expansion introduces braces and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-brace-expansion",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "{ git push; }",
+      "context": "test_command",
+      "description": "Brace group with a command list is compound shell syntax and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-brace-group",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "echo $(git push)",
+      "context": "test_command",
+      "description": "Command substitution fails closed, including when nested inside sh -c text.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_shell_syntax_fails_closed"
+      ],
+      "expectation": "deny",
+      "id": "deny-command-substitution",
+      "reason_category": "unprovable_shell_syntax",
+      "variants": [
+        "sh -c 'echo $(git push)'"
+      ]
+    },
+    {
+      "command": "",
+      "context": "permission",
+      "description": "Empty bash permission pattern fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:bash_pattern_problem",
+        "src/agent_bridge/worker.py:_permission_decision"
+      ],
+      "expectation": "deny",
+      "id": "deny-empty-permission-pattern",
+      "reason_category": "empty_bash_pattern",
+      "variants": [
+        "   "
+      ]
+    },
+    {
+      "command": "",
+      "context": "test_command",
+      "description": "Empty or whitespace-only test command fails closed.",
+      "evidence": [
+        "src/agent_bridge/verifier.py:validate_test_commands",
+        "tests/test_command_policy.py::test_validate_test_commands_accepts_empty_and_rejects_non_strings"
+      ],
+      "expectation": "deny",
+      "id": "deny-empty-test-command",
+      "reason_category": "empty_bash_pattern",
+      "variants": [
+        "   "
+      ]
+    },
+    {
+      "command": "env -S 'git push'",
+      "context": "test_command",
+      "description": "env split-string re-parses its argument as a fresh command, so it always fails closed, even when the inner text is safe.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:env_invocation_problem",
+        "tests/test_command_policy.py::test_env_split_string_fails_closed"
+      ],
+      "expectation": "deny",
+      "id": "deny-env-split-string",
+      "reason_category": "unprovable_wrapper_command",
+      "variants": [
+        "env --split-string 'git add .'",
+        "env -Sgit push",
+        "env -i -S 'git commit -m x'",
+        "env FOO=bar -S 'git push'",
+        "env -S 'git status'"
+      ]
+    },
+    {
+      "command": "eval git push",
+      "context": "test_command",
+      "description": "eval joins its arguments and re-checks them, so the resolved git write is blocked.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-eval-git-write",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "eval \"git push\""
+      ]
+    },
+    {
+      "command": "git add .",
+      "context": "permission",
+      "description": "git add is blocked through the shared policy.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "src/agent_bridge/worker.py:_permission_decision",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-add",
+      "reason_category": "git_write_blocked"
+    },
+    {
+      "command": "git commit -m x",
+      "context": "test_command",
+      "description": "git commit is blocked through the shared policy.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "src/agent_bridge/verifier.py:validate_test_commands"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-commit",
+      "reason_category": "git_write_blocked"
+    },
+    {
+      "command": "git *",
+      "context": "test_command",
+      "description": "A glob in the git subcommand position cannot be resolved to a concrete subcommand and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-glob-subcommand",
+      "reason_category": "unprovable_git_glob",
+      "variants": [
+        "git ad*"
+      ]
+    },
+    {
+      "command": "git push origin main",
+      "context": "test_command",
+      "description": "git push is blocked through the shared policy.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "src/agent_bridge/verifier.py:validate_test_commands"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-push",
+      "reason_category": "git_write_blocked"
+    },
+    {
+      "command": "/usr/bin/git add .",
+      "context": "test_command",
+      "description": "Absolute path to the git executable does not bypass subcommand detection.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:basename",
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-write-absolute-path",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "./git commit -m x"
+      ]
+    },
+    {
+      "command": "git -C /repo commit -m x",
+      "context": "test_command",
+      "description": "Git value-taking global options are skipped so the real write subcommand is still detected.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:git_invocation_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-write-global-options",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "git -c user.name=x push",
+        "git --git-dir=/repo/.git push",
+        "git --git-dir /repo/.git push",
+        "git --work-tree=/repo push",
+        "git --namespace=x push",
+        "git -C /repo -c x=y commit -m z"
+      ]
+    },
+    {
+      "command": "git    add .",
+      "context": "test_command",
+      "description": "Extra whitespace is normalized by shlex and does not bypass git write detection.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:split_command",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-git-write-whitespace",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "git commit -m 'fix thing'"
+      ]
+    },
+    {
+      "command": "cat < file",
+      "context": "test_command",
+      "description": "Input redirection is shell syntax and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-input-redirect",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "git status\ngit push",
+      "context": "test_command",
+      "description": "A newline separates two commands and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-newline",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "git log || git push",
+      "context": "test_command",
+      "description": "|| separator fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-or-separator",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "git push > /dev/null",
+      "context": "test_command",
+      "description": "Output redirection is shell syntax and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_shell_syntax_fails_closed"
+      ],
+      "expectation": "deny",
+      "id": "deny-output-redirect",
+      "reason_category": "unprovable_shell_syntax",
+      "variants": [
+        "echo hi > out.txt"
+      ]
+    },
+    {
+      "command": "cat x | git push",
+      "context": "test_command",
+      "description": "Pipeline fails closed before token analysis.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-pipe",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "git commit -m 'fix; thing'",
+      "context": "test_command",
+      "description": "A metacharacter inside quotes is still scanned in the raw pattern, so this fails closed as shell syntax rather than as a git write.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-quoted-git-write-metachar",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "echo 'x*y'",
+      "context": "test_command",
+      "description": "A quoted glob still resolves to a token containing glob characters, so it fails closed as unprovable glob.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_glob",
+        "src/agent_bridge/command_policy.py:tokens_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-quoted-glob-literal",
+      "reason_category": "unprovable_glob_command"
+    },
+    {
+      "command": "echo 'a;b'",
+      "context": "test_command",
+      "description": "Quoting does not hide a shell metacharacter: the raw pattern is scanned before shlex, so this fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-quoted-metachar-literal",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "git status; git push",
+      "context": "test_command",
+      "description": "Semicolon separator fails closed, even when every simple command would be acceptable.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_shell_syntax_fails_closed"
+      ],
+      "expectation": "deny",
+      "id": "deny-semicolon-separator",
+      "reason_category": "unprovable_shell_syntax",
+      "variants": [
+        "echo a; echo b"
+      ]
+    },
+    {
+      "command": "bash -c 'git push'",
+      "context": "permission",
+      "description": "A shell -c argument is re-parsed by the policy and the nested git write is blocked.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "src/agent_bridge/worker.py:_permission_decision",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-shell-c-git-write",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "sh -c 'git add .'",
+        "sh -c 'git push'",
+        "zsh -c 'git push'",
+        "dash -c 'git push'"
+      ]
+    },
+    {
+      "command": "sh -c",
+      "context": "test_command",
+      "description": "A shell -c without a following command string is missing its payload and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-shell-c-missing-command",
+      "reason_category": "shell_command_missing"
+    },
+    {
+      "command": "bash script.sh",
+      "context": "test_command",
+      "description": "Invoking a shell executable without -c is an unsafe shell invocation and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "src/agent_bridge/command_policy.py:_SHELL_EXECUTABLES"
+      ],
+      "expectation": "deny",
+      "id": "deny-shell-without-c",
+      "reason_category": "unsafe_shell_invocation"
+    },
+    {
+      "command": "(git push)",
+      "context": "test_command",
+      "description": "A subshell is shell syntax and fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-subshell",
+      "reason_category": "unprovable_shell_syntax"
+    },
+    {
+      "command": "echo $HOME",
+      "context": "test_command",
+      "description": "Variable expansion fails closed.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:has_shell_metacharacters",
+        "src/agent_bridge/command_policy.py:bash_pattern_problem"
+      ],
+      "expectation": "deny",
+      "id": "deny-variable-expansion",
+      "reason_category": "unprovable_shell_syntax",
+      "variants": [
+        "echo ${VAR}"
+      ]
+    },
+    {
+      "command": "env git add .",
+      "context": "test_command",
+      "description": "The env wrapper is skipped and the nested git write is blocked.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-wrapper-env-git-write",
+      "reason_category": "git_write_blocked"
+    },
+    {
+      "command": "sudo git push",
+      "context": "permission",
+      "description": "Wrappers do not hide the nested git write; the same holds for other wrapper executables.",
+      "evidence": [
+        "src/agent_bridge/command_policy.py:tokens_problem",
+        "src/agent_bridge/worker.py:_permission_decision",
+        "tests/test_command_policy.py::test_hidden_git_writes_are_blocked"
+      ],
+      "expectation": "deny",
+      "id": "deny-wrapper-sudo-git-write",
+      "reason_category": "git_write_blocked",
+      "variants": [
+        "command git commit -m x",
+        "nohup git push",
+        "nice git push",
+        "time git push",
+        "exec git push"
+      ]
+    }
+  ],
+  "contexts": {
+    "permission": "worker bash auto-approve: worker._permission_decision with permission='bash', patterns=[command] and bash listed in auto_approve_permissions.",
+    "test_command": "verifier validation: verifier.validate_test_commands([command]); allow means the returned problem list is empty."
+  },
+  "corpus_version": 1,
+  "decision_model": {
+    "allow": "permission returns reason 'configured'; test_command returns an empty problem list (reason_category is null).",
+    "permission": "Fail closed unless the permission is configured and every bash pattern passes command_policy.bash_pattern_problem; the first failing pattern yields its policy reason.",
+    "test_command": "Fail closed unless command_policy.bash_pattern_problem returns None and leading_assignments leaves a non-empty argv; otherwise the reason is the policy reason or missing_executable."
+  },
+  "reason_categories": {
+    "configured": "permission-only allow reason: the configured bash permission and its patterns passed the policy.",
+    "empty_bash_pattern": "pattern is empty or whitespace-only.",
+    "git_write_blocked": "the resolved git subcommand is add, commit or push.",
+    "missing_executable": "test_command-only deny reason: the command is only leading VAR=value assignments with no executable.",
+    "shell_command_missing": "a shell executable was invoked with -c but no following command string.",
+    "unparsable_bash_pattern": "pattern contains NUL or shlex cannot tokenize it.",
+    "unprovable_glob_command": "a non-git token contains glob characters (*, ?, [).",
+    "unprovable_git_glob": "the git subcommand token contains glob characters and cannot be resolved.",
+    "unprovable_shell_syntax": "the raw pattern contains shell metacharacters (separators, pipes, background, redirects, command substitution, backticks, subshells, brace/variable expansion, newlines).",
+    "unprovable_wrapper_command": "env is asked to split a command string via -S/--split-string, which would re-parse a fresh command.",
+    "unsafe_shell_invocation": "a shell executable is invoked without -c."
+  },
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/command_policy.py",
+      "src/agent_bridge/verifier.py",
+      "src/agent_bridge/worker.py"
+    ],
+    "repository": "/home/denis/Python/agent_bridge",
+    "tests": [
+      "tests/test_command_policy.py",
+      "tests/test_verifier.py"
+    ]
+  }
+}

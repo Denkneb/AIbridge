@@ -1,0 +1,802 @@
+{
+  "cases": [
+    {
+      "error_category": "auto_approve_permissions_entry",
+      "expectation": "invalid",
+      "id": "invalid-auto-approve-permissions-empty-entry",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_permissions",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = [\"\"]\n"
+    },
+    {
+      "error_category": "auto_approve_permissions_external_directory",
+      "expectation": "invalid",
+      "id": "invalid-auto-approve-permissions-external-directory",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_permissions",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = [\"external_directory\"]\n"
+    },
+    {
+      "error_category": "auto_approve_permissions_type",
+      "expectation": "invalid",
+      "id": "invalid-auto-approve-permissions-non-list",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_permissions",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = \"bash\"\n"
+    },
+    {
+      "error_category": "duplicate_endpoint",
+      "expectation": "invalid",
+      "id": "invalid-endpoint-duplicate-across-projects",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "endpoint_unique",
+      "toml": "[projects.a]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n\n[projects.b]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "content": "A=one\nA=two\n",
+      "error_category": "env_duplicate_name",
+      "expectation": "invalid",
+      "id": "invalid-env-duplicate-variable-name",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "content": "A=1\n",
+      "error_category": "env_file_owner",
+      "expectation": "invalid",
+      "id": "invalid-env-file-foreign-owner",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "other_user"
+      }
+    },
+    {
+      "error_category": "env_file_missing",
+      "expectation": "invalid",
+      "id": "invalid-env-file-missing",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "missing"
+      }
+    },
+    {
+      "content": "A=1\n",
+      "error_category": "env_file_mode",
+      "expectation": "invalid",
+      "id": "invalid-env-file-mode-not-0600",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "regular",
+        "mode": "0644",
+        "owner": "current_user"
+      }
+    },
+    {
+      "error_category": "env_file_not_regular",
+      "expectation": "invalid",
+      "id": "invalid-env-file-not-regular",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "directory"
+      }
+    },
+    {
+      "content_hex": "fffe3d310a",
+      "error_category": "env_invalid_utf8",
+      "expectation": "invalid",
+      "id": "invalid-env-file-not-utf8",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "error_category": "env_file_symlink",
+      "expectation": "invalid",
+      "id": "invalid-env-file-symlink",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_file_safety",
+      "setup": {
+        "kind": "symlink",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "content": "BAD-NAME=value\n",
+      "error_category": "env_invalid_name",
+      "expectation": "invalid",
+      "id": "invalid-env-invalid-variable-name",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "content": "JUST_A_NAME\n",
+      "error_category": "env_line_missing_equals",
+      "expectation": "invalid",
+      "id": "invalid-env-line-missing-equals",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "content": "NAME\u0000=value\n",
+      "error_category": "env_nul_byte",
+      "expectation": "invalid",
+      "id": "invalid-env-nul-byte",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "content": "OPENCODE_SERVER_PASSWORD=value\n",
+      "description": "Bridge service variables are rejected fail-closed; values never appear in errors.",
+      "error_category": "env_protected_name",
+      "expectation": "invalid",
+      "id": "invalid-env-protected-service-name",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "description": "The filesystem root '/' is always rejected as a trusted external directory.",
+      "error_category": "external_directory_root",
+      "expectation": "invalid",
+      "id": "invalid-external-directory-filesystem-root",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"/\"]\n"
+    },
+    {
+      "error_category": "external_directory_missing",
+      "expectation": "invalid",
+      "id": "invalid-external-directory-missing",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${MISSING_DIR}\"]\n"
+    },
+    {
+      "error_category": "external_directory_type",
+      "expectation": "invalid",
+      "id": "invalid-external-directory-non-list",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = \"/tmp\"\n"
+    },
+    {
+      "error_category": "external_directory_not_directory",
+      "expectation": "invalid",
+      "id": "invalid-external-directory-not-a-directory",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${FILE_PATH}\"]\n"
+    },
+    {
+      "error_category": "external_directory_not_absolute",
+      "expectation": "invalid",
+      "id": "invalid-external-directory-relative",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"relative/dir\"]\n"
+    },
+    {
+      "error_category": "max_rounds_not_positive",
+      "expectation": "invalid",
+      "id": "invalid-max-rounds-non-integer",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_rounds_positive",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = \"3\"\n"
+    },
+    {
+      "error_category": "max_rounds_not_positive",
+      "expectation": "invalid",
+      "id": "invalid-max-rounds-not-positive",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_rounds_positive",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 0\n"
+    },
+    {
+      "description": "The MCP server endpoint must not reuse the project OpenCode endpoint.",
+      "error_category": "duplicate_endpoint",
+      "expectation": "invalid",
+      "id": "invalid-mcp-endpoint-collides-with-opencode-endpoint",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "endpoint_unique",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4101/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
+    },
+    {
+      "error_category": "duplicate_mcp_token_file",
+      "expectation": "invalid",
+      "id": "invalid-mcp-token-file-duplicate-across-projects",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_token_unique_separate",
+      "toml": "[projects.a]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n\n[projects.b]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n"
+    },
+    {
+      "error_category": "mcp_token_file_type",
+      "expectation": "invalid",
+      "id": "invalid-mcp-token-file-empty",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_token_unique_separate",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"\"\n"
+    },
+    {
+      "error_category": "mcp_token_equals_password",
+      "expectation": "invalid",
+      "id": "invalid-mcp-token-file-equals-password-file",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_token_unique_separate",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.password\"\n"
+    },
+    {
+      "error_category": "mcp_pairing",
+      "expectation": "invalid",
+      "id": "invalid-mcp-token-without-url",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_pairing",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
+    },
+    {
+      "error_category": "mcp_url_suffix",
+      "expectation": "invalid",
+      "id": "invalid-mcp-url-must-end-with-mcp",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/other\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
+    },
+    {
+      "error_category": "mcp_url_endpoint",
+      "expectation": "invalid",
+      "id": "invalid-mcp-url-non-loopback-host",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://0.0.0.0:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
+    },
+    {
+      "error_category": "mcp_pairing",
+      "expectation": "invalid",
+      "id": "invalid-mcp-url-without-token",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_pairing",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\n"
+    },
+    {
+      "description": "password_file is required.",
+      "error_category": "missing_required_key",
+      "expectation": "invalid",
+      "id": "invalid-missing-required-key",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "required_keys_present",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\nmax_rounds = 1\n"
+    },
+    {
+      "error_category": "opencode_env_file_type",
+      "expectation": "invalid",
+      "id": "invalid-opencode-env-file-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_env_file_path",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = 3\n"
+    },
+    {
+      "error_category": "opencode_model_format",
+      "expectation": "invalid",
+      "id": "invalid-opencode-model-missing-separator",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_model_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \"noslash\"\n"
+    },
+    {
+      "error_category": "opencode_model_type",
+      "expectation": "invalid",
+      "id": "invalid-opencode-model-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_model_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = 3\n"
+    },
+    {
+      "error_category": "opencode_model_whitespace",
+      "expectation": "invalid",
+      "id": "invalid-opencode-model-surrounding-whitespace",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_model_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \" a/b\"\n"
+    },
+    {
+      "error_category": "opencode_url_credentials",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-embedded-credentials",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://user:pass@127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_missing_port",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-missing-port",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_host",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-non-loopback-host",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://localhost:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_type",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = 4101\npassword_file = \"secrets/proj.password\"\nmax_rounds = 1\n"
+    },
+    {
+      "error_category": "opencode_url_path",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-path",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101/api\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_port_range",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-port-out-of-range",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:70000\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_query_or_fragment",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-query-or-fragment",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101?x=1\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "opencode_url_scheme",
+      "expectation": "invalid",
+      "id": "invalid-opencode-url-scheme",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_url_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"https://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "invalid_project_id",
+      "expectation": "invalid",
+      "id": "invalid-project-id-pattern",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "project_id_pattern",
+      "toml": "[projects.Bad_ID]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "Project ids are limited to 64 characters.",
+      "error_category": "invalid_project_id",
+      "expectation": "invalid",
+      "id": "invalid-project-id-too-long",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "project_id_pattern",
+      "toml": "[projects.ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "projects_table_missing",
+      "expectation": "invalid",
+      "id": "invalid-projects-table-missing",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "projects_table_required",
+      "toml": "[other]\nkey = \"value\"\n"
+    },
+    {
+      "error_category": "config_toml_invalid",
+      "expectation": "invalid",
+      "id": "invalid-toml-syntax",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "toml_parse",
+      "toml": "this is not = = = toml\n"
+    },
+    {
+      "error_category": "unknown_project",
+      "expectation": "invalid",
+      "id": "invalid-unknown-project",
+      "input_kind": "projects_toml",
+      "operation": "load_project",
+      "project": "nope",
+      "rule": "unknown_project",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "duplicate_workspace",
+      "expectation": "invalid",
+      "id": "invalid-workspace-duplicate",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "workspace_unique",
+      "toml": "[projects.a]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n\n[projects.b]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "workspace_missing",
+      "expectation": "invalid",
+      "id": "invalid-workspace-missing",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "workspace_exists_directory",
+      "toml": "[projects.proj]\nworkspace = \"${MISSING_DIR}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "error_category": "workspace_not_directory",
+      "expectation": "invalid",
+      "id": "invalid-workspace-not-a-directory",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "workspace_exists_directory",
+      "toml": "[projects.proj]\nworkspace = \"${FILE_PATH}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "Entries keep first-seen order and duplicates collapse.",
+      "expect": {
+        "auto_approve_permissions": [
+          "bash",
+          "edit"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-auto-approve-permissions-deduplicated",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_permissions",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = [\"bash\", \"bash\", \"edit\"]\n"
+    },
+    {
+      "content": "# provider keys\n\nANTHROPIC_API_KEY=placeholder-key\n   \nOPENAI_API_KEY=placeholder=with=equals\nEMPTY=\nQUOTED=\"literal\"\n",
+      "description": "Comments and blank lines are skipped; split is on the first '=' only; values stay literal.",
+      "expect": {
+        "parsed": {
+          "ANTHROPIC_API_KEY": "placeholder-key",
+          "EMPTY": "",
+          "OPENAI_API_KEY": "placeholder=with=equals",
+          "QUOTED": "\"literal\""
+        }
+      },
+      "expectation": "valid",
+      "id": "valid-env-file-parse",
+      "input_kind": "opencode_env_file",
+      "operation": "load_project_env",
+      "rule": "project_env_syntax",
+      "setup": {
+        "kind": "regular",
+        "mode": "0600",
+        "owner": "current_user"
+      }
+    },
+    {
+      "description": "Trusted roots are canonicalized through symlink aliases.",
+      "expect": {
+        "auto_approve_external_directories": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-external-directory-canonicalized",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "auto_approve_external_directories",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_LINK}\"]\n"
+    },
+    {
+      "description": "Only an exact canonical workspace match links; a containing parent directory does not.",
+      "expect": {
+        "linked_project_ids": []
+      },
+      "expectation": "valid",
+      "id": "valid-linked-containing-parent-dir-not-a-target",
+      "input_kind": "projects_toml",
+      "operation": "load_linked_projects",
+      "project": "proj",
+      "rule": "linked_project_discovery",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${PARENT_DIR}\"]\n\n[projects.beta]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "A trusted symlink alias that canonicalizes to another registered workspace links exactly that project.",
+      "expect": {
+        "linked_project_ids": [
+          "beta"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-linked-project-canonical-exact-match",
+      "input_kind": "projects_toml",
+      "operation": "load_linked_projects",
+      "project": "proj",
+      "rule": "linked_project_discovery",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_LINK}\"]\n\n[projects.beta]\nworkspace = \"${TRUSTED_DIR}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "Linked projects are returned sorted by project id regardless of config order.",
+      "expect": {
+        "linked_project_ids": [
+          "alpha",
+          "zeta"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-linked-project-sorted-deterministically",
+      "input_kind": "projects_toml",
+      "operation": "load_linked_projects",
+      "project": "proj",
+      "rule": "linked_project_discovery",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_DIR}\", \"${OTHER_WORKSPACE}\"]\n\n[projects.zeta]\nworkspace = \"${TRUSTED_DIR}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/zeta.password\"\nmax_rounds = 3\n\n[projects.alpha]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4103\"\npassword_file = \"secrets/alpha.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "A trusted directory without a registered project keeps its multi-repo role and never becomes a task target.",
+      "expect": {
+        "linked_project_ids": [
+          "beta"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-linked-unregistered-trusted-dir-not-a-target",
+      "input_kind": "projects_toml",
+      "operation": "load_linked_projects",
+      "project": "proj",
+      "rule": "linked_project_discovery",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_DIR}\", \"${OTHER_WORKSPACE}\"]\n\n[projects.beta]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "mcp_url and mcp_token_file are both present; URL is normalized.",
+      "expect": {
+        "mcp_token_file": "${CONFIG_DIR}/secrets/proj.mcp-token",
+        "mcp_url": "http://127.0.0.1:4201/mcp"
+      },
+      "expectation": "valid",
+      "id": "valid-mcp-url-and-token-pairing",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "mcp_pairing",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
+    },
+    {
+      "description": "Required keys only: defaults for every optional key.",
+      "expect": {
+        "auto_approve_external_directories": [],
+        "auto_approve_permissions": [],
+        "endpoint": "http://127.0.0.1:4101",
+        "host": "127.0.0.1",
+        "max_rounds": 3,
+        "mcp_token_file": null,
+        "mcp_url": null,
+        "opencode_env_file": null,
+        "opencode_model": null,
+        "port": 4101,
+        "project_id": "proj",
+        "workspace": "${WORKSPACE}"
+      },
+      "expectation": "valid",
+      "id": "valid-minimal-project",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "required_keys_present",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "Absolute opencode_env_file is kept verbatim.",
+      "expect": {
+        "opencode_env_file": "${ENV_FILE}"
+      },
+      "expectation": "valid",
+      "id": "valid-opencode-env-file-absolute",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_env_file_path",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = \"${ENV_FILE}\"\n"
+    },
+    {
+      "description": "Relative opencode_env_file resolves against the config directory.",
+      "expect": {
+        "opencode_env_file": "${CONFIG_DIR}/secrets/proj.env"
+      },
+      "expectation": "valid",
+      "id": "valid-opencode-env-file-relative",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_env_file_path",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = \"secrets/proj.env\"\n"
+    },
+    {
+      "description": "Only the first slash separates provider and model; later slashes stay in the model id.",
+      "expect": {
+        "opencode_model": [
+          "opencode",
+          "grok-code/1.0"
+        ]
+      },
+      "expectation": "valid",
+      "id": "valid-opencode-model-splits-on-first-slash",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "opencode_model_format",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \"opencode/grok-code/1.0\"\n"
+    },
+    {
+      "description": "Relative workspace resolves against the projects.toml directory and is canonicalized.",
+      "expect": {
+        "workspace": "${CONFIG_DIR}/ws"
+      },
+      "expectation": "valid",
+      "id": "valid-workspace-relative-resolved-against-config-dir",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "workspace_path_resolution",
+      "toml": "[projects.proj]\nworkspace = \"ws\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "description": "A symlink workspace is resolved with resolve(strict=True) to its canonical target.",
+      "expect": {
+        "workspace": "${WORKSPACE}"
+      },
+      "expectation": "valid",
+      "id": "valid-workspace-symlink-canonicalized",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "workspace_canonicalization",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE_LINK}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    }
+  ],
+  "corpus_version": 1,
+  "error_categories": {
+    "auto_approve_permissions_entry": "auto_approve_permissions entries must be non-empty strings without surrounding whitespace.",
+    "auto_approve_permissions_external_directory": "'external_directory' is rejected in auto_approve_permissions; use auto_approve_external_directories.",
+    "auto_approve_permissions_type": "auto_approve_permissions must be a list of strings.",
+    "config_toml_invalid": "projects.toml is not valid TOML.",
+    "duplicate_endpoint": "A server endpoint is reused by more than one project or by the MCP server of the same project.",
+    "duplicate_mcp_token_file": "An MCP token file is reused across projects.",
+    "duplicate_workspace": "The same canonical workspace is bound to more than one project.",
+    "env_duplicate_name": "The env file defines the same variable name twice.",
+    "env_file_missing": "The opencode_env_file does not exist.",
+    "env_file_mode": "The env file mode is not exactly 0600.",
+    "env_file_not_regular": "The env file path is not a regular file.",
+    "env_file_owner": "The env file is not owned by the current user.",
+    "env_file_symlink": "The env file is a symlink (O_NOFOLLOW fail-closed).",
+    "env_invalid_name": "An env line has an invalid variable name.",
+    "env_invalid_utf8": "The env file is not valid UTF-8.",
+    "env_line_missing_equals": "An env line has no '=' separator.",
+    "env_nul_byte": "An env line contains a NUL byte.",
+    "env_protected_name": "The env file defines a reserved agent-bridge service variable.",
+    "external_directory_missing": "A trusted external directory does not exist.",
+    "external_directory_not_absolute": "A trusted external directory is not an absolute path.",
+    "external_directory_not_directory": "A trusted external path is not a directory.",
+    "external_directory_root": "The filesystem root '/' is rejected as a trusted external directory.",
+    "external_directory_type": "auto_approve_external_directories must be a list of strings.",
+    "invalid_project_id": "The project id does not match ^[a-z0-9][a-z0-9_-]{0,63}$.",
+    "max_rounds_not_positive": "max_rounds must be a positive integer (bool is not accepted).",
+    "mcp_pairing": "mcp_url and mcp_token_file must be set together or both omitted.",
+    "mcp_token_equals_password": "The MCP token file must be separate from the project password file.",
+    "mcp_token_file_type": "mcp_token_file must be a non-empty string.",
+    "mcp_url_endpoint": "The MCP URL endpoint must be http on 127.0.0.1 with an explicit valid port.",
+    "mcp_url_suffix": "mcp_url must end with '/mcp'.",
+    "missing_required_key": "A required project key is absent.",
+    "opencode_env_file_type": "opencode_env_file must be a non-empty string.",
+    "opencode_model_format": "opencode_model must be '<providerID>/<modelID>' split on the first slash.",
+    "opencode_model_type": "opencode_model must be a string.",
+    "opencode_model_whitespace": "opencode_model and its components must not have surrounding whitespace.",
+    "opencode_url_credentials": "opencode_url must not embed username or password.",
+    "opencode_url_host": "opencode_url host must be exactly 127.0.0.1.",
+    "opencode_url_missing_port": "opencode_url must include an explicit port.",
+    "opencode_url_path": "opencode_url must not contain a path.",
+    "opencode_url_port_range": "opencode_url port must be within 1..65535.",
+    "opencode_url_query_or_fragment": "opencode_url must not contain a query or fragment.",
+    "opencode_url_scheme": "opencode_url must use the http scheme.",
+    "opencode_url_type": "opencode_url must be a string.",
+    "projects_table_missing": "The config must contain a non-empty [projects] table.",
+    "unknown_project": "The requested project id is not present in the config.",
+    "workspace_missing": "The workspace path does not exist.",
+    "workspace_not_directory": "The workspace path exists but is not a directory."
+  },
+  "placeholder_conventions": {
+    "${CONFIG_DIR}": "Absolute path of the fixture directory that contains projects.toml.",
+    "${ENV_FILE}": "Absolute path of an existing env file used to test absolute-path semantics.",
+    "${FILE_PATH}": "Absolute path of an existing regular file (not a directory).",
+    "${MISSING_DIR}": "Absolute path that does not exist.",
+    "${OTHER_WORKSPACE}": "Absolute path of a second existing directory, distinct from ${WORKSPACE}.",
+    "${PARENT_DIR}": "Absolute path of an existing directory that contains ${OTHER_WORKSPACE}.",
+    "${TRUSTED_DIR}": "Absolute path of an existing directory used as a trusted external root.",
+    "${TRUSTED_LINK}": "Symlink whose canonical target is ${TRUSTED_DIR}.",
+    "${WORKSPACE_LINK}": "Symlink whose canonical target is ${WORKSPACE}.",
+    "${WORKSPACE}": "Absolute path of an existing directory (the primary workspace)."
+  },
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/config.py",
+      "src/agent_bridge/credentials.py",
+      "src/agent_bridge/project_env.py"
+    ],
+    "python_repo": "agent_bridge",
+    "tests": [
+      "tests/test_config.py",
+      "tests/test_mcp_http.py",
+      "tests/test_project_env.py"
+    ]
+  }
+}

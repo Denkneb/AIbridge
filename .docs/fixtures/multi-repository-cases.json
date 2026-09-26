@@ -1,0 +1,1561 @@
+{
+  "aggregation_rules": {
+    "baseline_dirty_paths": "Exactly the main repository baseline_dirty_paths; the merged main-plus-external list belongs to submit time (see the submit_baseline operation).",
+    "changed_paths": "Main changed_paths plus <root>/<path> for every external changed path; de-duplicated and sorted.",
+    "committed_paths": "Main committed_paths plus <root>/<path> for every external committed path; de-duplicated and sorted.",
+    "git_policy_violations": "Main codes verbatim plus <root>:<code> for every external code; de-duplicated and sorted.",
+    "head_before_head_after": "Exactly the main repository values; per-repository HEADs live only in the repository entries.",
+    "repositories": "Ordered list of per-repository entries; each entry is the repository result plus root and baseline_dirty_paths.",
+    "repository_order": "The main workspace entry is always first; external repositories are sorted ascending by canonical root string (worker._collect_changes and git_snapshot.take_external_snapshots sort the same way).",
+    "scope_violations": "Main scope_violations plus <root>/<path> for every external scope violation; de-duplicated and sorted.",
+    "task_changed_paths": "Exactly the main workspace changed_paths (workspace-relative); external paths are never included."
+  },
+  "cases": [
+    {
+      "description": "An old persisted single-repository result without a repositories key maps onto a one-entry list synthesized from the flat workspace fields, so structured consumers keep the same shape.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_single_repository_view",
+        "src/agent_bridge/mcp_server.py:_repositories_view",
+        "tests/test_mcp.py::test_old_persisted_result_without_repositories_still_supported"
+      ],
+      "expect": {
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_AFTER}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          }
+        ],
+        "repositories_present": true
+      },
+      "id": "backward-compat-without-repositories",
+      "operation": "task_status_view",
+      "snapshot": {
+        "dirty_paths": [],
+        "head": "${HEAD_MAIN_BEFORE}"
+      },
+      "status": "awaiting_review",
+      "stored_result": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_AFTER}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "verbose": true
+    },
+    {
+      "based_on": "external-scope-violation",
+      "description": "Compact task_status (verbose=false) surfaces the full repositories list when any repository has a scope or git-policy violation.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/mcp_server.py:_has_repository_violations",
+        "src/agent_bridge/mcp_server.py:_repositories_view",
+        "tests/test_mcp.py::test_task_status_compact_surfaces_external_scope_violation"
+      ],
+      "expect": {
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py",
+              "unlisted.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": [
+              "unlisted.py"
+            ]
+          }
+        ],
+        "repositories_present": true
+      },
+      "id": "compact-status-with-violations",
+      "operation": "task_status_view",
+      "status": "awaiting_review",
+      "verbose": false
+    },
+    {
+      "based_on": "one-external-repo",
+      "description": "Compact task_status (verbose=false) omits the repositories key entirely when no repository has violations.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/mcp_server.py:_has_repository_violations",
+        "tests/test_mcp.py::test_task_status_compact_omits_repositories_without_violations"
+      ],
+      "expect": {
+        "repositories": null,
+        "repositories_present": false
+      },
+      "id": "compact-status-without-violations",
+      "operation": "task_status_view",
+      "status": "awaiting_review",
+      "verbose": false
+    },
+    {
+      "description": "The snapshot declares the external repositories B then A: the aggregated repositories list keeps the main workspace first and sorts externals by canonical root string, so it becomes [main, A, B].",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/git_snapshot.py:take_external_snapshots",
+        "tests/test_worker.py::test_two_repository_task_end_to_end"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/a.py",
+          "${EXTERNAL_ROOT_B}/b.py",
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "a.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "b.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_BEFORE}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "root": "${EXTERNAL_ROOT_B}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "deterministic-repository-order",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_B}/b.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_B_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_B_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:untracked-file"
+          ],
+          "result": {
+            "changed_paths": [
+              "b.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_BEFORE}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_B}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/a.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:untracked-file"
+          ],
+          "result": {
+            "changed_paths": [
+              "a.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/a.py",
+          "${EXTERNAL_ROOT_B}/b.py"
+        ]
+      }
+    },
+    {
+      "description": "An external repository moved HEAD and its index without commit permission: the per-repository codes stay bare while the flat git_policy_violations qualifies each code as <root>:<code>.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_external_head_and_index_controlled_without_allow_commit"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ],
+        "committed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ],
+        "git_policy_violations": [
+          "${EXTERNAL_ROOT_A}:head_changed",
+          "${EXTERNAL_ROOT_A}:index_changed"
+        ],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "lib.py"
+            ],
+            "git_policy_violations": [
+              "head_changed",
+              "index_changed"
+            ],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": []
+      },
+      "id": "external-git-policy-violation",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:clean-baseline"
+          ],
+          "result": {
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "lib.py"
+            ],
+            "git_policy_violations": [
+              "head_changed",
+              "index_changed"
+            ],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      }
+    },
+    {
+      "description": "Only an external repository changes: task_changed_paths stays empty (it is exactly the main workspace changed_paths) while changed_paths and committed_paths carry the qualified external paths.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "tests/test_worker.py::test_collect_changes_covers_external_repository"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ],
+        "committed_paths": [
+          "${EXTERNAL_ROOT_A}/gen_a.py"
+        ],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [
+              "gen_a.py"
+            ],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "gen_a.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": []
+      },
+      "id": "external-only-changes-task-paths",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:clean-baseline"
+          ],
+          "result": {
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py",
+            "${EXTERNAL_ROOT_A}/gen_a.py"
+          ],
+          "baseline": {
+            "dirty_paths": [
+              "gen_a.py"
+            ],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "gen_a.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": true,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "${EXTERNAL_ROOT_A}/gen_a.py"
+        ]
+      }
+    },
+    {
+      "description": "An external repository is affected by allowed_paths but has no changes: it still gets a repository entry with empty lists while the flat lists equal the main workspace.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "tests/test_mcp.py::test_submit_snapshots_affected_external_repository"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "external-repo-no-changes",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:clean-baseline"
+          ],
+          "result": {
+            "changed_paths": [],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      }
+    },
+    {
+      "description": "An external repository has a changed path outside its allowed scope: the per-repository scope violation stays repository-relative and is qualified with the external root in the flat scope_violations list.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/git_snapshot.py:scope_violations",
+        "tests/test_mcp.py::test_task_status_compact_surfaces_external_scope_violation",
+        "fixtures/git-snapshot-cases.json:scope-violation-file"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "${EXTERNAL_ROOT_A}/unlisted.py",
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py",
+              "unlisted.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": [
+              "unlisted.py"
+            ]
+          }
+        ],
+        "scope_violations": [
+          "${EXTERNAL_ROOT_A}/unlisted.py"
+        ],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "external-scope-violation",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:scope-violation-file"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py",
+              "unlisted.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": [
+              "unlisted.py"
+            ]
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      }
+    },
+    {
+      "description": "The same relative path lib.py changes in both repositories: main stays workspace-relative while the external path is absolute-qualified, so the two never mix.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "tests/test_worker.py::test_collect_changes_qualifies_identical_relative_paths"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "lib.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "lib.py"
+        ]
+      },
+      "id": "identical-relative-path-qualification",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "lib.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      }
+    },
+    {
+      "description": "Each repository has its own changed_paths and committed_paths (the committed paths were pre-existing dirty baseline paths): the flat lists are the union of every repository's qualified paths while each repository entry keeps its repository-relative lists and its own baseline_dirty_paths.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_external_commit_outside_scope_is_reported",
+        "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [
+          "core.py"
+        ],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "module.py"
+        ],
+        "committed_paths": [
+          "${EXTERNAL_ROOT_A}/gen_a.py",
+          "${EXTERNAL_ROOT_B}/gen_b.py",
+          "core.py"
+        ],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_AFTER}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [
+              "core.py"
+            ],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [
+              "core.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_AFTER}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [
+              "gen_a.py"
+            ],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "gen_a.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [
+              "gen_b.py"
+            ],
+            "changed_paths": [],
+            "committed_paths": [
+              "gen_b.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_AFTER}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "root": "${EXTERNAL_ROOT_B}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "independent-changed-committed-per-repo",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py",
+            "core.py"
+          ],
+          "baseline": {
+            "dirty_paths": [
+              "core.py"
+            ],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [
+              "core.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_AFTER}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py",
+            "${EXTERNAL_ROOT_A}/gen_a.py"
+          ],
+          "baseline": {
+            "dirty_paths": [
+              "gen_a.py"
+            ],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [
+              "gen_a.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_AFTER}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_B}/gen_b.py"
+          ],
+          "baseline": {
+            "dirty_paths": [
+              "gen_b.py"
+            ],
+            "head": "${HEAD_EXT_B_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_B_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:new-commit-head-movement"
+          ],
+          "result": {
+            "changed_paths": [],
+            "committed_paths": [
+              "gen_b.py"
+            ],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_AFTER}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_B}"
+        }
+      ],
+      "task": {
+        "allow_commit": true,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "core.py",
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "${EXTERNAL_ROOT_A}/gen_a.py",
+          "${EXTERNAL_ROOT_B}/gen_b.py"
+        ]
+      }
+    },
+    {
+      "description": "Only the main workspace is affected: the aggregated result is the single main repository entry and every flat field equals it, with no external repository present.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "fixtures/git-snapshot-cases.json:tracked-content-modification",
+        "tests/test_worker.py::test_dirty_baseline_is_not_attributed_to_task"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "main-only-no-external",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py"
+        ]
+      }
+    },
+    {
+      "description": "One external repository is affected next to the main workspace: the external changed path is added to the flat changed_paths as an absolute-qualified path and appears as its own repository entry.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "src/agent_bridge/git_snapshot.py:take_external_snapshots",
+        "tests/test_worker.py::test_collect_changes_covers_external_repository",
+        "fixtures/git-snapshot-cases.json:tracked-content-modification"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "one-external-repo",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/lib.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      }
+    },
+    {
+      "candidates": [
+        {
+          "baseline_dirty_paths": [
+            "lib.py"
+          ],
+          "referenced": true,
+          "root": "${EXTERNAL_ROOT_A}"
+        },
+        {
+          "baseline_dirty_paths": [
+            "lib.py"
+          ],
+          "referenced": false,
+          "root": "${EXTERNAL_ROOT_B}"
+        }
+      ],
+      "description": "A dirty main workspace plus a dirty referenced external repository with allow_dirty=true: the submit result merges main-relative and root-qualified external dirty paths into one sorted baseline_dirty_paths list.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "src/agent_bridge/git_snapshot.py:take_external_snapshots",
+        "tests/test_mcp.py::test_submit_allows_covered_dirty_external_repo",
+        "fixtures/mcp-cases.json:submit-error-dirty-external-repo"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [
+          "${EXTERNAL_ROOT_A}/lib.py",
+          "module.py"
+        ],
+        "error": null,
+        "error_paths": null,
+        "snapshotted_external_roots": [
+          "${EXTERNAL_ROOT_A}"
+        ]
+      },
+      "id": "submit-merged-baseline-dirty",
+      "main": {
+        "baseline_dirty_paths": [
+          "module.py"
+        ]
+      },
+      "operation": "submit_baseline",
+      "task": {
+        "allow_dirty": true,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      },
+      "trusted_roots": [
+        "${TRUSTED_ROOT}"
+      ]
+    },
+    {
+      "candidates": [
+        {
+          "baseline_dirty_paths": [],
+          "referenced": true,
+          "root": "${EXTERNAL_ROOT_A}"
+        },
+        {
+          "baseline_dirty_paths": [
+            "lib.py"
+          ],
+          "referenced": false,
+          "root": "${EXTERNAL_ROOT_B}"
+        }
+      ],
+      "description": "A configured trusted directory contains repository B, but no allowed path references B: only the referenced repository A is snapshotted, B's dirty baseline is ignored and B never reaches external_repositories or baseline_dirty_paths.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo",
+        "src/agent_bridge/git_snapshot.py:take_external_snapshots",
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_submit_snapshots_affected_external_repository"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "error": null,
+        "error_paths": null,
+        "snapshotted_external_roots": [
+          "${EXTERNAL_ROOT_A}"
+        ]
+      },
+      "id": "submit-trusted-repo-not-referenced",
+      "main": {
+        "baseline_dirty_paths": []
+      },
+      "operation": "submit_baseline",
+      "task": {
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/lib.py"
+        ]
+      },
+      "trusted_roots": [
+        "${TRUSTED_ROOT}"
+      ]
+    },
+    {
+      "description": "Two external repositories are affected: both are qualified and merged into the flat lists and both get their own repository entry after the main workspace.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_collect_changes",
+        "tests/test_worker.py::test_two_repository_task_end_to_end"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "${EXTERNAL_ROOT_A}/a.py",
+          "${EXTERNAL_ROOT_B}/b.py",
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "head_after": "${HEAD_MAIN_BEFORE}",
+        "head_before": "${HEAD_MAIN_BEFORE}",
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "a.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "b.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_BEFORE}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "root": "${EXTERNAL_ROOT_B}",
+            "scope_violations": []
+          }
+        ],
+        "scope_violations": [],
+        "task_changed_paths": [
+          "module.py"
+        ]
+      },
+      "id": "two-external-repos",
+      "operation": "aggregate_repositories",
+      "repositories": [
+        {
+          "allowed_paths": [
+            "module.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_MAIN_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_MAIN_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:tracked-content-modification"
+          ],
+          "result": {
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "main",
+          "root": "${MAIN_WORKSPACE}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_A}/a.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_A_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_A_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:untracked-file"
+          ],
+          "result": {
+            "changed_paths": [
+              "a.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_A}"
+        },
+        {
+          "allowed_paths": [
+            "${EXTERNAL_ROOT_B}/b.py"
+          ],
+          "baseline": {
+            "dirty_paths": [],
+            "head": "${HEAD_EXT_B_BEFORE}",
+            "index_fingerprint": "${INDEX_FP_EXT_B_BEFORE}"
+          },
+          "derived_from": [
+            "fixtures/git-snapshot-cases.json:untracked-file"
+          ],
+          "result": {
+            "changed_paths": [
+              "b.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_B_BEFORE}",
+            "head_before": "${HEAD_EXT_B_BEFORE}",
+            "scope_violations": []
+          },
+          "role": "external",
+          "root": "${EXTERNAL_ROOT_B}"
+        }
+      ],
+      "task": {
+        "allow_commit": false,
+        "allow_dirty": false,
+        "allowed_paths": [
+          "module.py",
+          "${EXTERNAL_ROOT_A}/a.py",
+          "${EXTERNAL_ROOT_B}/b.py"
+        ]
+      }
+    },
+    {
+      "based_on": "one-external-repo",
+      "description": "Verbose task_status (verbose=true) always includes the full repositories list with every repository entry.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_verbose_task_result",
+        "src/agent_bridge/mcp_server.py:_repositories_view",
+        "tests/test_mcp.py::test_task_status_verbose_reports_repositories"
+      ],
+      "expect": {
+        "repositories": [
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "module.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_MAIN_BEFORE}",
+            "head_before": "${HEAD_MAIN_BEFORE}",
+            "root": "${MAIN_WORKSPACE}",
+            "scope_violations": []
+          },
+          {
+            "baseline_dirty_paths": [],
+            "changed_paths": [
+              "lib.py"
+            ],
+            "committed_paths": [],
+            "git_policy_violations": [],
+            "head_after": "${HEAD_EXT_A_BEFORE}",
+            "head_before": "${HEAD_EXT_A_BEFORE}",
+            "root": "${EXTERNAL_ROOT_A}",
+            "scope_violations": []
+          }
+        ],
+        "repositories_present": true
+      },
+      "id": "verbose-status-full-repositories",
+      "operation": "task_status_view",
+      "status": "awaiting_review",
+      "verbose": true
+    }
+  ],
+  "corpus_version": 1,
+  "git_policy_violation_categories": {
+    "external_repo_missing": "Comparison-level missing_code returned by worker._repo_changes for an affected external repository whose directory is missing or is not a Git repository (the main workspace uses not_a_git_repo).",
+    "head_changed": "current_head != base_head while commit permission is not granted; for an external repository the flat list qualifies it as <root>:head_changed.",
+    "history_rewritten": "base_head is no longer an ancestor of current_head; reported regardless of commit permission and qualified as <root>:history_rewritten for external repositories.",
+    "index_changed": "The index fingerprint differs from the baseline while commit permission is not granted; qualified as <root>:index_changed for external repositories."
+  },
+  "normalization_rules": [
+    "Absolute roots, absolute-qualified paths, HEADs and fingerprints are placeholders; the corpus contains no machine-specific paths and no real hashes.",
+    "Flat lists are sorted lexicographically; because absolute-qualified external paths start with '/', they sort before workspace-relative paths.",
+    "Repository-relative paths inside repository entries stay literals so the qualification step is observable.",
+    "No secrets, request ids, task ids, timestamps or unstable identifiers appear in the corpus."
+  ],
+  "operations": {
+    "aggregate_repositories": "Compute worker._collect_changes for a task whose snapshot contains the declared repositories. Each repository input already carries the single-repository worker._repo_changes result (semantics defined in git-snapshot-fixtures.md); aggregation only qualifies and merges it. Expect the aggregated task result.",
+    "submit_baseline": "Reproduce submit_task_impl snapshot selection and baseline aggregation: only external repositories referenced by an absolute allowed path are snapshotted, sorted by canonical root; baseline_dirty_paths is the sorted union of the main-relative dirty paths and the root-qualified dirty paths of the referenced external repositories; without allow_dirty a non-empty union returns dirty_workspace.",
+    "task_status_view": "Persist the aggregated result of the referenced aggregate_repositories case and compute mcp_server._task_result with the declared verbose flag. A compact answer includes repositories only when at least one repository has scope or git-policy violations; a verbose answer always includes the full repositories list."
+  },
+  "path_qualification": {
+    "external": "<root>/<path>, where root is the canonical absolute external repository root. External scope checks compare these qualified paths against that repository's absolute allowed entries and strip the prefix back to repository-relative for the repository entry.",
+    "main": "Workspace-relative literals stay unchanged and are never absolute-qualified."
+  },
+  "placeholder_conventions": {
+    "${EXTERNAL_ROOT_A}": "Absolute path of trusted external repository A; an opaque placeholder.",
+    "${EXTERNAL_ROOT_B}": "Absolute path of trusted external repository B; an opaque placeholder.",
+    "${HEAD_EXT_A_AFTER}": "External repository A HEAD after the task; opaque placeholder.",
+    "${HEAD_EXT_A_BEFORE}": "External repository A HEAD at snapshot time; opaque placeholder.",
+    "${HEAD_EXT_B_AFTER}": "External repository B HEAD after the task; opaque placeholder.",
+    "${HEAD_EXT_B_BEFORE}": "External repository B HEAD at snapshot time; opaque placeholder.",
+    "${HEAD_MAIN_AFTER}": "Main workspace HEAD after the task; opaque placeholder, equal to ${HEAD_MAIN_BEFORE} when HEAD did not move.",
+    "${HEAD_MAIN_BEFORE}": "Main workspace HEAD at snapshot time; opaque placeholder, never a real hash.",
+    "${INDEX_FP_EXT_A_BEFORE}": "External repository A index fingerprint at snapshot time.",
+    "${INDEX_FP_EXT_B_BEFORE}": "External repository B index fingerprint at snapshot time.",
+    "${INDEX_FP_MAIN_BEFORE}": "Main workspace index fingerprint at snapshot time (sha256 over git ls-files --stage and git ls-files -v).",
+    "${MAIN_WORKSPACE}": "Absolute path of the main Git workspace root; never a machine-specific literal.",
+    "${TRUSTED_ROOT}": "Absolute path of a configured trusted external directory that contains external repositories."
+  },
+  "repository_input_dsl": {
+    "allowed_paths": "Normalized scope entries for this repository: workspace-relative for main, absolute-qualified for external.",
+    "baseline": "Before-snapshot fields: head, index_fingerprint and repository-relative dirty_paths, as in take_snapshot.",
+    "derived_from": "Reference(s) to git-snapshot-cases.json case ids whose single-repository semantics define the result shape; the mutations are not repeated here.",
+    "result": "The worker._repo_changes output for this repository: repository-relative changed_paths, committed_paths, scope_violations, git_policy_violations and head_before/head_after. This is a single-repository result, not recomputed here.",
+    "role": "main for the workspace repository, external for a trusted external repository.",
+    "root": "Canonical repository root placeholder: ${MAIN_WORKSPACE} or an external root placeholder."
+  },
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/git_snapshot.py",
+      "src/agent_bridge/mcp_server.py",
+      "src/agent_bridge/worker.py"
+    ],
+    "repository": "agent_bridge",
+    "single_repository_contract": "fixtures/git-snapshot-cases.json",
+    "tests": [
+      "tests/test_git_snapshot.py",
+      "tests/test_mcp.py",
+      "tests/test_worker.py"
+    ]
+  },
+  "view_rules": {
+    "backward_compatibility": "A persisted result without repositories maps to a one-entry list synthesized from the flat workspace fields by mcp_server._single_repository_view.",
+    "compact": "repositories is present only when mcp_server._has_repository_violations is true, i.e. some entry has non-empty scope_violations or git_policy_violations.",
+    "verbose": "repositories is always present with the full per-repository list."
+  }
+}

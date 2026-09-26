@@ -1,0 +1,1193 @@
+{
+  "cli": {
+    "commands": [
+      {
+        "name": "attach-opencode",
+        "options": [
+          {
+            "default": null,
+            "description": "task id (default: active task)",
+            "name": "--task",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "attach TUI to the active task session"
+      },
+      {
+        "name": "console",
+        "options": [],
+        "project_required": true,
+        "summary": "open one persistent OpenCode TUI for the project"
+      },
+      {
+        "name": "dashboard",
+        "options": [],
+        "project_required": true,
+        "summary": "show a read-only dashboard of project tasks"
+      },
+      {
+        "name": "doctor",
+        "options": [],
+        "project_required": true,
+        "summary": "validate config, credentials and server"
+      },
+      {
+        "name": "launch-codex",
+        "options": [],
+        "project_required": true,
+        "summary": "launch Codex wired to the bridge MCP server"
+      },
+      {
+        "name": "launch-opencode",
+        "options": [],
+        "project_required": true,
+        "summary": "launch an OpenCode TUI controller wired to the bridge MCP server"
+      },
+      {
+        "name": "mcp",
+        "options": [],
+        "project_required": true,
+        "summary": "run the project MCP stdio server"
+      },
+      {
+        "name": "serve-mcp",
+        "options": [],
+        "project_required": true,
+        "summary": "run the authenticated localhost HTTP MCP server"
+      },
+      {
+        "name": "serve-opencode",
+        "options": [],
+        "project_required": true,
+        "summary": "run the project OpenCode server"
+      },
+      {
+        "name": "setup",
+        "options": [],
+        "project_required": true,
+        "summary": "create missing runtime dirs and credentials"
+      },
+      {
+        "name": "start",
+        "options": [],
+        "project_required": false,
+        "summary": "start servers for all configured projects"
+      },
+      {
+        "name": "status",
+        "options": [],
+        "project_required": false,
+        "summary": "status servers for all configured projects"
+      },
+      {
+        "name": "stop",
+        "options": [],
+        "project_required": false,
+        "summary": "stop servers for all configured projects"
+      },
+      {
+        "name": "worker",
+        "options": [
+          {
+            "default": null,
+            "description": null,
+            "name": "--task",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "description": null,
+            "name": "--round",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "project_required": true,
+        "summary": "internal: run one observed implementation round"
+      }
+    ],
+    "common_options": [
+      {
+        "default": "<default_config_path>",
+        "description": "path to projects.toml",
+        "name": "--config",
+        "required": false
+      },
+      {
+        "default": null,
+        "description": "project id; optional for start/status/stop (all projects), required otherwise",
+        "name": "--project",
+        "required": true
+      },
+      {
+        "default": "<default_state_root>",
+        "description": "override state root (testing only)",
+        "name": "--state-root",
+        "required": false
+      }
+    ],
+    "entry_point": "agent_bridge.cli:main",
+    "exit_codes": {
+      "0": "success, or doctor/status ready",
+      "1": "doctor/status not ready, or mcp/worker runtime failure",
+      "2": "user-facing error (ConfigError, CredentialError, BridgeError, ProjectEnvError) or argparse usage error",
+      "3": "worker could not acquire the project worker lock"
+    },
+    "program": "agent-bridge"
+  },
+  "config": {
+    "file": {
+      "default_path": "<default_config_path>",
+      "format": "toml",
+      "top_level_table": "projects"
+    },
+    "project_keys": {
+      "optional": [
+        "auto_approve_external_directories",
+        "auto_approve_permissions",
+        "mcp_token_file",
+        "mcp_url",
+        "opencode_env_file",
+        "opencode_model"
+      ],
+      "required": [
+        "max_rounds",
+        "opencode_url",
+        "password_file",
+        "workspace"
+      ]
+    },
+    "rules": [
+      "auto_approve_external_directories entries must be existing absolute directories, canonicalized with resolve(strict=True), and '/' is rejected",
+      "auto_approve_permissions must not contain 'external_directory'; that permission is controlled only by auto_approve_external_directories",
+      "mcp_token_file must be a separate credential file from password_file and unique across projects",
+      "mcp_url and mcp_token_file must be set together; mcp_url must end with /mcp on 127.0.0.1 with an explicit port",
+      "max_rounds must be a positive integer",
+      "opencode_model must be '<providerID>/<modelID>', split on the first '/' only",
+      "opencode_url must be http://127.0.0.1:<port> with an explicit port in 1..65535 and no path, query, fragment, username or password",
+      "project ids must match ^[a-z0-9][a-z0-9_-]{0,63}$",
+      "workspace must be an existing directory; relative paths resolve against the config file directory",
+      "workspaces, server endpoints and credential files must be unique across projects"
+    ]
+  },
+  "domain": {
+    "recoverable_failure": {
+      "error_code": "assistant_error",
+      "rule": "only an OpenCode assistant error on the current round is recoverable; all infrastructure/invariant failures stay terminal",
+      "scope": "task.status=failed, current round.status=failed, round.error_code=assistant_error, task.close_requested_at is null"
+    },
+    "round_open_statuses": [
+      "delivery_unknown",
+      "needs_user",
+      "observing",
+      "pending",
+      "sent"
+    ],
+    "round_statuses": [
+      "complete",
+      "delivery_unknown",
+      "failed",
+      "needs_user",
+      "observing",
+      "pending",
+      "sent"
+    ],
+    "round_transitions": [
+      {
+        "evidence": "worker.py:_finish / storage.py:finish_round",
+        "from": "delivery_unknown",
+        "to": [
+          "complete",
+          "delivery_unknown",
+          "failed",
+          "needs_user"
+        ],
+        "trigger": "recovery worker re-observes the open round and publishes its outcome"
+      },
+      {
+        "evidence": "storage.py:reopen_failed_round",
+        "from": "failed",
+        "to": [
+          "observing"
+        ],
+        "trigger": "atomic reopen of a recoverable assistant_error round"
+      },
+      {
+        "evidence": "worker.py:_finish / storage.py:finish_round",
+        "from": "needs_user",
+        "to": [
+          "complete",
+          "delivery_unknown",
+          "failed",
+          "needs_user"
+        ],
+        "trigger": "recovery worker re-observes the open round and publishes its outcome"
+      },
+      {
+        "evidence": "worker.py:_run_round / storage.py:finish_round",
+        "from": "observing",
+        "to": [
+          "complete",
+          "delivery_unknown",
+          "failed",
+          "needs_user"
+        ],
+        "trigger": "worker observation reaches a terminal round outcome"
+      },
+      {
+        "evidence": "worker.py:_send_or_resume / storage.py:update_round",
+        "from": "pending",
+        "to": [
+          "observing",
+          "sent"
+        ],
+        "trigger": "prompt delivery attempt starts (sent) then observation begins (observing)"
+      },
+      {
+        "evidence": "worker.py:_send_or_resume",
+        "from": "sent",
+        "to": [
+          "observing"
+        ],
+        "trigger": "prompt POST returns or delivery outcome is undefined"
+      }
+    ],
+    "task_statuses": {
+      "active": [
+        "awaiting_review",
+        "delivery_unknown",
+        "failed",
+        "implementing",
+        "needs_user",
+        "revising"
+      ],
+      "terminal": [
+        "accepted",
+        "closed"
+      ]
+    },
+    "task_transitions": [
+      {
+        "evidence": "mcp_server.py:accept_task_impl",
+        "from": "accepted",
+        "to": [
+          "accepted"
+        ],
+        "trigger": "idempotent accept_task"
+      },
+      {
+        "evidence": "mcp_server.py:close_task_impl, storage.py:request_task_close, storage.py:complete_requested_close, storage.py:finish_round",
+        "from": "any_non_terminal",
+        "to": [
+          "closed"
+        ],
+        "trigger": "close_task (direct close or cooperative close request observed by the worker)"
+      },
+      {
+        "evidence": "mcp_server.py:accept_task_impl",
+        "from": "awaiting_review",
+        "to": [
+          "accepted"
+        ],
+        "trigger": "accept_task after server is idle"
+      },
+      {
+        "evidence": "mcp_server.py:request_changes_impl",
+        "from": "awaiting_review",
+        "to": [
+          "needs_user"
+        ],
+        "trigger": "request_changes at the revision limit (max_rounds)"
+      },
+      {
+        "evidence": "mcp_server.py:request_changes_impl",
+        "from": "awaiting_review",
+        "to": [
+          "revising"
+        ],
+        "trigger": "request_changes creates a revision round"
+      },
+      {
+        "evidence": "mcp_server.py:close_task_impl",
+        "from": "closed",
+        "to": [
+          "closed"
+        ],
+        "trigger": "idempotent close_task"
+      },
+      {
+        "evidence": "worker.py:_run_round",
+        "from": "delivery_unknown",
+        "to": [
+          "implementing",
+          "revising"
+        ],
+        "trigger": "recovery worker resumes observation of the open round"
+      },
+      {
+        "evidence": "storage.py:reopen_failed_round",
+        "from": "failed",
+        "to": [
+          "implementing"
+        ],
+        "trigger": "reopen_failed_round for a failed implement round"
+      },
+      {
+        "evidence": "storage.py:reopen_failed_round",
+        "from": "failed",
+        "to": [
+          "revising"
+        ],
+        "trigger": "reopen_failed_round for a failed revise round"
+      },
+      {
+        "evidence": "worker.py:_run_round / storage.py:finish_round",
+        "from": "implementing",
+        "to": [
+          "awaiting_review"
+        ],
+        "trigger": "worker observes the final assistant message"
+      },
+      {
+        "evidence": "worker.py:_run_round",
+        "from": "implementing",
+        "to": [
+          "delivery_unknown"
+        ],
+        "trigger": "prompt not found in session history after the delivery grace"
+      },
+      {
+        "evidence": "worker.py:_run_round, worker.py:run_worker",
+        "from": "implementing",
+        "to": [
+          "failed"
+        ],
+        "trigger": "workspace_mismatch, session_not_found, session_directory_mismatch, assistant_error or worker_error"
+      },
+      {
+        "evidence": "worker.py:_run_round",
+        "from": "implementing",
+        "to": [
+          "needs_user"
+        ],
+        "trigger": "session blocker, transient_error, deadline, permission or question blocker"
+      },
+      {
+        "evidence": "mcp_server.py:accept_task_impl",
+        "from": "needs_user",
+        "to": [
+          "accepted"
+        ],
+        "trigger": "accept_task after needs_user resynchronisation reaches awaiting_review"
+      },
+      {
+        "evidence": "worker.py:_run_round, mcp_server.py:task_status_impl",
+        "from": "needs_user",
+        "to": [
+          "implementing"
+        ],
+        "trigger": "explicit task_status recovery of an open initial round"
+      },
+      {
+        "evidence": "worker.py:_run_round, mcp_server.py:task_status_impl",
+        "from": "needs_user",
+        "to": [
+          "revising"
+        ],
+        "trigger": "explicit task_status recovery of an open revision round"
+      },
+      {
+        "evidence": "worker.py:_run_round / storage.py:finish_round",
+        "from": "revising",
+        "to": [
+          "awaiting_review"
+        ],
+        "trigger": "worker observes the final assistant message"
+      },
+      {
+        "evidence": "worker.py:_run_round",
+        "from": "revising",
+        "to": [
+          "delivery_unknown"
+        ],
+        "trigger": "prompt not found in session history after the delivery grace"
+      },
+      {
+        "evidence": "worker.py:_run_round, worker.py:run_worker",
+        "from": "revising",
+        "to": [
+          "failed"
+        ],
+        "trigger": "workspace_mismatch, session_not_found, session_directory_mismatch, assistant_error or worker_error"
+      },
+      {
+        "evidence": "worker.py:_run_round",
+        "from": "revising",
+        "to": [
+          "needs_user"
+        ],
+        "trigger": "session blocker, transient_error, deadline, permission or question blocker"
+      }
+    ],
+    "worker_error_codes": {
+      "assistant_error": "OpenCode assistant message carried an error",
+      "deadline": "round observation deadline reached",
+      "delivery_unknown": "prompt delivery outcome undefined",
+      "needs_user": "permission/question blocker or session blocker",
+      "session_directory_mismatch": "resolved session directory differs from the workspace",
+      "session_not_found": "bound session no longer exists",
+      "transient_error": "OpenCode unavailable for the whole session-check window",
+      "worker_error": "unexpected OpenCodeError while running the round",
+      "workspace_mismatch": "server or stored task workspace differs from the configured workspace"
+    }
+  },
+  "environment": {
+    "contract": {
+      "AGENT_BRIDGE_MCP_TOKEN": "bearer token for the primary HTTP MCP server (read from mcp_token_file)",
+      "AGENT_BRIDGE_MCP_TOKEN_<PROJECT_ID_UPPERCASE_HYPHEN_TO_UNDERSCORE>": "bearer token for a linked HTTP MCP server",
+      "OPENCODE_CONFIG": "generated controller config path for launch-opencode",
+      "OPENCODE_SERVER_PASSWORD": "executor server password, read from password_file at run time",
+      "OPENCODE_SERVER_USERNAME": "fixed value 'opencode'"
+    },
+    "implementation_overrides_not_frozen": [
+      "AB_DELIVERY_GRACE",
+      "AB_HTTP_TIMEOUT",
+      "AB_POLL_INTERVAL",
+      "AB_ROUND_DEADLINE",
+      "AB_STALE_BLOCKER_GRACE",
+      "AB_VERIFY_KILL_GRACE",
+      "AB_VERIFY_MAX_LOG_BYTES",
+      "AB_VERIFY_TAIL_BYTES",
+      "AB_VERIFY_TIMEOUT"
+    ]
+  },
+  "manifest_version": 1,
+  "mcp": {
+    "result_codes": {
+      "accept_task": [
+        "not_awaiting_review",
+        "server_busy",
+        "server_unavailable",
+        "unknown_task"
+      ],
+      "close_task": [
+        "reason_required",
+        "server_busy",
+        "server_unavailable",
+        "unknown_task"
+      ],
+      "project_info": [],
+      "request_changes": [
+        "invalid_request",
+        "not_awaiting_review",
+        "request_conflict",
+        "revision_limit",
+        "unknown_task"
+      ],
+      "submit_task": [
+        "dirty_paths_outside_scope",
+        "dirty_workspace",
+        "empty_task",
+        "git_snapshot_failed",
+        "invalid_allowed_paths",
+        "invalid_git_policy",
+        "invalid_request_id",
+        "invalid_test_commands",
+        "not_a_git_repo",
+        "project_busy",
+        "request_conflict",
+        "server_unavailable",
+        "server_unhealthy",
+        "server_wrong_directory"
+      ],
+      "task_status": [
+        "invalid_verbose",
+        "invalid_wait_seconds",
+        "no_active_task",
+        "unknown_task"
+      ]
+    },
+    "server_name": "agent-bridge",
+    "server_name_patterns": {
+      "linked": "agent_bridge_<project_id>",
+      "primary": "agent_bridge"
+    },
+    "tool_count": 6,
+    "tools": [
+      {
+        "annotations": {
+          "explicit": false
+        },
+        "name": "accept_task",
+        "parameters": [
+          {
+            "name": "task_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "summary": "Accept an awaiting_review task and free the project slot."
+      },
+      {
+        "annotations": {
+          "explicit": false
+        },
+        "name": "close_task",
+        "parameters": [
+          {
+            "name": "reason",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "task_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "summary": "Explicitly close a blocked task. reason is required."
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "explicit": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "name": "project_info",
+        "parameters": [],
+        "summary": "Return the immutable project binding and active task state."
+      },
+      {
+        "annotations": {
+          "explicit": false
+        },
+        "name": "request_changes",
+        "parameters": [
+          {
+            "name": "findings",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "request_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "task_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "summary": "Send review findings for an awaiting_review task. Idempotent by request_id."
+      },
+      {
+        "annotations": {
+          "explicit": false
+        },
+        "name": "submit_task",
+        "parameters": [
+          {
+            "default": false,
+            "name": "allow_commit",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": false,
+            "name": "allow_dirty",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "allowed_paths",
+            "required": true,
+            "type": "array[string]"
+          },
+          {
+            "name": "request_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "task",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "test_commands",
+            "required": true,
+            "type": "array[string]"
+          }
+        ],
+        "summary": "Create a task and start implementation. Idempotent by request_id."
+      },
+      {
+        "annotations": {
+          "explicit": true,
+          "readOnlyHint": false
+        },
+        "name": "task_status",
+        "parameters": [
+          {
+            "default": null,
+            "name": "task_id",
+            "required": false,
+            "type": "string|null"
+          },
+          {
+            "default": false,
+            "name": "verbose",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": 300,
+            "maximum": 300,
+            "minimum": 0,
+            "name": "wait_seconds",
+            "required": false,
+            "type": "integer"
+          }
+        ],
+        "summary": "Return status of a task. wait_seconds is bounded to 0..300; verbose=true returns the full contract."
+      }
+    ],
+    "transports": {
+      "http": {
+        "auth": "Bearer token compared with secrets.compare_digest against mcp_token_file",
+        "host": "127.0.0.1",
+        "json_response": true,
+        "path": "/mcp",
+        "port": "from mcp_url",
+        "sdk": "mcp.server.fastmcp.FastMCP + streamable_http_app + uvicorn"
+      },
+      "stdio": {
+        "sdk": "mcp.server.fastmcp.FastMCP",
+        "transport": "stdio"
+      }
+    }
+  },
+  "opencode_api": {
+    "assistant_message_time_properties": [
+      "completed"
+    ],
+    "bridge_uses_permission_reply": "once",
+    "compatibility": "OpenCode 1.18.x v1 HTTP API",
+    "permission_replies": [
+      "always",
+      "once",
+      "reject"
+    ],
+    "prompt_async_body_optional_when_model_configured": [
+      "model"
+    ],
+    "prompt_async_body_required": [
+      "messageID",
+      "parts"
+    ],
+    "required_operations": {
+      "/global/health": [
+        "get"
+      ],
+      "/path": [
+        "get"
+      ],
+      "/permission": [
+        "get"
+      ],
+      "/permission/{}/reply": [
+        "post"
+      ],
+      "/question": [
+        "get"
+      ],
+      "/session": [
+        "get",
+        "post"
+      ],
+      "/session/status": [
+        "get"
+      ],
+      "/session/{}": [
+        "get"
+      ],
+      "/session/{}/message": [
+        "get"
+      ],
+      "/session/{}/prompt_async": [
+        "post"
+      ]
+    },
+    "required_schema_properties": {
+      "AssistantMessage": [
+        "finish",
+        "parentID",
+        "time"
+      ],
+      "Path": [
+        "directory"
+      ],
+      "Session": [
+        "directory"
+      ]
+    }
+  },
+  "paths": {
+    "config_file": {
+      "base": "XDG_CONFIG_HOME or ~/.config",
+      "relative": "agent-bridge/projects.toml"
+    },
+    "files": {
+      "controller_config": "<state_dir>/controller-opencode.json",
+      "database": "<state_dir>/state.sqlite",
+      "mcp_lock": "<state_dir>/mcp.lock",
+      "mcp_server_log": "<state_dir>/mcp.server.log",
+      "opencode_server_log": "<state_dir>/opencode.server.log",
+      "process_record": "<state_dir>/<kind>.process.json",
+      "runtime_manager_lock": "<state_root>/runtime.lock",
+      "verification_log_reference": "verification/<task_id>/round_<round_number>",
+      "verification_logs": "<state_dir>/verification/<task_id>/round_<round_number>/cmd_<index>.{out,err}",
+      "worker_lock": "<state_dir>/worker.lock",
+      "worker_log": "<state_dir>/worker.log"
+    },
+    "project_state_dir": "<state_root>/<project_id>",
+    "state_root": {
+      "base": "XDG_STATE_HOME or ~/.local/state",
+      "relative": "agent-bridge"
+    }
+  },
+  "runtime": {
+    "entry_points": [
+      {
+        "command": "agent-bridge launch-codex --project ID --config PATH --state-root PATH",
+        "execs": [
+          "codex",
+          "-C",
+          "<workspace>",
+          "--disable",
+          "multi_agent",
+          "-c",
+          "<overrides>",
+          "<starter_prompt>"
+        ],
+        "module": "cli.cmd_launch_codex",
+        "name": "codex_launcher"
+      },
+      {
+        "command": "agent-bridge serve-mcp --project ID --config PATH --state-root PATH",
+        "module": "mcp_http.run_http",
+        "name": "mcp_http",
+        "transport": "streamable-http"
+      },
+      {
+        "command": "agent-bridge mcp --project ID --config PATH --state-root PATH",
+        "module": "mcp_server.run_mcp",
+        "name": "mcp_stdio",
+        "transport": "stdio"
+      },
+      {
+        "command": "agent-bridge launch-opencode --project ID --config PATH --state-root PATH",
+        "execs": [
+          "opencode"
+        ],
+        "module": "opencode_launcher.launch_controller",
+        "name": "opencode_controller"
+      },
+      {
+        "command": "agent-bridge serve-opencode --project ID --config PATH --state-root PATH",
+        "execs": [
+          "opencode",
+          "serve",
+          "--hostname",
+          "<host>",
+          "--port",
+          "<port>"
+        ],
+        "module": "cli.cmd_serve_opencode",
+        "name": "opencode_server"
+      },
+      {
+        "command": "agent-bridge start|status|stop [--project ID] --config PATH --state-root PATH",
+        "module": "runtime.start_all|runtime.status_all|runtime.stop_all",
+        "name": "runtime_manager"
+      },
+      {
+        "command": "agent-bridge worker --project ID --config PATH --state-root PATH --task TASK_ID --round N",
+        "detached": true,
+        "module": "worker.run_worker",
+        "name": "worker"
+      }
+    ],
+    "locks": [
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
+        "path": "<state_dir>/mcp.lock",
+        "scope": "one MCP server process per project"
+      },
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
+        "path": "<state_dir>/worker.lock",
+        "scope": "one worker process per project"
+      },
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
+        "path": "<state_root>/runtime.lock",
+        "scope": "one start/status/stop operation per state root"
+      }
+    ],
+    "process_records": {
+      "binding_fields": [
+        "endpoint",
+        "kind",
+        "project_id",
+        "workspace"
+      ],
+      "identity_field": "start",
+      "path": "<state_dir>/<kind>.process.json",
+      "pid_field": "pid",
+      "validation": "pid must be an int > 1, start must be a string, and /proc start ticks must match the live process"
+    }
+  },
+  "scope": {
+    "frozen": [
+      "cli_command_names_and_options",
+      "config_file_location_keys_and_validation_rules",
+      "mcp_tool_names_parameters_and_result_error_codes",
+      "mcp_stdio_and_http_transports_and_runtime_entry_points",
+      "opencode_http_api_surface_required_by_the_adapter",
+      "sqlite_file_location_pragma_user_version_tables_key_columns_and_invariants",
+      "task_and_round_status_vocabulary_and_provable_transitions"
+    ],
+    "not_frozen": [
+      "human-readable message and log wording",
+      "internal python module layout and class/function names",
+      "opencode message/part JSON internals beyond documented fields",
+      "sqlite physical column order and internal index names beyond documented uniqueness",
+      "task_id, session_id, message_id and timestamp values",
+      "verification output bytes and full log file contents",
+      "worker polling/timeout tuning defaults and AB_* environment overrides"
+    ]
+  },
+  "source": {
+    "entry_point": "agent_bridge.cli:main",
+    "package_version": "0.1.0",
+    "project": "agent-bridge",
+    "python_requires": ">=3.11"
+  },
+  "storage": {
+    "database": {
+      "per_project": true,
+      "relative_path": "state.sqlite"
+    },
+    "indexes": [
+      {
+        "definition": "UNIQUE tasks(project_id) WHERE status IN ('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
+        "name": "ux_tasks_active",
+        "purpose": "at most one unfinished task per project"
+      },
+      {
+        "definition": "UNIQUE rounds(project_id, request_id)",
+        "name": "ux_rounds_request",
+        "purpose": "request idempotency"
+      },
+      {
+        "definition": "events(task_id, id)",
+        "name": "ix_events_task",
+        "purpose": "ordered event lookup per task"
+      }
+    ],
+    "invariants": [
+      "PRAGMA user_version is only changed by a migration; unsupported versions are refused",
+      "at most one unfinished task per project (ux_tasks_active partial unique index)",
+      "each round references an existing task (foreign key rounds.task_id -> tasks.task_id)",
+      "round completion and task status update are atomic in one transaction (finish_round)",
+      "rounds(project_id, request_id) is unique for request idempotency",
+      "task.allowed_paths and task.test_commands are JSON text arrays; task.snapshot, round.result_json and round.verifier_json are JSON text",
+      "tasks.session_id points at the current round's session and is NULL between revision-round creation and session resolution",
+      "verifier_state is 'running' or 'done'; a 'done' result is never overwritten and is reused by recovery"
+    ],
+    "migratable_versions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "pragmas": {
+      "connect": [
+        "PRAGMA journal_mode=WAL",
+        "PRAGMA foreign_keys=ON",
+        "PRAGMA busy_timeout=30000"
+      ],
+      "transaction": [
+        "PRAGMA journal_mode=WAL",
+        "PRAGMA foreign_keys=ON",
+        "PRAGMA busy_timeout=30000",
+        "BEGIN IMMEDIATE"
+      ]
+    },
+    "schema_version": 6,
+    "tables": {
+      "events": {
+        "columns": [
+          {
+            "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "id",
+            "nullable": false,
+            "type": "INTEGER"
+          },
+          {
+            "name": "kind",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "message",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "round_number",
+            "nullable": true,
+            "type": "INTEGER"
+          },
+          {
+            "name": "task_id",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "primary_key": [
+          "id"
+        ]
+      },
+      "meta": {
+        "columns": [
+          {
+            "name": "key",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "value",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "primary_key": [
+          "key"
+        ]
+      },
+      "rounds": {
+        "columns": [
+          {
+            "name": "attempted",
+            "nullable": false,
+            "type": "INTEGER"
+          },
+          {
+            "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "error_code",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "findings",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "kind",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "outbound_message_id",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "payload_hash",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "project_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "request_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "response",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "response_message_id",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "result_json",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "round_number",
+            "nullable": false,
+            "type": "INTEGER"
+          },
+          {
+            "name": "session_id",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "status",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "task_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "updated_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "verifier_json",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "verifier_state",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "worker_deadline_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "worker_started_at",
+            "nullable": true,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          "task_id REFERENCES tasks(task_id)"
+        ],
+        "primary_key": [
+          "task_id",
+          "round_number"
+        ]
+      },
+      "tasks": {
+        "columns": [
+          {
+            "name": "allowed_paths",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "base_head",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "close_reason",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "close_requested_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "project_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "revision_count",
+            "nullable": false,
+            "type": "INTEGER"
+          },
+          {
+            "name": "session_id",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "snapshot",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "status",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "task",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "task_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "test_commands",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "updated_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "workspace",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "primary_key": [
+          "task_id"
+        ]
+      }
+    },
+    "unsupported_version_behavior": "refuse to modify and raise StorageError"
+  }
+}

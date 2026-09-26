@@ -1,0 +1,1448 @@
+{
+  "cases": [
+    {
+      "allow_commit": false,
+      "allow_dirty": true,
+      "allowed_paths": [
+        "notes.txt"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A baseline dirty path that the task additionally edits is reported in changed_paths while remaining in baseline_dirty_paths.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/worker.py:_repo_changes"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [
+          "notes.txt"
+        ],
+        "changed_paths": [
+          "notes.txt"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "baseline-dirty-modified",
+      "mutations": [
+        {
+          "content": "preexisting\nmore\n",
+          "op": "write_file",
+          "path": "notes.txt"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              ".gitignore",
+              "module.py"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          },
+          {
+            "content": "preexisting\n",
+            "path": "${WORKSPACE}/notes.txt"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": true,
+      "allowed_paths": [
+        "notes.txt"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A pre-existing dirty path that the task does not touch is absent from changed_paths but preserved in baseline_dirty_paths.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_dirty_baseline_is_not_attributed_to_task"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [
+          "notes.txt"
+        ],
+        "changed_paths": [],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "equal"
+        },
+        "scope_violations": []
+      },
+      "id": "baseline-dirty-unchanged",
+      "mutations": [],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              ".gitignore",
+              "module.py"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          },
+          {
+            "content": "preexisting\n",
+            "path": "${WORKSPACE}/notes.txt"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "No mutations: the after state equals the before snapshot, so every comparison list is empty and all three fingerprints are equal.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:take_snapshot",
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_dirty_baseline_is_not_attributed_to_task"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "equal"
+        },
+        "scope_violations": []
+      },
+      "id": "clean-baseline",
+      "mutations": [],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py",
+        "extra.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A commit plus an additional uncommitted file: changed_paths spans both, committed_paths only the commit, and the worktree is still dirty.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/git_snapshot.py:committed_paths",
+        "src/agent_bridge/worker.py:_repo_changes"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "extra.py",
+          "module.py"
+        ],
+        "committed_paths": [
+          "module.py"
+        ],
+        "git_policy_violations": [
+          "head_changed",
+          "index_changed"
+        ],
+        "relations": {
+          "head": "changed",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "commit-with-remaining-worktree",
+      "mutations": [
+        {
+          "content": "x = 2\n",
+          "op": "write_file",
+          "path": "module.py"
+        },
+        {
+          "add": [
+            "module.py"
+          ],
+          "message": "change",
+          "op": "git_commit"
+        },
+        {
+          "content": "extra = 1\n",
+          "op": "write_file",
+          "path": "extra.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": null,
+      "description": "submit_task requires the workspace to be a Git worktree; a plain directory fails the repo check with the stable category not_a_git_repo.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_repo",
+        "src/agent_bridge/mcp_server.py:submit_task",
+        "fixtures/mcp-cases.json:submit-error-not-a-git-repo"
+      ],
+      "expect": {
+        "error_category": "not_a_git_repo"
+      },
+      "id": "error-not-a-git-repo",
+      "mutations": [],
+      "operation": "snapshot_error",
+      "setup": {
+        "workspace": {
+          "git_repo": false
+        }
+      },
+      "stage": "repo_check"
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": null,
+      "description": "A git command used while snapshotting a valid repository raises GitError; submit_task reports the stable category git_snapshot_failed and never leaks the command detail.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_run",
+        "src/agent_bridge/git_snapshot.py:status_porcelain",
+        "src/agent_bridge/mcp_server.py:submit_task",
+        "fixtures/mcp-cases.json:submit-error-git-snapshot-failed"
+      ],
+      "expect": {
+        "error_category": "git_snapshot_failed"
+      },
+      "id": "error-snapshot-command-failure",
+      "mutations": [],
+      "operation": "snapshot_error",
+      "setup": {
+        "fault": {
+          "snapshot_command": "fail"
+        },
+        "workspace": {
+          "git_repo": true
+        }
+      },
+      "stage": "snapshot"
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Only the executable bit changes: the manifest hash includes it, so the path is changed and a content-only hash would miss it.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "tests/test_git_snapshot.py::test_executable_bit_change_is_detected",
+        "tests/test_git_snapshot.py::test_scope_violation_on_mode_change"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "executable-bit-change",
+      "mutations": [
+        {
+          "op": "chmod_exec",
+          "path": "module.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      },
+      "variants": [
+        {
+          "description": "Setting a different executable mode (0700) is equivalent.",
+          "mutations": [
+            {
+              "mode": "0700",
+              "op": "chmod_exec",
+              "path": "module.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": true,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Amending the only commit rewrites history so the base HEAD is no longer an ancestor: history_rewritten is reported even when commit permission is granted.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:history_descends_from",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_history_rewrite_is_reported_even_when_commit_allowed"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [
+          "module.py"
+        ],
+        "git_policy_violations": [
+          "history_rewritten"
+        ],
+        "relations": {
+          "head": "changed",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "history-rewrite",
+      "mutations": [
+        {
+          "content": "amended\n",
+          "op": "write_file",
+          "path": "module.py"
+        },
+        {
+          "add": [
+            "module.py"
+          ],
+          "message": "rewritten",
+          "op": "git_amend"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "leak",
+        "debug.log",
+        "trace.log",
+        "secret.password"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "An ignored file never enters changed_paths, and a committed symlink to an ignored target is not re-hashed when that target content changes: the link identity is the target string.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_listed_files",
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "tests/test_git_snapshot.py::test_ignored_file_is_not_dirty",
+        "tests/test_git_snapshot.py::test_snapshot_excludes_ignored",
+        "tests/test_git_snapshot.py::test_symlink_does_not_read_ignored_target"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "equal"
+        },
+        "scope_violations": []
+      },
+      "id": "ignored-file-excluded",
+      "mutations": [
+        {
+          "content": "noise\n",
+          "op": "write_file",
+          "path": "debug.log"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              ".gitignore",
+              "module.py",
+              "leak"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          },
+          {
+            "content": "topsecret\n",
+            "path": "${WORKSPACE}/secret.password"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": [
+          {
+            "path": "${WORKSPACE}/leak",
+            "target": "secret.password"
+          }
+        ]
+      },
+      "variants": [
+        {
+          "description": "Rotating the ignored target content leaves the committed symlink and all ignored paths out of changed_paths.",
+          "mutations": [
+            {
+              "content": "rotated\n",
+              "op": "write_file",
+              "path": "secret.password"
+            }
+          ]
+        },
+        {
+          "description": "Creating one ignored file and rotating another ignored target together is equivalent.",
+          "mutations": [
+            {
+              "content": "noise\n",
+              "op": "write_file",
+              "path": "trace.log"
+            },
+            {
+              "content": "rotated\n",
+              "op": "write_file",
+              "path": "secret.password"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "new.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Intent-to-add changes only index flags: the index fingerprint moves, HEAD stays equal, and without commit permission it is index_changed.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:index_fingerprint",
+        "tests/test_git_snapshot.py::test_index_fingerprint_detects_intent_to_add",
+        "tests/test_worker.py::test_staging_without_permission_is_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "new.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [
+          "index_changed"
+        ],
+        "relations": {
+          "head": "equal",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "index-change-without-head",
+      "mutations": [
+        {
+          "content": "new = True\n",
+          "op": "write_file",
+          "path": "new.py"
+        },
+        {
+          "op": "git_add_intent",
+          "path": "new.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A new commit moves HEAD and rewrites the index to the new tree; the committed path is reported and both head_changed and index_changed fire without commit permission.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:committed_paths",
+        "src/agent_bridge/git_snapshot.py:history_descends_from",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_commit_without_permission_is_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [
+          "module.py"
+        ],
+        "git_policy_violations": [
+          "head_changed",
+          "index_changed"
+        ],
+        "relations": {
+          "head": "changed",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "new-commit-head-movement",
+      "mutations": [
+        {
+          "content": "x = 2\n",
+          "op": "write_file",
+          "path": "module.py"
+        },
+        {
+          "add": [
+            "module.py"
+          ],
+          "message": "change",
+          "op": "git_commit"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "src/"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A directory scope covers strict descendants only: an in-scope file is clean while a sibling tree is a scope violation.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "src/agent_bridge/git_snapshot.py:scope_violations",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "other/thing.py",
+          "src/ok.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": [
+          "other/thing.py"
+        ]
+      },
+      "id": "scope-violation-directory",
+      "mutations": [
+        {
+          "content": "ok\n",
+          "op": "write_file",
+          "path": "src/ok.py"
+        },
+        {
+          "content": "thing\n",
+          "op": "write_file",
+          "path": "other/thing.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A changed path outside an exact file scope is reported both as changed and as a scope violation.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:scope_violations",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_scope_violation_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "other.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": [
+          "other.py"
+        ]
+      },
+      "id": "scope-violation-file",
+      "mutations": [
+        {
+          "content": "other\n",
+          "op": "write_file",
+          "path": "other.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      },
+      "variants": [
+        {
+          "description": "A different out-of-scope body for the same path is equivalent.",
+          "mutations": [
+            {
+              "content": "other = 2\n",
+              "op": "write_file",
+              "path": "other.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Staging a modified tracked file changes the index fingerprint without moving HEAD; without commit permission this is an index_changed policy violation.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:index_fingerprint",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_staging_without_permission_is_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [
+          "index_changed"
+        ],
+        "relations": {
+          "head": "equal",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "staged-change",
+      "mutations": [
+        {
+          "content": "x = 2\n",
+          "op": "write_file",
+          "path": "module.py"
+        },
+        {
+          "op": "git_add",
+          "path": "module.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      },
+      "variants": [
+        {
+          "description": "Staging different content of the same tracked file is equivalent.",
+          "mutations": [
+            {
+              "content": "y = 3\n",
+              "op": "write_file",
+              "path": "module.py"
+            },
+            {
+              "op": "git_add",
+              "path": "module.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": true,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "With commit permission the index may move, so the same staging produces no git_policy_violation; the index fingerprint still changed.",
+      "evidence": [
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_allowed_commit_of_dirty_baseline_is_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "changed",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "staged-change-allowed-commit",
+      "mutations": [
+        {
+          "content": "x = 2\n",
+          "op": "write_file",
+          "path": "module.py"
+        },
+        {
+          "op": "git_add",
+          "path": "module.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "link.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Retargeting a committed symlink is a change even when both targets hold identical bytes, because the manifest hashes the link target string.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "tests/test_git_snapshot.py::test_symlink_retarget_is_detected"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "link.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "symlink-retarget",
+      "mutations": [
+        {
+          "op": "symlink_retarget",
+          "path": "link.py",
+          "target": "b.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              ".gitignore",
+              "a.py",
+              "b.py",
+              "link.py"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "same\n",
+            "path": "${WORKSPACE}/a.py"
+          },
+          {
+            "content": "same\n",
+            "path": "${WORKSPACE}/b.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": [
+          {
+            "path": "${WORKSPACE}/link.py",
+            "target": "a.py"
+          }
+        ]
+      },
+      "variants": [
+        {
+          "description": "Retargeting to a dangling target is equivalent: identity is the target string, not the target content.",
+          "mutations": [
+            {
+              "op": "symlink_retarget",
+              "path": "link.py",
+              "target": "missing"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": true,
+      "allowed_paths": [
+        "notes.txt",
+        "task.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "changed_paths contains only the task-created path; the untouched baseline dirty path stays in baseline_dirty_paths and out of changed_paths.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_dirty_baseline_is_not_attributed_to_task"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [
+          "notes.txt"
+        ],
+        "changed_paths": [
+          "task.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "task-change-distinct-from-baseline",
+      "mutations": [
+        {
+          "content": "task = True\n",
+          "op": "write_file",
+          "path": "task.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              ".gitignore",
+              "module.py"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          },
+          {
+            "content": "preexisting\n",
+            "path": "${WORKSPACE}/notes.txt"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Editing a tracked file changes only the worktree fingerprint; HEAD and index stay equal and the path is within scope.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/git_snapshot.py:manifest",
+        "src/agent_bridge/worker.py:_repo_changes",
+        "tests/test_worker.py::test_staging_without_permission_is_reported"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "tracked-content-modification",
+      "mutations": [
+        {
+          "content": "x = 2\n",
+          "op": "write_file",
+          "path": "module.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      },
+      "variants": [
+        {
+          "description": "A different replacement body for the same tracked file yields the same changed path.",
+          "mutations": [
+            {
+              "content": "def add(a, b):\n    return a + b\n",
+              "op": "write_file",
+              "path": "module.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "module.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "Deleting a tracked file removes it from the manifest, so the path is reported changed while HEAD and index stay equal.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "tests/test_git_snapshot.py::test_changed_paths"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "module.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "tracked-deletion",
+      "mutations": [
+        {
+          "op": "delete_file",
+          "path": "module.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      }
+    },
+    {
+      "allow_commit": false,
+      "allow_dirty": false,
+      "allowed_paths": [
+        "new.py"
+      ],
+      "before": {
+        "head": "${HEAD_BEFORE}",
+        "index_fingerprint": "${INDEX_FP_BEFORE}",
+        "worktree_fingerprint": "${WORKTREE_FP_BEFORE}"
+      },
+      "description": "A new non-ignored untracked file enters the manifest, so it is reported as changed without touching HEAD or the index.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:manifest",
+        "src/agent_bridge/git_snapshot.py:_listed_files",
+        "tests/test_git_snapshot.py::test_untracked_makes_dirty"
+      ],
+      "expect": {
+        "baseline_dirty_paths": [],
+        "changed_paths": [
+          "new.py"
+        ],
+        "committed_paths": [],
+        "git_policy_violations": [],
+        "relations": {
+          "head": "equal",
+          "index": "equal",
+          "worktree": "changed"
+        },
+        "scope_violations": []
+      },
+      "id": "untracked-file",
+      "mutations": [
+        {
+          "content": "new = True\n",
+          "op": "write_file",
+          "path": "new.py"
+        }
+      ],
+      "operation": "snapshot_compare",
+      "setup": {
+        "commits": [
+          {
+            "add": [
+              "module.py",
+              ".gitignore"
+            ],
+            "message": "init"
+          }
+        ],
+        "files": [
+          {
+            "content": "def add(a, b):\n    return a - b\n",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "gitignore": [
+          "*.log",
+          "secret.password"
+        ],
+        "symlinks": []
+      },
+      "variants": [
+        {
+          "description": "Different untracked content for the same path is an equivalent mutation.",
+          "mutations": [
+            {
+              "content": "other = 2\n",
+              "op": "write_file",
+              "path": "new.py"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "corpus_version": 1,
+  "error_categories": {
+    "git_snapshot_failed": "A git command used while snapshotting a valid worktree raised GitError (for example a timeout or a failing git subcommand). Only the category is contract; the detail text is not.",
+    "not_a_git_repo": "The workspace is not a Git worktree (git_snapshot.is_repo is false) so no snapshot can be taken. Comparison-level counterpart: worker._repo_changes returns git_policy_violations=['not_a_git_repo'] with empty change lists and head_after=null."
+  },
+  "fingerprint_relations": {
+    "changed": "The after fingerprint differs from the before fingerprint.",
+    "equal": "The after fingerprint equals the before fingerprint."
+  },
+  "git_policy_violation_categories": {
+    "head_changed": "current_head != base_head while commit permission is not granted (allow_commit is not True).",
+    "history_rewritten": "base_head is no longer an ancestor of current_head (git merge-base --is-ancestor is false); reported regardless of commit permission.",
+    "index_changed": "index_fingerprint differs from the before index fingerprint while commit permission is not granted.",
+    "not_a_git_repo": "Comparison-level missing_code returned by worker._repo_changes when the repository directory is missing or is not a Git repository."
+  },
+  "mutation_dsl": {
+    "chmod_exec": "{op:'chmod_exec', path, mode?}: set the executable bit on a file (default 0755). Content is unchanged; only the tracked mode bit differs.",
+    "delete_file": "{op:'delete_file', path}: remove a file from the worktree.",
+    "git_add": "{op:'git_add', path}: stage the current content of path in the index.",
+    "git_add_intent": "{op:'git_add_intent', path}: git add -N (intent-to-add); changes index flags without staging content.",
+    "git_amend": "{op:'git_amend', message, add?}: stage add then git commit --amend; rewrites history.",
+    "git_commit": "{op:'git_commit', message, add?}: stage add (when present) then create a new commit.",
+    "symlink_create": "{op:'symlink_create', path, target}: create a symlink.",
+    "symlink_retarget": "{op:'symlink_retarget', path, target}: replace an existing symlink so it points at target.",
+    "write_file": "{op:'write_file', path, content}: write content to path, creating parent directories; replaces the file if it exists."
+  },
+  "operations": {
+    "snapshot_compare": "Take before = git_snapshot.take_snapshot(workspace), apply mutations in order, then compute exactly what worker._repo_changes computes for one repository: changed_paths = git_snapshot.changed_paths(workspace, before.manifest); committed_paths = git_snapshot.committed_paths(workspace, before.head); scope_violations = git_snapshot.scope_violations(sorted(set(changed_paths) | set(committed_paths)), allowed_paths); git_policy_violations from history_descends_from plus (when allow_commit is not True) head/index fingerprint comparisons. All path lists are repository-relative and sorted.",
+    "snapshot_error": "A submit-time snapshot failure path. The harness simulates the declared stage ('repo_check' for is_repo, 'snapshot' for a GitError during take_snapshot) and compares only the stable error category. Detail strings are not contract."
+  },
+  "placeholder_conventions": {
+    "${HEAD_BEFORE}": "Commit hash of the before snapshot; an opaque placeholder, never a real hash.",
+    "${INDEX_FP_BEFORE}": "Index fingerprint of the before snapshot: sha256 over git ls-files --stage and git ls-files -v.",
+    "${WORKSPACE}": "Absolute path of the single synthetic Git repository root; one repository per case.",
+    "${WORKTREE_FP_BEFORE}": "Worktree fingerprint of the before snapshot: the git_snapshot.manifest mapping of tracked and non-ignored untracked paths to their content/mode/link-target hashes. The verifier derives a compact digest over the same manifest plus status."
+  },
+  "setup_dsl": {
+    "commits": "Ordered list of {message, add}. Each entry stages exactly the listed workspace-relative paths and commits. Paths created by files/symlinks/gitignore but never listed stay untracked (or ignored).",
+    "fault": "snapshot_error only: {snapshot_command: 'fail'} declares that the harness must make a git command used by the snapshot raise GitError, without changing any real repository.",
+    "files": "List of {path, content} created before the first commit. Paths are absolute placeholder expressions rooted at ${WORKSPACE}.",
+    "gitignore": "List of .gitignore patterns; the generated .gitignore is added by listing '.gitignore' in a commit add list.",
+    "symlinks": "List of {path, target} created before the first commit; target is a relative link string unless it is itself a placeholder expression.",
+    "workspace": "Object {git_repo}. git_repo=true initializes ${WORKSPACE} as a Git worktree with the declared commits; git_repo=false leaves it a plain directory."
+  },
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/git_snapshot.py",
+      "src/agent_bridge/worker.py"
+    ],
+    "repository": "agent_bridge",
+    "tests": [
+      "tests/test_git_snapshot.py",
+      "tests/test_worker.py",
+      "tests/test_mcp.py"
+    ]
+  }
+}

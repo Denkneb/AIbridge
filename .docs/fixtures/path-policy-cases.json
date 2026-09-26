@@ -1,0 +1,1204 @@
+{
+  "cases": [
+    {
+      "description": "An empty allowed_paths list is accepted by validate_allowed_paths and yields an empty normalized scope; grouping is a separate operation.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo"
+      ],
+      "expect": {
+        "repo_grouping": {
+          "${WORKSPACE}": []
+        }
+      },
+      "expectation": "allow",
+      "id": "group-empty-list",
+      "input": {
+        "allowed_paths": [],
+        "external_roots": []
+      },
+      "operation": "group_allowed_paths_by_repo",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute path that is not inside any Git repository cannot be grouped; grouping resolves the containing repository only and ignores trusted roots.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo",
+        "src/agent_bridge/git_snapshot.py:repo_root_for",
+        "tests/test_git_snapshot.py::test_absolute_allowed_path_outside_git_rejected"
+      ],
+      "expectation": "deny",
+      "id": "group-external-not-git-repository",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_PLAIN}/note.txt"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "group_allowed_paths_by_repo",
+      "reason_category": "not_git_repository",
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${TRUSTED_PLAIN}"
+          },
+          {
+            "kind": "file",
+            "path": "${TRUSTED_PLAIN}/note.txt"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An external repository root and a child path inside it map to the same canonical repository root; raw entries are preserved without normalization.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo",
+        "tests/test_git_snapshot.py::test_group_allowed_paths_by_repo"
+      ],
+      "expect": {
+        "repo_grouping": {
+          "${TRUSTED_REPO}": [
+            "${TRUSTED_REPO}/",
+            "${TRUSTED_REPO}/pkg/mod.py"
+          ],
+          "${WORKSPACE}": []
+        }
+      },
+      "expectation": "allow",
+      "id": "group-external-repo-root-and-child",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_REPO}/",
+          "${TRUSTED_REPO}/pkg/mod.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "group_allowed_paths_by_repo",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${TRUSTED_REPO}/pkg"
+          },
+          {
+            "kind": "file",
+            "path": "${TRUSTED_REPO}/pkg/mod.py"
+          }
+        ],
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "Relative entries map to the main workspace repository and absolute entries map to the external repository that contains them.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo",
+        "tests/test_git_snapshot.py::test_group_allowed_paths_by_repo"
+      ],
+      "expect": {
+        "repo_grouping": {
+          "${TRUSTED_REPO}": [
+            "${TRUSTED_REPO}/lib.py"
+          ],
+          "${WORKSPACE}": [
+            "module.py",
+            "src/"
+          ]
+        }
+      },
+      "expectation": "allow",
+      "id": "group-relative-and-external",
+      "input": {
+        "allowed_paths": [
+          "module.py",
+          "src/",
+          "${TRUSTED_REPO}/lib.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "group_allowed_paths_by_repo",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${WORKSPACE}/src"
+          },
+          {
+            "kind": "file",
+            "path": "${TRUSTED_REPO}/lib.py"
+          }
+        ],
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "Two absolute entries in different external repositories produce two distinct repository keys plus the always-present main workspace key.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:group_allowed_paths_by_repo",
+        "tests/test_git_snapshot.py::test_group_allowed_paths_by_repo"
+      ],
+      "expect": {
+        "repo_grouping": {
+          "${TRUSTED_REPO_OTHER}": [
+            "${TRUSTED_REPO_OTHER}/b.py"
+          ],
+          "${TRUSTED_REPO}": [
+            "${TRUSTED_REPO}/a.py"
+          ],
+          "${WORKSPACE}": []
+        }
+      },
+      "expectation": "allow",
+      "id": "group-two-external-repos",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_REPO}/a.py",
+          "${TRUSTED_REPO_OTHER}/b.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "group_allowed_paths_by_repo",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "${TRUSTED_REPO}/a.py"
+          },
+          {
+            "kind": "file",
+            "path": "${TRUSTED_REPO_OTHER}/b.py"
+          }
+        ],
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          },
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO_OTHER}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A directory scope with a trailing slash covers descendants of the directory.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "src/agent_bridge/git_snapshot.py:scope_violations",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "violation": false
+      },
+      "expectation": "allow",
+      "id": "scope-directory-descendant-covered",
+      "input": {
+        "allowed_paths": [
+          "src/"
+        ],
+        "probe": "src/a.py"
+      },
+      "operation": "scope_match",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A directory scope does not cover a sibling path that merely shares a string prefix (src/ does not match srcX/).",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "violation": true,
+        "violations": [
+          "srcX/a.py"
+        ]
+      },
+      "expectation": "deny",
+      "id": "scope-directory-prefix-not-sibling",
+      "input": {
+        "allowed_paths": [
+          "src/"
+        ],
+        "probe": "srcX/a.py"
+      },
+      "operation": "scope_match",
+      "reason_category": "scope_violation",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A directory scope does not cover the directory path itself; only paths strictly below it match.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "violation": true,
+        "violations": [
+          "src"
+        ]
+      },
+      "expectation": "deny",
+      "id": "scope-directory-self-not-covered",
+      "input": {
+        "allowed_paths": [
+          "src/"
+        ],
+        "probe": "src"
+      },
+      "operation": "scope_match",
+      "reason_category": "scope_violation",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A file entry matches the exact path only.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "violation": false
+      },
+      "expectation": "allow",
+      "id": "scope-file-exact-match",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "probe": "module.py"
+      },
+      "operation": "scope_match",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A file entry is exact: a suffixed sibling path is not covered.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:is_allowed",
+        "tests/test_git_snapshot.py::test_scope_semantics"
+      ],
+      "expect": {
+        "violation": true,
+        "violations": [
+          "module.py.bak"
+        ]
+      },
+      "expectation": "deny",
+      "id": "scope-file-suffix-not-covered",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "probe": "module.py.bak"
+      },
+      "operation": "scope_match",
+      "reason_category": "scope_violation",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A dangling symlink is identified by its target string, so changing missing-a to missing-b is detected as a change even though the target never existed.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "tests/test_git_snapshot.py::test_dangling_symlink_target_is_hashed"
+      ],
+      "expect": {
+        "changed_paths": [
+          "broken"
+        ],
+        "violations": [
+          "broken"
+        ]
+      },
+      "expectation": "deny",
+      "id": "symlink-dangling-target-identity",
+      "input": {
+        "after_target": "missing-b",
+        "allowed_paths": [
+          "other"
+        ],
+        "before_target": "missing-a",
+        "symlink": "${WORKSPACE}/broken"
+      },
+      "operation": "symlink_identity",
+      "reason_category": "symlink_retarget_detected",
+      "setup": {
+        "entries": [
+          {
+            "confinement": "dangling",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/broken",
+            "target": "missing-a"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "Retargeting a symlink from a.py to b.py is a change even when both targets hold identical bytes, because the identity is the link target, not the target content.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_hash_file",
+        "src/agent_bridge/git_snapshot.py:changed_paths",
+        "tests/test_git_snapshot.py::test_symlink_retarget_is_detected"
+      ],
+      "expect": {
+        "changed_paths": [
+          "link.py"
+        ],
+        "violations": [
+          "link.py"
+        ]
+      },
+      "expectation": "deny",
+      "id": "symlink-retarget-detected",
+      "input": {
+        "after_target": "b.py",
+        "allowed_paths": [
+          "a.py"
+        ],
+        "before_target": "a.py",
+        "symlink": "${WORKSPACE}/link.py"
+      },
+      "operation": "symlink_identity",
+      "reason_category": "symlink_retarget_detected",
+      "setup": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "${WORKSPACE}/a.py"
+          },
+          {
+            "kind": "file",
+            "path": "${WORKSPACE}/b.py"
+          },
+          {
+            "confinement": "in_scope",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/link.py",
+            "target": "a.py"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute path inside a Git repository that lies outside every trusted root is rejected.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_absolute_allowed_path_outside_trusted_roots_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-outside-trusted",
+      "input": {
+        "allowed_paths": [
+          "${OUTSIDE_REPO}/lib.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "outside_trusted_roots",
+      "setup": {
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${OUTSIDE_REPO}"
+          },
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A path that resolves inside the trusted root but belongs to a Git repository whose root is outside the trusted root is rejected fail-closed.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "src/agent_bridge/git_snapshot.py:repo_root_for",
+        "tests/test_git_snapshot.py::test_external_repo_root_outside_trusted_root_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-repo-root-outside-trusted",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_SUBDIR}/lib.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_SUBDIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "external_repo_root_outside_trusted",
+      "setup": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "${TRUSTED_SUBDIR}/lib.py"
+          }
+        ],
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${PARENT_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_SUBDIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute path that reaches a Git repository outside the trusted root through a symlink inside the trusted root is rejected.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "tests/test_git_snapshot.py::test_absolute_allowed_path_symlink_escape_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-symlink-escape-outside-trusted",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_ESCAPE_LINK}/lib.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "outside_trusted_roots",
+      "setup": {
+        "entries": [
+          {
+            "confinement": "escape",
+            "kind": "symlink",
+            "path": "${TRUSTED_ESCAPE_LINK}",
+            "target": "${OUTSIDE_REPO}"
+          }
+        ],
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${OUTSIDE_REPO}"
+          },
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute path inside a trusted root but not inside any Git repository is rejected.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "src/agent_bridge/git_snapshot.py:repo_root_for",
+        "tests/test_git_snapshot.py::test_absolute_allowed_path_outside_git_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-trusted-not-git-repository",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_PLAIN}/note.txt"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "not_git_repository",
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${TRUSTED_PLAIN}"
+          },
+          {
+            "kind": "file",
+            "path": "${TRUSTED_PLAIN}/note.txt"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute directory scope inside a trusted external Git repository is normalized to its canonical absolute path with a trailing slash.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_absolute_allowed_directory_scope_in_external_repo"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "${TRUSTED_REPO}/"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-absolute-trusted-repo-directory",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_REPO}/"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute file inside a trusted external Git repository is normalized to its canonical absolute path.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_absolute_allowed_path_inside_trusted_external_repo"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "${TRUSTED_REPO}/lib.py"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-absolute-trusted-repo-file",
+      "input": {
+        "allowed_paths": [
+          "${TRUSTED_REPO}/lib.py"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "repositories": [
+          {
+            "git_repo": true,
+            "root": "${TRUSTED_REPO}"
+          }
+        ],
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute directory path that resolves inside the main workspace is rejected before any trusted-root check, even when trusted roots are configured; the fix is a relative path.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "tests/test_git_snapshot.py::test_absolute_workspace_directory_path_rejected_without_trusted_roots"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-workspace-directory",
+      "input": {
+        "allowed_paths": [
+          "${WORKSPACE}/"
+        ],
+        "external_roots": [
+          "${TRUSTED_DIR}"
+        ]
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "absolute_workspace_path",
+      "setup": {
+        "trusted_roots": [
+          "${TRUSTED_DIR}"
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An absolute file path that resolves inside the main workspace is rejected with the same guidance even when no trusted roots are configured.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:_validate_external_scope_path",
+        "tests/test_git_snapshot.py::test_absolute_workspace_path_rejected_without_trusted_roots"
+      ],
+      "expectation": "deny",
+      "id": "validate-absolute-workspace-file",
+      "input": {
+        "allowed_paths": [
+          "${WORKSPACE}/module.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "absolute_workspace_path",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A path containing a backslash is rejected, including a leading backslash.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths"
+      ],
+      "expectation": "deny",
+      "id": "validate-backslash-entry",
+      "input": {
+        "allowed_paths": [
+          "src\\module.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "backslash_in_path",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      },
+      "variants": [
+        "\\module.py"
+      ]
+    },
+    {
+      "description": "A dangling symlink whose target path stays lexically inside the workspace is allowed; resolve(strict=False) keeps the missing in-workspace target inside the scope.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "dangling"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-dangling-symlink-inside-scope",
+      "input": {
+        "allowed_paths": [
+          "dangling"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "confinement": "dangling",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/dangling",
+            "target": "${WORKSPACE}/missing-a"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An entry that reduces to empty or '.' is rejected; this also covers a bare root slash.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expectation": "deny",
+      "id": "validate-dot-path",
+      "input": {
+        "allowed_paths": [
+          "."
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "empty_or_dot_path",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      },
+      "variants": [
+        "./",
+        "/",
+        "//"
+      ]
+    },
+    {
+      "description": "An empty-string entry is rejected; entries must be non-empty strings.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expectation": "deny",
+      "id": "validate-empty-entry",
+      "input": {
+        "allowed_paths": [
+          ""
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "invalid_allowed_paths_entry",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "An empty allowed_paths list is accepted and normalized to an empty scope. The MCP envelope rejects an empty list before this function; that envelope is out of scope for this corpus.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths"
+      ],
+      "expect": {
+        "normalized_scope": []
+      },
+      "expectation": "allow",
+      "id": "validate-empty-list",
+      "input": {
+        "allowed_paths": [],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A non-string entry is rejected with the same category as an empty string.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expectation": "deny",
+      "id": "validate-entry-non-string",
+      "input": {
+        "allowed_paths": [
+          42
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "invalid_allowed_paths_entry",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      },
+      "variants": [
+        null,
+        true
+      ]
+    },
+    {
+      "description": "An entry containing a '..' component is rejected before any resolution, including when it would normalize back inside the workspace.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expectation": "deny",
+      "id": "validate-parent-traversal",
+      "input": {
+        "allowed_paths": [
+          "../outside.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "parent_traversal",
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      },
+      "variants": [
+        "a/../b"
+      ]
+    },
+    {
+      "description": "A dangling symlink whose target path lies outside the workspace is an escape even though the target does not exist.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_symlink_escape_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-relative-dangling-symlink-outside",
+      "input": {
+        "allowed_paths": [
+          "dangling-out"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "workspace_escape",
+      "setup": {
+        "entries": [
+          {
+            "confinement": "dangling_escape",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/dangling-out",
+            "target": "${OUTSIDE_DIR}/missing-b"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A relative directory scope inside the workspace is preserved with its trailing slash.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "src/"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-relative-directory",
+      "input": {
+        "allowed_paths": [
+          "src/"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${WORKSPACE}/src"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A relative file inside the workspace is normalized to the same workspace-relative path.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "module.py"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-relative-file",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "file",
+            "path": "${WORKSPACE}/module.py"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A missing directory resolves lexically and stays workspace-relative; the trailing slash is preserved as directory scope.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "src/agent_bridge/git_snapshot.py:repo_root_for",
+        "tests/test_git_snapshot.py::test_repo_root_for_path"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "missing/dir/"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-relative-missing-directory",
+      "input": {
+        "allowed_paths": [
+          "missing/dir/"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A missing file resolves lexically (strict=False) and stays workspace-relative; unlike a directory scope no trailing slash is added.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "src/agent_bridge/git_snapshot.py:repo_root_for",
+        "tests/test_git_snapshot.py::test_repo_root_for_path"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "missing/deep.py"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-relative-missing-file",
+      "input": {
+        "allowed_paths": [
+          "missing/deep.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A relative symlink that resolves outside the workspace is rejected; this is distinct from lexical '..' traversal.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_symlink_escape_rejected"
+      ],
+      "expectation": "deny",
+      "id": "validate-relative-symlink-escape",
+      "input": {
+        "allowed_paths": [
+          "escape/"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": "workspace_escape",
+      "setup": {
+        "entries": [
+          {
+            "confinement": "escape",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/escape",
+            "target": "${OUTSIDE_DIR}"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    },
+    {
+      "description": "A relative symlink that resolves inside the workspace passes confinement; normalization keeps the lexical entry, not the resolved target.",
+      "evidence": [
+        "src/agent_bridge/git_snapshot.py:validate_allowed_paths",
+        "tests/test_git_snapshot.py::test_validate_allowed_paths"
+      ],
+      "expect": {
+        "normalized_scope": [
+          "link-in/file.py"
+        ]
+      },
+      "expectation": "allow",
+      "id": "validate-relative-symlink-inside-scope",
+      "input": {
+        "allowed_paths": [
+          "link-in/file.py"
+        ],
+        "external_roots": []
+      },
+      "operation": "validate_allowed_paths",
+      "reason_category": null,
+      "setup": {
+        "entries": [
+          {
+            "kind": "dir",
+            "path": "${WORKSPACE}/src"
+          },
+          {
+            "confinement": "in_scope",
+            "kind": "symlink",
+            "path": "${WORKSPACE}/link-in",
+            "target": "${WORKSPACE}/src"
+          }
+        ],
+        "workspace": {
+          "git_repo": true
+        }
+      }
+    }
+  ],
+  "corpus_version": 1,
+  "decision_categories": {
+    "allow": "The operation returns a normalized scope, a repository grouping or a non-violating scope verdict without raising.",
+    "deny": "The operation fails closed with a ValueError whose category is recorded in reason_category; the human-readable message is not part of the contract."
+  },
+  "operations": {
+    "group_allowed_paths_by_repo": "git_snapshot.group_allowed_paths_by_repo(workspace, allowed_paths, external_roots): maps each allowed path to its canonical containing repository root at path-resolution level only. Relative entries map to the main workspace; absolute entries map to their Git repository. Trusted roots are not consulted. An absolute entry outside any Git repository raises ValueError.",
+    "scope_match": "git_snapshot.is_allowed/scope_violations on one already-normalized scope and one candidate path: file entries match exactly, directory entries (trailing slash) match strict descendants only. This corpus exercises only the pure path predicate, not change detection.",
+    "symlink_identity": "A single symlink is captured with git_snapshot.take_snapshot and then compared after retargeting with git_snapshot.changed_paths. It isolates the symlink target identity (lstat/readlink digest) and the resulting scope verdict; it is not the general changed/status/index/HEAD comparison corpus.",
+    "validate_allowed_paths": "git_snapshot.validate_allowed_paths(workspace, allowed_paths, external_roots): returns normalized scope paths or raises ValueError. Relative entries stay workspace-relative and may not escape lexically or through a symlink; absolute entries must resolve inside a trusted root and belong to a Git repository whose root is also inside a trusted root."
+  },
+  "placeholder_conventions": {
+    "${OUTSIDE_DIR}": "Absolute path of a directory outside the workspace and outside every trusted root.",
+    "${OUTSIDE_REPO}": "Absolute path of a Git repository outside every trusted root.",
+    "${PARENT_REPO}": "Absolute path of a Git repository whose worktree contains ${TRUSTED_SUBDIR}; used to make the containing repository root fall outside the trusted root.",
+    "${TRUSTED_DIR}": "Absolute path of a trusted external root directory that contains ${TRUSTED_REPO}, ${TRUSTED_REPO_OTHER} and ${TRUSTED_PLAIN}.",
+    "${TRUSTED_ESCAPE_LINK}": "Symlink inside ${TRUSTED_DIR} whose canonical target is ${OUTSIDE_REPO}.",
+    "${TRUSTED_PLAIN}": "Absolute path of a directory under ${TRUSTED_DIR} that is not inside any Git repository.",
+    "${TRUSTED_REPO_OTHER}": "Absolute path of a second Git repository under ${TRUSTED_DIR}, distinct from ${TRUSTED_REPO}.",
+    "${TRUSTED_REPO}": "Absolute path of a Git repository directly under ${TRUSTED_DIR}.",
+    "${TRUSTED_SUBDIR}": "Absolute path of a trusted root directory nested inside ${PARENT_REPO} but not itself a repository root.",
+    "${WORKSPACE_ESCAPE_LINK}": "Symlink ${WORKSPACE}/escape whose canonical target is ${OUTSIDE_DIR}.",
+    "${WORKSPACE_LINK}": "Symlink ${WORKSPACE}/link-in whose canonical target ${WORKSPACE}/src stays inside the workspace.",
+    "${WORKSPACE}": "Absolute path of the synthetic main workspace; it is always a Git repository."
+  },
+  "reason_categories": {
+    "absolute_workspace_path": "An absolute entry resolves inside the main workspace and must be expressed as a relative path; checked before any trusted-root lookup.",
+    "backslash_in_path": "The entry starts with or contains a backslash.",
+    "empty_or_dot_path": "The entry reduces to an empty string or '.', including a bare root slash.",
+    "external_repo_root_outside_trusted": "The path resolves inside a trusted root, but the root of the containing Git repository lies outside every trusted root.",
+    "invalid_allowed_paths_entry": "An entry is not a string or is an empty string.",
+    "not_git_repository": "The absolute entry is not inside any Git repository.",
+    "outside_trusted_roots": "The absolute entry resolves outside every trusted root, including when the escape happens through a symlink.",
+    "parent_traversal": "The entry contains a '..' component.",
+    "scope_violation": "The candidate path is not covered by any normalized allowed scope (file exact match, directory strict prefix).",
+    "symlink_retarget_detected": "A symlink target changed between snapshot and comparison; identity is the link target string, not the target content. The retargeted path is outside the allowed scope.",
+    "workspace_escape": "A relative entry resolves outside the workspace through a symlink; lexical '..' is caught earlier as parent_traversal."
+  },
+  "setup_dsl": {
+    "entries": "List of filesystem objects. Each object has kind ('dir', 'file' or 'symlink') and path. A symlink also has target and confinement ('in_scope', 'escape', 'dangling' or 'dangling_escape'). Paths are absolute placeholder expressions.",
+    "repositories": "List of {root, git_repo}. git_repo=true means the root is initialized as a Git repository with at least one commit; git_repo=false means the directory is not inside any repository.",
+    "trusted_roots": "List of absolute placeholder paths passed as external_roots. An empty list means no trusted external directory is configured.",
+    "workspace": "Object {git_repo}. Declares the main workspace root ${WORKSPACE}; git_repo=true initializes it as a Git repository with at least one commit."
+  },
+  "source": {
+    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "modules": [
+      "src/agent_bridge/git_snapshot.py"
+    ],
+    "repository": "agent_bridge",
+    "tests": [
+      "tests/test_git_snapshot.py",
+      "tests/test_mcp.py"
+    ]
+  }
+}

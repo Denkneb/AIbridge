@@ -3,15 +3,16 @@
 //! The crate implements the structural loading stage (task 2.1), the
 //! project-id/workspace validation group (task 2.2), the endpoint/port
 //! validation group (task 2.3), the cross-project uniqueness group (task 2.4),
-//! the max-rounds/model/optional-path group (task 2.5) and the
-//! auto-approve-permissions group (task 2.6). It reads a UTF-8 TOML file from an
-//! explicit path, requires a top-level `projects` table and, for every project
-//! entry, validates the project id against `^[a-z0-9][a-z0-9_-]{0,63}$`,
-//! resolves the `workspace` to an existing directory, parses the required
-//! `opencode_url` and the optional `mcp_url` into typed loopback endpoints,
-//! requires a positive integer `max_rounds`, parses the optional
-//! `opencode_model` and `opencode_env_file` and collects the optional
-//! `auto_approve_permissions`. Relative workspaces and relative
+//! the max-rounds/model/optional-path group (task 2.5), the
+//! auto-approve-permissions group (task 2.6) and the trusted-external-directory
+//! group (task 2.7). It reads a UTF-8 TOML file from an explicit path, requires
+//! a top-level `projects` table and, for every project entry, validates the
+//! project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the `workspace` to
+//! an existing directory, parses the required `opencode_url` and the optional
+//! `mcp_url` into typed loopback endpoints, requires a positive integer
+//! `max_rounds`, parses the optional `opencode_model` and `opencode_env_file`
+//! and collects the optional `auto_approve_permissions` and
+//! `auto_approve_external_directories`. Relative workspaces and relative
 //! `opencode_env_file` paths resolve against the directory that contains the
 //! specific `projects.toml`, never against the process working directory. After
 //! the individual projects pass, the loader rejects a canonical workspace, a
@@ -24,6 +25,15 @@
 //! `auto_approve_external_directories`, and duplicates collapse while preserving
 //! the first-seen order. An absent key yields an empty collection.
 //!
+//! `auto_approve_external_directories` is an optional TOML array of trusted
+//! external directory roots. Every entry must be a non-empty string that names
+//! an existing, absolute directory; the filesystem root `/` is rejected, each
+//! entry is canonicalized (resolving symlink aliases) and duplicates collapse
+//! while preserving the first-seen order. An absent key yields an empty
+//! collection. [`Config::linked_projects`] then binds a trusted root to a
+//! registered project whose canonical workspace is exactly that root; a trusted
+//! root without a registered project never becomes a task target.
+//!
 //! Both URLs must be `http` URLs on the exact host `127.0.0.1` with an explicit
 //! decimal port in `1..=65535` and no path, query, fragment, username or
 //! password; `mcp_url` must additionally end with `/mcp`. This mirrors the
@@ -35,10 +45,10 @@
 //! removal, non-standard IPv4 canonicalization, dot-segment folding) cannot
 //! silently widen the contract.
 //!
-//! The remaining validation groups (trusted external directories, credential
-//! readers and the project env reader) are deliberately out of scope. The raw
-//! per-project table is preserved on [`ProjectEntry::values`] so those later
-//! tasks can inspect every key and value without re-parsing.
+//! The remaining validation groups (credential readers and the project env
+//! reader) are deliberately out of scope. The raw per-project table is preserved
+//! on [`ProjectEntry::values`] so those later tasks can inspect every key and
+//! value without re-parsing.
 //!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
@@ -79,6 +89,9 @@ pub const OPENCODE_ENV_FILE_KEY: &str = "opencode_env_file";
 
 /// The optional per-project key that lists ordinary permissions to auto-approve.
 pub const AUTO_APPROVE_PERMISSIONS_KEY: &str = "auto_approve_permissions";
+
+/// The optional per-project key that lists trusted external directory roots.
+pub const AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY: &str = "auto_approve_external_directories";
 
 /// The reserved permission name that must go through the trusted-directory key.
 const EXTERNAL_DIRECTORY_PERMISSION: &str = "external_directory";
@@ -199,10 +212,11 @@ impl OpenCodeModel {
 /// The entry carries the typed, validated [`ProjectId`], the canonical,
 /// absolute workspace [`Path`], the typed [`Endpoint`]/[`McpEndpoint`] values,
 /// the positive `max_rounds`, the optional [`OpenCodeModel`], the optional
-/// resolved `opencode_env_file` [`Path`] and the deduplicated
-/// `auto_approve_permissions` list, so consumers never have to repeat the
-/// task 2.2–2.6 validation or re-parse raw values. The raw TOML table is
-/// preserved verbatim for the later validation groups (2.7–2.9), which inspect
+/// resolved `opencode_env_file` [`Path`], the deduplicated
+/// `auto_approve_permissions` list and the deduplicated, canonical
+/// `auto_approve_external_directories` list, so consumers never have to repeat
+/// the task 2.2–2.7 validation or re-parse raw values. The raw TOML table is
+/// preserved verbatim for the later validation groups (2.8–2.9), which inspect
 /// every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
@@ -214,6 +228,7 @@ pub struct ProjectEntry {
     opencode_model: Option<OpenCodeModel>,
     opencode_env_file: Option<PathBuf>,
     auto_approve_permissions: Vec<String>,
+    auto_approve_external_directories: Vec<PathBuf>,
     values: toml::Table,
 }
 
@@ -271,6 +286,17 @@ impl ProjectEntry {
     #[must_use]
     pub fn auto_approve_permissions(&self) -> &[String] {
         &self.auto_approve_permissions
+    }
+
+    /// Returns the trusted external directory roots.
+    ///
+    /// The slice is empty when the key is absent. Every entry is an existing,
+    /// absolute, canonical directory, so symlink aliases have been collapsed and
+    /// the filesystem root `/` never appears. Duplicate canonical directories
+    /// are collapsed while preserving the order of their first occurrence.
+    #[must_use]
+    pub fn auto_approve_external_directories(&self) -> &[PathBuf] {
+        &self.auto_approve_external_directories
     }
 
     /// Returns the raw project table.
@@ -335,6 +361,35 @@ impl Config {
     pub fn is_empty(&self) -> bool {
         self.projects.is_empty()
     }
+
+    /// Returns the registered projects linked to `id` through its
+    /// `auto_approve_external_directories`.
+    ///
+    /// A linked project is **another** configured project whose canonical
+    /// workspace is exactly one of this project's canonical trusted external
+    /// directory entries. Matching is exact, so a trusted directory that merely
+    /// *contains* a registered workspace, or that has no registered project at
+    /// all, never links anything and never becomes a task target. The source
+    /// project itself is never linked through its own trusted roots.
+    ///
+    /// An unknown `id` yields an empty list. The result is ordered by project id
+    /// because the backing [`BTreeMap`] iterates in that order, which makes
+    /// launcher wiring stable for a given configuration.
+    #[must_use]
+    pub fn linked_projects(&self, id: &str) -> Vec<&ProjectEntry> {
+        let Some(entry) = self.projects.get(id) else {
+            return Vec::new();
+        };
+        self.projects
+            .values()
+            .filter(|candidate| {
+                candidate.id.as_str() != id
+                    && entry
+                        .auto_approve_external_directories
+                        .contains(&candidate.workspace)
+            })
+            .collect()
+    }
 }
 
 impl fmt::Debug for Config {
@@ -353,13 +408,14 @@ impl fmt::Debug for Config {
 ///
 /// # Errors
 ///
-/// * [`bridge_domain::ErrorKind::NotFound`] when the file does not exist or a
-///   configured workspace path does not exist;
-/// * [`bridge_domain::ErrorKind::PermissionDenied`] when the file or a
-///   workspace cannot be accessed because of permissions;
+/// * [`bridge_domain::ErrorKind::NotFound`] when the file does not exist, a
+///   configured workspace path does not exist or a configured trusted external
+///   directory does not exist;
+/// * [`bridge_domain::ErrorKind::PermissionDenied`] when the file, a workspace
+///   or a trusted external directory cannot be accessed because of permissions;
 /// * [`bridge_domain::ErrorKind::Internal`] for any other I/O failure,
 ///   including an unresolvable symlink (a loop or an unreadable link) in a
-///   credential path;
+///   credential path or a trusted external directory;
 /// * [`bridge_domain::ErrorKind::InvalidInput`] when the bytes are not UTF-8,
 ///   when the TOML is syntactically invalid, when the `projects` table is
 ///   missing, when the `projects` value or a project entry has the wrong
@@ -374,9 +430,11 @@ impl fmt::Debug for Config {
 ///   `opencode_env_file` is not a non-empty string, when
 ///   `auto_approve_permissions` is not a TOML array of non-empty strings without
 ///   surrounding whitespace or contains the reserved `external_directory` name,
-///   when an MCP token file is not a non-empty string, or when a canonical
-///   workspace, a server endpoint or an MCP token file is reused across projects
-///   or an MCP token file equals a password file.
+///   when `auto_approve_external_directories` is not a TOML array of non-empty
+///   strings, is not an absolute path, does not exist, is not a directory or is
+///   the filesystem root, when an MCP token file is not a non-empty string, or
+///   when a canonical workspace, a server endpoint or an MCP token file is
+///   reused across projects or an MCP token file equals a password file.
 ///
 /// None of these errors renders the file contents, credential values, project
 /// ids, workspace paths, URL inputs or the absolute input path.
@@ -420,7 +478,7 @@ fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
 
 /// Validates the raw project tables and builds the public [`Config`].
 ///
-/// Each project is validated independently first (tasks 2.2/2.3/2.5/2.6). Only
+/// Each project is validated independently first (tasks 2.2/2.3/2.5/2.6/2.7). Only
 /// then are the cross-project uniqueness rules of task 2.4 applied: a canonical
 /// workspace may not be bound to two projects, a server endpoint may not be
 /// reused (neither between two projects nor by the OpenCode and MCP endpoints
@@ -466,6 +524,8 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         let opencode_model = validate_opencode_model(&values)?;
         let opencode_env_file = validate_opencode_env_file(&values, config_dir)?;
         let auto_approve_permissions = validate_auto_approve_permissions(&values)?;
+        let auto_approve_external_directories =
+            validate_auto_approve_external_directories(&values)?;
 
         let password = resolve_password_file(&values, config_dir)?;
         let token = resolve_mcp_token_file(&values, config_dir)?;
@@ -482,6 +542,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 opencode_model,
                 opencode_env_file,
                 auto_approve_permissions,
+                auto_approve_external_directories,
                 values,
             },
         );
@@ -1158,6 +1219,97 @@ fn validate_auto_approve_permissions(values: &toml::Table) -> Result<Vec<String>
     Ok(permissions)
 }
 
+/// Validates the optional `auto_approve_external_directories` TOML array.
+///
+/// The key is optional; when absent the project trusts no external directory and
+/// an empty list is returned. When present the value must be a TOML array and
+/// every entry must be a non-empty string naming an existing, absolute
+/// directory. The entry is canonicalized with a strict resolve, which expands
+/// every symlink alias and requires the whole path to exist, so a symlinked
+/// spelling is stored as its real target and cannot widen the trusted area. The
+/// filesystem root `/` is rejected. Duplicates collapse onto the first-seen
+/// canonical directory. All error messages are static and never contain a
+/// project id, a supplied directory value, config contents or a path.
+fn validate_auto_approve_external_directories(values: &toml::Table) -> Result<Vec<PathBuf>> {
+    let Some(value) = values.get(AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY) else {
+        return Ok(Vec::new());
+    };
+    let array = value.as_array().ok_or_else(|| {
+        DomainError::invalid_input(
+            "project auto_approve_external_directories must be a list of strings",
+        )
+    })?;
+
+    let mut directories: Vec<PathBuf> = Vec::new();
+    for item in array {
+        let raw = item.as_str().ok_or_else(|| {
+            DomainError::invalid_input(
+                "project auto_approve_external_directories entries must be non-empty strings",
+            )
+        })?;
+        if raw.trim().is_empty() {
+            return Err(DomainError::invalid_input(
+                "project auto_approve_external_directories entries must be non-empty strings",
+            ));
+        }
+        let candidate = Path::new(raw);
+        if !candidate.is_absolute() {
+            return Err(DomainError::invalid_input(
+                "project auto_approve_external_directories entries must be absolute paths",
+            ));
+        }
+
+        let canonical = std::fs::canonicalize(candidate).map_err(external_directory_error)?;
+        if !canonical.is_dir() {
+            return Err(DomainError::invalid_input(
+                "project external directory is not a directory",
+            ));
+        }
+        if is_filesystem_root(&canonical) {
+            return Err(DomainError::invalid_input(
+                "project filesystem root is not a trusted external directory",
+            ));
+        }
+        if !directories.contains(&canonical) {
+            directories.push(canonical);
+        }
+    }
+    Ok(directories)
+}
+
+/// Returns `true` when `path` is the root of a filesystem (`/` or `C:\`).
+///
+/// A root path has exactly one component, which is the [`Component::RootDir`] or
+/// a [`Component::Prefix`]. This is checked on the canonical path so that an
+/// alias like `/./` or `/tmp/..` cannot disguise the root.
+fn is_filesystem_root(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(
+        components.next(),
+        Some(Component::RootDir | Component::Prefix(_))
+    ) && components.next().is_none()
+}
+
+/// Maps an external-directory resolution failure to a safe, typed
+/// [`DomainError`].
+///
+/// The message never renders the directory value; the underlying
+/// [`std::io::Error`] is kept only as the error source, so its path-bearing
+/// [`Display`](std::fmt::Display) text never reaches the safe output.
+fn external_directory_error(source: std::io::Error) -> DomainError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            DomainError::not_found("project external directory does not exist").with_source(source)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DomainError::permission_denied("project external directory could not be accessed")
+                .with_source(source)
+        }
+        _ => DomainError::internal("project external directory could not be resolved")
+            .with_source(source),
+    }
+}
+
 /// Maps an I/O failure to a safe, typed [`DomainError`].
 ///
 /// The original [`std::io::Error`] is kept only as the error source, so its
@@ -1214,9 +1366,9 @@ fn credential_path_error(source: std::io::Error) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTO_APPROVE_PERMISSIONS_KEY, Config, MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY,
-        OPENCODE_MODEL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE, WORKSPACE_KEY, load_config,
-        parse_projects,
+        AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config, MAX_ROUNDS_KEY,
+        MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE,
+        WORKSPACE_KEY, load_config, parse_projects,
     };
     use bridge_domain::{DomainError, ErrorKind, ProjectId};
     use std::error::Error;
@@ -3332,5 +3484,459 @@ mod tests {
         let type_error = load_auto_approve_config(&format!("\"{SECRET}\""));
         let rendered = format!("{type_error} {type_error:?}");
         assert!(!rendered.contains(SECRET), "leaked permission: {rendered}");
+    }
+
+    #[test]
+    fn crate_constant_names_the_auto_approve_external_directories_key() {
+        assert_eq!(
+            AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY,
+            "auto_approve_external_directories"
+        );
+    }
+
+    /// Builds a multi-project TOML with sequential loopback ports; every entry
+    /// is `(id, workspace, extra)` and gets `auto_approve_external_directories`
+    /// from `extra`.
+    fn projects_toml(entries: &[(&str, &Path, &str)]) -> String {
+        let mut text = String::new();
+        for (index, (id, workspace, extra)) in entries.iter().enumerate() {
+            let port = 4101 + index;
+            text.push_str(&format!(
+                "[projects.{id}]\nworkspace = \"{ws}\"\nopencode_url = \"http://127.0.0.1:{port}\"\npassword_file = \"secrets/{id}.password\"\nmax_rounds = 3\n{extra}\n",
+                ws = workspace.to_str().expect("utf-8 path"),
+            ));
+        }
+        text
+    }
+
+    /// Loads a one-project config with the given extra key lines, returning the
+    /// validation error and panicking if it unexpectedly loads.
+    fn load_external_extra_error(extra: &str) -> DomainError {
+        let dir = TempDir::new("external-extra-error");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                extra,
+            ),
+        );
+        load_config(&config_path).expect_err("config must be rejected")
+    }
+
+    /// Returns the linked project ids for `id`, in discovery order.
+    fn linked_ids<'a>(config: &'a Config, id: &str) -> Vec<&'a str> {
+        config
+            .linked_projects(id)
+            .iter()
+            .map(|entry| entry.id().as_str())
+            .collect()
+    }
+
+    // Corpus case `valid-minimal-project`: the optional key defaults to empty.
+    #[test]
+    fn auto_approve_external_directories_default_to_empty() {
+        let dir = TempDir::new("external-default");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+
+        let config = load_config(&config_path).expect("minimal config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert!(entry.auto_approve_external_directories().is_empty());
+    }
+
+    // Corpus case `valid-external-directory-canonicalized`.
+    #[cfg(unix)]
+    #[test]
+    fn canonicalizes_trusted_external_directory_symlink() {
+        let dir = TempDir::new("external-symlink");
+        let workspace = dir.mkdir("ws");
+        let real = dir.mkdir("real-trusted");
+        let link = dir.path().join("trusted-link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            link.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("symlinked trusted directory must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.auto_approve_external_directories().to_vec(),
+            vec![canonical(&real)]
+        );
+    }
+
+    // Corpus case `invalid-external-directory-relative`.
+    #[test]
+    fn rejects_relative_trusted_external_directory() {
+        let error =
+            load_external_extra_error("auto_approve_external_directories = [\"relative/dir\"]\n");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project auto_approve_external_directories entries must be absolute paths"
+        );
+    }
+
+    // Corpus case `invalid-external-directory-filesystem-root`.
+    #[test]
+    fn rejects_filesystem_root_as_trusted_external_directory() {
+        let error = load_external_extra_error("auto_approve_external_directories = [\"/\"]\n");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project filesystem root is not a trusted external directory"
+        );
+    }
+
+    // Corpus case `invalid-external-directory-missing`.
+    #[test]
+    fn rejects_missing_trusted_external_directory() {
+        let dir = TempDir::new("external-missing");
+        let workspace = dir.mkdir("ws");
+        let missing = dir.path().join("missing-dir");
+        let extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            missing.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("missing trusted directory must fail");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(
+            error.to_string(),
+            "project external directory does not exist"
+        );
+    }
+
+    // Corpus case `invalid-external-directory-not-a-directory`.
+    #[test]
+    fn rejects_file_as_trusted_external_directory() {
+        let dir = TempDir::new("external-file");
+        let workspace = dir.mkdir("ws");
+        let file = dir.write("not-a-dir", "x");
+        let extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            file.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("file trusted directory must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project external directory is not a directory"
+        );
+    }
+
+    // Corpus case `invalid-external-directory-non-list`.
+    #[test]
+    fn rejects_non_list_auto_approve_external_directories() {
+        for literal in ["\"/tmp\"", "3", "true", "3.5", "{ x = 1 }"] {
+            let error = load_external_extra_error(&format!(
+                "auto_approve_external_directories = {literal}\n"
+            ));
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_external_directories must be a list of strings",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_string_or_empty_external_directory_entries() {
+        for literal in ["[1]", "[\"\"]", "[\"   \"]", "[true]", "[[\"/tmp\"]]"] {
+            let error = load_external_extra_error(&format!(
+                "auto_approve_external_directories = {literal}\n"
+            ));
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "literal: {literal}");
+            assert_eq!(
+                error.to_string(),
+                "project auto_approve_external_directories entries must be non-empty strings",
+                "literal: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_empty_auto_approve_external_directories_array() {
+        let dir = TempDir::new("external-empty");
+        let workspace = dir.mkdir("ws");
+        let extra = "auto_approve_external_directories = []\n";
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("empty array must load");
+        assert!(
+            config
+                .project("proj")
+                .expect("project must exist")
+                .auto_approve_external_directories()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn collapses_duplicate_trusted_external_directories_stably() {
+        let dir = TempDir::new("external-dedupe");
+        let workspace = dir.mkdir("ws");
+        let trusted = dir.mkdir("trusted");
+        let other = dir.mkdir("other");
+        let extra = format!(
+            "auto_approve_external_directories = [\"{a}\", \"{b}\", \"{a}\"]\n",
+            a = trusted.to_str().expect("utf-8 path"),
+            b = other.to_str().expect("utf-8 path"),
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("duplicate trusted directories must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.auto_approve_external_directories().to_vec(),
+            vec![canonical(&trusted), canonical(&other)]
+        );
+    }
+
+    // A symlink alias of an already-trusted directory collapses onto the same
+    // canonical entry instead of being trusted twice.
+    #[cfg(unix)]
+    #[test]
+    fn collapses_symlink_alias_of_trusted_external_directory() {
+        let dir = TempDir::new("external-dedupe-link");
+        let workspace = dir.mkdir("ws");
+        let trusted = dir.mkdir("trusted");
+        let link = dir.path().join("trusted-link");
+        std::os::unix::fs::symlink(&trusted, &link).expect("symlink must be creatable");
+        let extra = format!(
+            "auto_approve_external_directories = [\"{a}\", \"{b}\"]\n",
+            a = trusted.to_str().expect("utf-8 path"),
+            b = link.to_str().expect("utf-8 path"),
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let config = load_config(&config_path).expect("alias trusted directory must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.auto_approve_external_directories().to_vec(),
+            vec![canonical(&trusted)]
+        );
+    }
+
+    #[test]
+    fn external_directory_errors_do_not_leak_supplied_values() {
+        const SECRET: &str = "secret-external-directory";
+
+        let dir = TempDir::new("external-redact");
+        let workspace = dir.mkdir("ws");
+        let secret = dir.path().join(SECRET);
+        let extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            secret.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+
+        let error = load_config(&config_path).expect_err("missing trusted directory must fail");
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(SECRET), "leaked directory: {rendered}");
+        assert!(
+            !rendered.contains(config_path.to_str().expect("utf-8 path")),
+            "leaked config path: {rendered}"
+        );
+    }
+
+    // Corpus case `valid-linked-project-canonical-exact-match`.
+    #[cfg(unix)]
+    #[test]
+    fn links_project_through_canonical_workspace_match() {
+        let dir = TempDir::new("linked-canonical");
+        let proj_ws = dir.mkdir("ws-proj");
+        let beta_ws = dir.mkdir("ws-beta");
+        let link = dir.path().join("beta-alias");
+        std::os::unix::fs::symlink(&beta_ws, &link).expect("symlink must be creatable");
+        let proj_extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            link.to_str().expect("utf-8 path")
+        );
+        let text = projects_toml(&[
+            ("proj", &proj_ws, &proj_extra),
+            ("beta", &beta_ws, ""),
+        ]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+        let linked = config.linked_projects("proj");
+
+        assert_eq!(linked_ids(&config, "proj"), ["beta"]);
+        assert_eq!(linked[0].workspace(), canonical(&beta_ws).as_path());
+    }
+
+    // Corpus case `valid-linked-containing-parent-dir-not-a-target`.
+    #[test]
+    fn containing_parent_directory_does_not_link_child_workspace() {
+        let dir = TempDir::new("linked-parent");
+        let proj_ws = dir.mkdir("ws-proj");
+        let beta_ws = dir.mkdir("ws-beta");
+        let parent_extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            dir.path().to_str().expect("utf-8 path")
+        );
+        let text = projects_toml(&[
+            ("proj", &proj_ws, &parent_extra),
+            ("beta", &beta_ws, ""),
+        ]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+
+        assert!(config.linked_projects("proj").is_empty());
+    }
+
+    // Corpus case `valid-linked-unregistered-trusted-dir-not-a-target`.
+    #[test]
+    fn unregistered_trusted_directory_is_not_a_task_target() {
+        let dir = TempDir::new("linked-unregistered");
+        let proj_ws = dir.mkdir("ws-proj");
+        let beta_ws = dir.mkdir("ws-beta");
+        let unregistered = dir.mkdir("ws-lib");
+        let proj_extra = format!(
+            "auto_approve_external_directories = [\"{a}\", \"{b}\"]\n",
+            a = unregistered.to_str().expect("utf-8 path"),
+            b = beta_ws.to_str().expect("utf-8 path"),
+        );
+        let text = projects_toml(&[
+            ("proj", &proj_ws, &proj_extra),
+            ("beta", &beta_ws, ""),
+        ]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+
+        assert_eq!(linked_ids(&config, "proj"), ["beta"]);
+    }
+
+    // Corpus case `valid-linked-project-sorted-deterministically`.
+    #[test]
+    fn linked_projects_are_sorted_by_project_id() {
+        let dir = TempDir::new("linked-sorted");
+        let proj_ws = dir.mkdir("ws-proj");
+        let zeta_ws = dir.mkdir("ws-zeta");
+        let alpha_ws = dir.mkdir("ws-alpha");
+        let proj_extra = format!(
+            "auto_approve_external_directories = [\"{z}\", \"{a}\"]\n",
+            z = zeta_ws.to_str().expect("utf-8 path"),
+            a = alpha_ws.to_str().expect("utf-8 path"),
+        );
+        let text = projects_toml(&[
+            ("proj", &proj_ws, &proj_extra),
+            ("zeta", &zeta_ws, ""),
+            ("alpha", &alpha_ws, ""),
+        ]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+
+        assert_eq!(linked_ids(&config, "proj"), ["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn trusted_own_workspace_does_not_self_link() {
+        let dir = TempDir::new("linked-self");
+        let proj_ws = dir.mkdir("ws-proj");
+        let beta_ws = dir.mkdir("ws-beta");
+        let proj_extra = format!(
+            "auto_approve_external_directories = [\"{}\"]\n",
+            proj_ws.to_str().expect("utf-8 path")
+        );
+        let text = projects_toml(&[
+            ("proj", &proj_ws, &proj_extra),
+            ("beta", &beta_ws, ""),
+        ]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+
+        assert!(config.linked_projects("proj").is_empty());
+    }
+
+    #[test]
+    fn linked_projects_without_trusted_roots_is_empty() {
+        let dir = TempDir::new("linked-none");
+        let proj_ws = dir.mkdir("ws-proj");
+        let beta_ws = dir.mkdir("ws-beta");
+        let text = projects_toml(&[("proj", &proj_ws, ""), ("beta", &beta_ws, "")]);
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("linked config must load");
+
+        assert!(config.linked_projects("proj").is_empty());
+        assert!(config.linked_projects("unknown").is_empty());
     }
 }

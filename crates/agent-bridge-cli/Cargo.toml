@@ -1,0 +1,15 @@
+[package]
+name = "agent-bridge-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agent-bridge"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+bridge-domain.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "bridge-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bridge-domain.workspace = true
+toml = { workspace = true }

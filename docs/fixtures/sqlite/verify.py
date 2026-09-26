@@ -8,7 +8,7 @@ verifier uses only the Python standard library (``sqlite3``/``json``).
 
 Usage::
 
-    python3 .docs/fixtures/sqlite/verify.py
+    python3 docs/fixtures/sqlite/verify.py
 
 Exit code 0 means every fixture matched; 1 means at least one check failed and
 2 means the fixture manifest itself is unusable.

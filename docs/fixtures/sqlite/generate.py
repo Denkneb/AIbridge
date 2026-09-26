@@ -9,7 +9,7 @@ sorted keys.
 
 Usage::
 
-    python3 .docs/fixtures/sqlite/generate.py
+    python3 docs/fixtures/sqlite/generate.py
 
 The generated databases are checkpointed and closed; no ``-wal``/``-shm``
 sidecars are left behind.  Regeneration is only needed when the fixture

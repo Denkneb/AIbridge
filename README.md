@@ -1,0 +1,52 @@
+# agent-bridge (Rust)
+
+Rust-переписывание `agent-bridge`: Cargo workspace с доменной моделью
+(`bridge-domain`), загрузчиком конфигурации (`bridge-config`) и CLI
+(`agent-bridge-cli`). Цель — сохранить контракты CLI, MCP и SQLite, перейти к
+единому Rust-бинарнику и добавить GUI на GPUI. Миграция идёт поэтапно, без
+одномоментной замены Python.
+
+## Статус миграции
+
+- Завершены этапы конфигурации **2.1–2.6** (базовый TOML loader, project ID и
+  workspace validation, endpoint/port validation, уникальность
+  workspace/endpoints/token files, max rounds/model/optional paths,
+  auto-approve permissions).
+- Следующий этап — **2.7. Trusted external directories**.
+- Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
+
+## Документация
+
+- [docs/README.md](docs/README.md) — обзор комплекта документов.
+- [docs/implementation-plan.md](docs/implementation-plan.md) — план и статус миграции.
+- [docs/architecture.md](docs/architecture.md) — целевая архитектура.
+- [docs/existing-contract.md](docs/existing-contract.md) — существующий контракт.
+- [docs/contract-manifest.json](docs/contract-manifest.json) — manifest контракта.
+- [docs/testing-and-migration.md](docs/testing-and-migration.md) — тестирование и миграция.
+
+## Fixtures и corpora
+
+- Конфигурация: [docs/config-fixtures.md](docs/config-fixtures.md),
+  [docs/fixtures/config-cases.json](docs/fixtures/config-cases.json)
+- MCP: [docs/mcp-fixtures.md](docs/mcp-fixtures.md),
+  [docs/fixtures/mcp-cases.json](docs/fixtures/mcp-cases.json)
+- SQLite: [docs/sqlite-fixtures.md](docs/sqlite-fixtures.md),
+  [docs/fixtures/sqlite/expected.json](docs/fixtures/sqlite/expected.json)
+- Политика команд: [docs/command-policy-fixtures.md](docs/command-policy-fixtures.md),
+  [docs/fixtures/command-policy-cases.json](docs/fixtures/command-policy-cases.json)
+- Политика путей: [docs/path-policy-fixtures.md](docs/path-policy-fixtures.md),
+  [docs/fixtures/path-policy-cases.json](docs/fixtures/path-policy-cases.json)
+- Git snapshot: [docs/git-snapshot-fixtures.md](docs/git-snapshot-fixtures.md),
+  [docs/fixtures/git-snapshot-cases.json](docs/fixtures/git-snapshot-cases.json)
+- Мульти-репозиторная агрегация:
+  [docs/multi-repository-fixtures.md](docs/multi-repository-fixtures.md),
+  [docs/fixtures/multi-repository-cases.json](docs/fixtures/multi-repository-cases.json)
+
+## Проверки
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+python3 docs/fixtures/sqlite/verify.py
+git diff --check
+```

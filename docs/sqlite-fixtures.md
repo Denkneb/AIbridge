@@ -132,8 +132,8 @@ fixtures (v0–v5) в набор не входят.
 ## Regeneration
 
 ```sh
-python3 .docs/fixtures/sqlite/generate.py   # пересоздаёт БД и expected.json
-python3 .docs/fixtures/sqlite/verify.py     # read-only проверка
+python3 docs/fixtures/sqlite/generate.py   # пересоздаёт БД и expected.json
+python3 docs/fixtures/sqlite/verify.py     # read-only проверка
 ```
 
 `generate.py` читает только собственные константы, работает на stdlib,

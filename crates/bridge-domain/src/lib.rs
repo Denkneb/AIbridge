@@ -788,7 +788,7 @@ impl TryFrom<String> for VerificationStatus {
 /// Git fingerprint triple captured before and after a verifier run.
 ///
 /// The field names and the `String` representation are exactly those proven by
-/// `rounds.verifier_json` in `.docs/fixtures/sqlite/expected.json`.
+/// `rounds.verifier_json` in `docs/fixtures/sqlite/expected.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitFingerprint {
     /// Current commit id.
@@ -834,8 +834,8 @@ pub struct VerificationCommand {
 ///
 /// The modeled fields cover the variants produced by the reference
 /// implementation (`verifier.py:run_round_verification`) that are also proven
-/// by `.docs/fixtures/sqlite/expected.json` and
-/// `.docs/fixtures/mcp-cases.json`: `status`, `commands`, `index`, `reason`,
+/// by `docs/fixtures/sqlite/expected.json` and
+/// `docs/fixtures/mcp-cases.json`: `status`, `commands`, `index`, `reason`,
 /// `log`, `before`, `after` and `side_effects`.
 ///
 /// `commands` is absent for the early `unsafe` and `error` variants
@@ -1550,7 +1550,7 @@ mod tests {
 
     #[test]
     fn verification_round_trips_persisted_fixture_payload() {
-        // Mirrors `rounds.verifier_json` in `.docs/fixtures/sqlite/expected.json`.
+        // Mirrors `rounds.verifier_json` in `docs/fixtures/sqlite/expected.json`.
         let payload = serde_json::json!({
             "after": fingerprint_json(),
             "before": fingerprint_json(),
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn verification_round_trips_mcp_failed_payload_with_side_effects() {
-        // Mirrors the compact `verification` object in `.docs/fixtures/mcp-cases.json`.
+        // Mirrors the compact `verification` object in `docs/fixtures/mcp-cases.json`.
         let payload = serde_json::json!({
             "after": fingerprint_json(),
             "before": fingerprint_json(),

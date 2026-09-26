@@ -299,6 +299,44 @@ pub enum TaskStatus {
     Closed,
 }
 
+/// The single, table-driven source of truth for allowed [`TaskStatus`]
+/// transitions.
+///
+/// Each entry is an allowed `(from, to)` pair. Every decision about whether a
+/// transition is permitted is derived from this table, so no caller-side
+/// `match` or scattered rule can diverge from the frozen contract
+/// (`domain.task_transitions` in the contract manifest). The `any_non_terminal
+/// -> closed` rule is expanded here into one explicit pair per non-terminal
+/// status.
+pub const TASK_TRANSITIONS: [(TaskStatus, TaskStatus); 26] = [
+    (TaskStatus::Accepted, TaskStatus::Accepted),
+    (TaskStatus::Closed, TaskStatus::Closed),
+    (TaskStatus::Implementing, TaskStatus::Closed),
+    (TaskStatus::AwaitingReview, TaskStatus::Closed),
+    (TaskStatus::Revising, TaskStatus::Closed),
+    (TaskStatus::NeedsUser, TaskStatus::Closed),
+    (TaskStatus::Failed, TaskStatus::Closed),
+    (TaskStatus::DeliveryUnknown, TaskStatus::Closed),
+    (TaskStatus::AwaitingReview, TaskStatus::Accepted),
+    (TaskStatus::AwaitingReview, TaskStatus::NeedsUser),
+    (TaskStatus::AwaitingReview, TaskStatus::Revising),
+    (TaskStatus::DeliveryUnknown, TaskStatus::Implementing),
+    (TaskStatus::DeliveryUnknown, TaskStatus::Revising),
+    (TaskStatus::Failed, TaskStatus::Implementing),
+    (TaskStatus::Failed, TaskStatus::Revising),
+    (TaskStatus::Implementing, TaskStatus::AwaitingReview),
+    (TaskStatus::Implementing, TaskStatus::DeliveryUnknown),
+    (TaskStatus::Implementing, TaskStatus::Failed),
+    (TaskStatus::Implementing, TaskStatus::NeedsUser),
+    (TaskStatus::NeedsUser, TaskStatus::Accepted),
+    (TaskStatus::NeedsUser, TaskStatus::Implementing),
+    (TaskStatus::NeedsUser, TaskStatus::Revising),
+    (TaskStatus::Revising, TaskStatus::AwaitingReview),
+    (TaskStatus::Revising, TaskStatus::DeliveryUnknown),
+    (TaskStatus::Revising, TaskStatus::Failed),
+    (TaskStatus::Revising, TaskStatus::NeedsUser),
+];
+
 impl TaskStatus {
     /// All statuses in the frozen vocabulary order.
     pub const ALL: [TaskStatus; 8] = [
@@ -351,6 +389,35 @@ impl TaskStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Accepted | Self::Closed)
     }
+
+    /// Returns `true` when moving from `self` to `next` is an allowed
+    /// transition.
+    ///
+    /// The answer is derived solely from [`TASK_TRANSITIONS`] and requires no
+    /// storage access.
+    #[must_use]
+    pub fn can_transition_to(self, next: TaskStatus) -> bool {
+        TASK_TRANSITIONS
+            .iter()
+            .any(|(from, to)| *from == self && *to == next)
+    }
+
+    /// Requires that moving from `self` to `next` is an allowed transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::Conflict`] [`DomainError`] when the transition
+    /// is not listed in [`TASK_TRANSITIONS`]. The error carries only a static,
+    /// non-sensitive message and never leaks the caller's inputs.
+    pub fn require_transition(self, next: TaskStatus) -> Result<()> {
+        if self.can_transition_to(next) {
+            Ok(())
+        } else {
+            Err(DomainError::conflict(
+                "task status transition is not allowed",
+            ))
+        }
+    }
 }
 
 impl fmt::Display for TaskStatus {
@@ -393,7 +460,9 @@ impl TryFrom<String> for TaskStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{DomainError, ErrorKind, ProjectId, TaskId, TaskStatus, crate_name};
+    use super::{
+        DomainError, ErrorKind, ProjectId, TASK_TRANSITIONS, TaskId, TaskStatus, crate_name,
+    };
     use std::any::TypeId;
     use std::error::Error;
     use std::str::FromStr;
@@ -653,5 +722,126 @@ mod tests {
 
         assert_eq!(active, expected_active);
         assert_eq!(terminal, expected_terminal);
+    }
+
+    #[test]
+    fn task_transition_table_has_no_duplicates_and_known_pairs() {
+        let mut seen = Vec::new();
+        for pair in TASK_TRANSITIONS {
+            assert!(
+                TaskStatus::ALL.contains(&pair.0) && TaskStatus::ALL.contains(&pair.1),
+                "transition table references an unknown status: {pair:?}"
+            );
+            assert!(
+                !seen.contains(&pair),
+                "duplicate transition table entry: {pair:?}"
+            );
+            seen.push(pair);
+        }
+        assert_eq!(seen.len(), TASK_TRANSITIONS.len());
+    }
+
+    #[test]
+    fn can_transition_to_matches_contract_for_all_pairs() {
+        const ALLOWED: [(TaskStatus, TaskStatus); 26] = [
+            (TaskStatus::Accepted, TaskStatus::Accepted),
+            (TaskStatus::Closed, TaskStatus::Closed),
+            (TaskStatus::Implementing, TaskStatus::Closed),
+            (TaskStatus::AwaitingReview, TaskStatus::Closed),
+            (TaskStatus::Revising, TaskStatus::Closed),
+            (TaskStatus::NeedsUser, TaskStatus::Closed),
+            (TaskStatus::Failed, TaskStatus::Closed),
+            (TaskStatus::DeliveryUnknown, TaskStatus::Closed),
+            (TaskStatus::AwaitingReview, TaskStatus::Accepted),
+            (TaskStatus::AwaitingReview, TaskStatus::NeedsUser),
+            (TaskStatus::AwaitingReview, TaskStatus::Revising),
+            (TaskStatus::DeliveryUnknown, TaskStatus::Implementing),
+            (TaskStatus::DeliveryUnknown, TaskStatus::Revising),
+            (TaskStatus::Failed, TaskStatus::Implementing),
+            (TaskStatus::Failed, TaskStatus::Revising),
+            (TaskStatus::Implementing, TaskStatus::AwaitingReview),
+            (TaskStatus::Implementing, TaskStatus::DeliveryUnknown),
+            (TaskStatus::Implementing, TaskStatus::Failed),
+            (TaskStatus::Implementing, TaskStatus::NeedsUser),
+            (TaskStatus::NeedsUser, TaskStatus::Accepted),
+            (TaskStatus::NeedsUser, TaskStatus::Implementing),
+            (TaskStatus::NeedsUser, TaskStatus::Revising),
+            (TaskStatus::Revising, TaskStatus::AwaitingReview),
+            (TaskStatus::Revising, TaskStatus::DeliveryUnknown),
+            (TaskStatus::Revising, TaskStatus::Failed),
+            (TaskStatus::Revising, TaskStatus::NeedsUser),
+        ];
+
+        for from in TaskStatus::ALL {
+            for to in TaskStatus::ALL {
+                let expected = ALLOWED.contains(&(from, to));
+                assert_eq!(
+                    from.can_transition_to(to),
+                    expected,
+                    "unexpected decision for {from} -> {to}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn any_non_terminal_status_can_close() {
+        for status in TaskStatus::ALL {
+            if status.is_active() {
+                assert!(
+                    status.can_transition_to(TaskStatus::Closed),
+                    "{status} must be closable"
+                );
+            }
+        }
+        assert!(!TaskStatus::Accepted.can_transition_to(TaskStatus::Closed));
+        assert!(TaskStatus::Closed.can_transition_to(TaskStatus::Closed));
+    }
+
+    #[test]
+    fn require_transition_accepts_allowed_and_rejects_forbidden_safely() {
+        for from in TaskStatus::ALL {
+            for to in TaskStatus::ALL {
+                let result = from.require_transition(to);
+                if from.can_transition_to(to) {
+                    assert!(result.is_ok(), "{from} -> {to} must be permitted");
+                } else {
+                    let error = result.expect_err("forbidden transition must fail");
+                    assert_eq!(error.kind(), ErrorKind::Conflict);
+                    assert_eq!(error.message(), "task status transition is not allowed");
+
+                    let rendered = format!("{error} {error:?}");
+                    assert!(
+                        !rendered.contains(from.as_str()),
+                        "error leaked the source status: {rendered}"
+                    );
+                    assert!(
+                        !rendered.contains(to.as_str()),
+                        "error leaked the target status: {rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_statuses_only_self_transition_or_close() {
+        assert!(TaskStatus::Accepted.can_transition_to(TaskStatus::Accepted));
+        assert!(TaskStatus::Closed.can_transition_to(TaskStatus::Closed));
+
+        for to in TaskStatus::ALL {
+            if to != TaskStatus::Accepted {
+                assert!(
+                    !TaskStatus::Accepted.can_transition_to(to),
+                    "accepted must not transition to {to}"
+                );
+            }
+            if to != TaskStatus::Closed {
+                assert!(
+                    !TaskStatus::Closed.can_transition_to(to),
+                    "closed must not transition to {to}"
+                );
+            }
+        }
     }
 }

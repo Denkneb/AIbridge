@@ -76,9 +76,18 @@
 //! local table-driven [`ROUND_TRANSITIONS`] contract and validates every task
 //! status change through [`TaskStatus::require_transition`] before the UPDATE.
 //! Paired round/task writes and their event share one timestamp, so an observer
-//! never sees a partially applied lifecycle step. Verifier persist-once
-//! (task 3.9b), cooperative close, `reopen_failed_round` and schema changes
-//! remain out of scope.
+//! never sees a partially applied lifecycle step.
+//!
+//! Verifier persist-once (task 3.9b) extends the same connection with
+//! [`StorageConnection::begin_verifier`] and
+//! [`StorageConnection::complete_verifier`]. Both run in one `BEGIN IMMEDIATE`
+//! transaction, validate the round through the 3.9a current-round/project check
+//! (which also enforces the `verifier_state`/`verifier_json` pair through
+//! [`RoundRow::from_row`]) and never overwrite a persisted `done` result: an
+//! identical completed result is replayed without any write, a different one is
+//! a fail-closed conflict, and a stale `begin` cannot undo a finished run.
+//! Cooperative close, `reopen_failed_round` and schema changes remain out of
+//! scope.
 
 use std::error::Error;
 use std::fmt;
@@ -2568,15 +2577,18 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, CreateRevisionRoundInput, CreateTaskError,
-        CreateTaskInput, CreateTaskOutcome, FinishRoundInput, ForeignKey, Index, InitializeError,
-        InspectError, QueryError, ROUND_TRANSITIONS, ReplayStateError, RoundRef, RoundRow,
-        RoundRowError, RoundUpdateError, SCHEMA_VERSION, SchemaMismatch, StorageConnection,
-        TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6, connect,
-        initialize, inspect, open_read_only, query_user_version, round_transition_allowed,
-        v6_contract,
+        BUSY_TIMEOUT_MS, Column, CompleteVerifierInput, ConnectError, Contract,
+        CreateRevisionRoundInput, CreateTaskError, CreateTaskInput, CreateTaskOutcome,
+        FinishRoundInput, ForeignKey, Index, InitializeError, InspectError, QueryError,
+        ROUND_TRANSITIONS, ReplayStateError, RoundRef, RoundRow, RoundRowError, RoundUpdateError,
+        SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError,
+        V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect, initialize, inspect,
+        open_read_only, query_user_version, round_transition_allowed, v6_contract,
     };
-    use bridge_domain::{ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, VerifierState};
+    use bridge_domain::{
+        ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerificationCommand,
+        VerificationStatus, VerifierState,
+    };
     use rusqlite::types::Value as SqlValue;
     use rusqlite::{Connection, TransactionBehavior};
     use serde_json::Value;
@@ -7146,6 +7158,502 @@ mod tests {
             assert!(!sidecar(&fixtures.join(name), "-shm").exists());
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Verifier persist-once (task 3.9b).
+    // -----------------------------------------------------------------------
+
+    fn sample_verification(status: VerificationStatus, log: &str) -> Verification {
+        Verification {
+            status,
+            commands: Some(vec![VerificationCommand {
+                command: "cargo test".to_owned(),
+                timed_out: None,
+                duration: Some(0.5),
+                exit_code: Some(0),
+                output_tail: None,
+                reason: None,
+            }]),
+            index: None,
+            reason: None,
+            log: log.to_owned(),
+            before: None,
+            after: None,
+            side_effects: None,
+        }
+    }
+
+    fn assert_corrupt_round_row_error(label: &str, error: &RoundUpdateError) {
+        let inner = match error {
+            RoundUpdateError::RoundRow(inner) => inner,
+            other => panic!("{label}: expected round row error, got {other:?}"),
+        };
+        match label {
+            "done_without_json" | "running_with_json" => assert!(
+                matches!(inner, RoundRowError::InconsistentVerifier),
+                "{label}: {inner:?}"
+            ),
+            "unknown_state" => assert!(
+                matches!(inner, RoundRowError::UnknownVerifierState),
+                "{label}: {inner:?}"
+            ),
+            "malformed_json" => assert!(
+                matches!(
+                    inner,
+                    RoundRowError::MalformedJson {
+                        column: "verifier_json"
+                    }
+                ),
+                "{label}: {inner:?}"
+            ),
+            "wrong_shape_json" => assert!(
+                matches!(
+                    inner,
+                    RoundRowError::WrongJsonShape {
+                        column: "verifier_json"
+                    }
+                ),
+                "{label}: {inner:?}"
+            ),
+            other => panic!("unknown corrupt verifier case {other}"),
+        }
+    }
+
+    #[test]
+    fn begin_verifier_starts_refreshes_and_never_undoes_done() {
+        let (_dir, mut storage) = open_query_storage("verifier-begin");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-vb"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        assert_eq!(count_rows(&storage, "events"), 1, "only the create event");
+
+        let started = storage.begin_verifier(round.clone()).expect("begin");
+        assert!(matches!(started, VerifierUpdateOutcome::Started(_)));
+        let started_row = started.outcome();
+        assert_eq!(
+            started_row.round.verifier_state,
+            Some(VerifierState::Running)
+        );
+        assert_eq!(started_row.round.verifier_json, None);
+        assert!(is_rfc3339_millis_utc(&started_row.round.updated_at));
+
+        let again = storage.begin_verifier(round.clone()).expect("begin again");
+        assert!(matches!(again, VerifierUpdateOutcome::AlreadyRunning(_)));
+        assert_eq!(
+            again.outcome().round.verifier_state,
+            Some(VerifierState::Running)
+        );
+        assert_eq!(
+            count_rows(&storage, "events"),
+            1,
+            "verifier writes no events"
+        );
+
+        let verification = sample_verification(VerificationStatus::Passed, "log-a");
+        let completed = storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round.clone(),
+                verification: verification.clone(),
+            })
+            .expect("complete");
+        assert!(matches!(completed, VerifierUpdateOutcome::Completed(_)));
+        assert_eq!(
+            completed.outcome().round.verifier_json.as_ref(),
+            Some(&verification)
+        );
+        assert_eq!(
+            count_rows(&storage, "events"),
+            1,
+            "verifier writes no events"
+        );
+
+        let before = dump_rows(&storage, "rounds");
+        let done = storage.begin_verifier(round).expect("begin after done");
+        assert!(matches!(done, VerifierUpdateOutcome::AlreadyDone(_)));
+        assert_eq!(
+            done.outcome().round.verifier_json.as_ref(),
+            Some(&verification)
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+    }
+
+    #[test]
+    fn complete_verifier_persists_without_prior_start() {
+        let (_dir, mut storage) = open_query_storage("verifier-complete-fresh");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-vcf"))
+            .expect("create");
+        let verification = sample_verification(VerificationStatus::TimedOut, "log-fresh");
+
+        let completed = storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round_ref(task_id, &project, 1),
+                verification: verification.clone(),
+            })
+            .expect("complete");
+        assert!(matches!(completed, VerifierUpdateOutcome::Completed(_)));
+        let row = fetch_round(&storage, task_id, 1);
+        assert_eq!(row.verifier_state, Some(VerifierState::Done));
+        assert_eq!(row.verifier_json.as_ref(), Some(&verification));
+    }
+
+    #[test]
+    fn complete_verifier_replays_identical_and_rejects_conflict() {
+        let (_dir, mut storage) = open_query_storage("verifier-replay");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-vr"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        let verification = sample_verification(VerificationStatus::Passed, "log-1");
+        storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round.clone(),
+                verification: verification.clone(),
+            })
+            .expect("first complete");
+
+        let before = dump_rows(&storage, "rounds");
+        let replayed = storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round.clone(),
+                verification: verification.clone(),
+            })
+            .expect("identical replay");
+        assert!(matches!(replayed, VerifierUpdateOutcome::Replayed(_)));
+        assert_eq!(
+            replayed.outcome().round.verifier_json.as_ref(),
+            Some(&verification)
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+
+        let error = storage
+            .complete_verifier(CompleteVerifierInput {
+                round,
+                verification: sample_verification(VerificationStatus::Failed, "log-2"),
+            })
+            .expect_err("conflicting result must fail");
+        assert!(
+            matches!(error, RoundUpdateError::VerifierResultConflict),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+        assert_eq!(
+            fetch_round(&storage, task_id, 1)
+                .verifier_json
+                .map(|value| value.status),
+            Some(VerificationStatus::Passed)
+        );
+    }
+
+    #[test]
+    fn verifier_updates_reject_missing_stale_and_mismatched_refs() {
+        let (_dir, mut storage) = open_query_storage("verifier-refs");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project_a, "req-vref"))
+            .expect("create");
+        let verification = sample_verification(VerificationStatus::Passed, "log-ref");
+
+        let before = dump_rows(&storage, "rounds");
+        let error = storage
+            .begin_verifier(round_ref(query_task_id(9), &project_a, 1))
+            .expect_err("missing task");
+        assert!(matches!(error, RoundUpdateError::MissingTask), "{error:?}");
+        let error = storage
+            .begin_verifier(round_ref(task_id, &project_a, 7))
+            .expect_err("missing round");
+        assert!(matches!(error, RoundUpdateError::MissingRound), "{error:?}");
+        let error = storage
+            .begin_verifier(round_ref(task_id, &project_b, 1))
+            .expect_err("project mismatch");
+        assert!(
+            matches!(error, RoundUpdateError::ProjectMismatch),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+
+        storage
+            .mark_round_observing(round_ref(task_id, &project_a, 1))
+            .expect("observing");
+        storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project_a, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("finish");
+        storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project_a.clone(),
+                round_number: 2,
+                request_id: "rev-2".to_owned(),
+                payload_hash: "hash-2".to_owned(),
+                findings: None,
+            })
+            .expect("revision");
+
+        let before = dump_rows(&storage, "rounds");
+        let error = storage
+            .begin_verifier(round_ref(task_id, &project_a, 1))
+            .expect_err("stale round");
+        assert!(
+            matches!(error, RoundUpdateError::NotCurrentRound),
+            "{error:?}"
+        );
+        let error = storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round_ref(task_id, &project_a, 1),
+                verification,
+            })
+            .expect_err("stale round complete");
+        assert!(
+            matches!(error, RoundUpdateError::NotCurrentRound),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+    }
+
+    #[test]
+    fn verifier_updates_reject_corrupt_pair_fail_closed() {
+        let (_dir, mut storage) = open_query_storage("verifier-corrupt");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-vcor"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        let verification = sample_verification(VerificationStatus::Passed, "log-corrupt");
+
+        let cases = [
+            (
+                "done_without_json",
+                "UPDATE rounds SET verifier_state = 'done', verifier_json = NULL \
+                 WHERE task_id = ?1 AND round_number = 1",
+            ),
+            (
+                "running_with_json",
+                "UPDATE rounds SET verifier_state = 'running', \
+                 verifier_json = '{\"status\":\"passed\",\"log\":\"x\"}' \
+                 WHERE task_id = ?1 AND round_number = 1",
+            ),
+            (
+                "unknown_state",
+                "UPDATE rounds SET verifier_state = 'bogus', verifier_json = NULL \
+                 WHERE task_id = ?1 AND round_number = 1",
+            ),
+            (
+                "malformed_json",
+                "UPDATE rounds SET verifier_state = 'done', verifier_json = 'not-json' \
+                 WHERE task_id = ?1 AND round_number = 1",
+            ),
+            (
+                "wrong_shape_json",
+                "UPDATE rounds SET verifier_state = 'done', verifier_json = '[]' \
+                 WHERE task_id = ?1 AND round_number = 1",
+            ),
+        ];
+
+        for (label, sql) in cases {
+            storage
+                .connection()
+                .execute(sql, rusqlite::params![task_id.to_string()])
+                .expect("seed corrupt state");
+            let before = dump_rows(&storage, "rounds");
+
+            let error = storage
+                .begin_verifier(round.clone())
+                .expect_err("begin must reject corrupt state");
+            assert_corrupt_round_row_error(label, &error);
+            assert_eq!(dump_rows(&storage, "rounds"), before);
+
+            let error = storage
+                .complete_verifier(CompleteVerifierInput {
+                    round: round.clone(),
+                    verification: verification.clone(),
+                })
+                .expect_err("complete must reject corrupt state");
+            assert_corrupt_round_row_error(label, &error);
+            assert_eq!(dump_rows(&storage, "rounds"), before);
+
+            storage
+                .connection()
+                .execute(
+                    "UPDATE rounds SET verifier_state = NULL, verifier_json = NULL \
+                     WHERE task_id = ?1 AND round_number = 1",
+                    rusqlite::params![task_id.to_string()],
+                )
+                .expect("reset corrupt state");
+        }
+    }
+
+    #[test]
+    fn verifier_update_errors_do_not_leak_input() {
+        const SECRET: &str = "verifier-secret-token";
+        let (_dir, mut storage) = open_query_storage("verifier-error-safety");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-vsafe"))
+            .expect("create");
+
+        let secret_project = query_project(SECRET);
+        let error = storage
+            .begin_verifier(round_ref(task_id, &secret_project, 1))
+            .expect_err("project mismatch");
+        assert!(
+            matches!(error, RoundUpdateError::ProjectMismatch),
+            "{error:?}"
+        );
+        assert_round_update_error_is_safe(&error, SECRET);
+
+        storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round_ref(task_id, &project, 1),
+                verification: sample_verification(VerificationStatus::Passed, SECRET),
+            })
+            .expect("first complete");
+        let error = storage
+            .complete_verifier(CompleteVerifierInput {
+                round: round_ref(task_id, &project, 1),
+                verification: sample_verification(VerificationStatus::Failed, SECRET),
+            })
+            .expect_err("conflict");
+        assert!(
+            matches!(error, RoundUpdateError::VerifierResultConflict),
+            "{error:?}"
+        );
+        assert_round_update_error_is_safe(&error, SECRET);
+    }
+
+    #[test]
+    fn concurrent_complete_verifier_yields_one_winner_one_conflict() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("verifier-concurrent-conflict");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-vcon"))
+                .expect("create");
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for n in 0..2_u32 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                let status = if n == 0 {
+                    VerificationStatus::Passed
+                } else {
+                    VerificationStatus::Failed
+                };
+                storage.complete_verifier(CompleteVerifierInput {
+                    round: RoundRef {
+                        task_id,
+                        project_id: project,
+                        round_number: 1,
+                    },
+                    verification: sample_verification(status, "log"),
+                })
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let winners = results
+            .iter()
+            .filter(|result| matches!(result, Ok(VerifierUpdateOutcome::Completed(_))))
+            .count();
+        let conflicts = results
+            .iter()
+            .filter(|result| matches!(result, Err(RoundUpdateError::VerifierResultConflict)))
+            .count();
+        assert_eq!(winners, 1, "{results:?}");
+        assert_eq!(conflicts, 1, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("verify");
+        let row = fetch_round(&storage, task_id, 1);
+        assert_eq!(row.verifier_state, Some(VerifierState::Done));
+        assert!(row.verifier_json.is_some());
+    }
+
+    #[test]
+    fn concurrent_identical_complete_verifier_replays() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("verifier-concurrent-replay");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-vcon2"))
+                .expect("create");
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.complete_verifier(CompleteVerifierInput {
+                    round: RoundRef {
+                        task_id,
+                        project_id: project,
+                        round_number: 1,
+                    },
+                    verification: sample_verification(VerificationStatus::Passed, "log"),
+                })
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let winners = results
+            .iter()
+            .filter(|result| matches!(result, Ok(VerifierUpdateOutcome::Completed(_))))
+            .count();
+        let replays = results
+            .iter()
+            .filter(|result| matches!(result, Ok(VerifierUpdateOutcome::Replayed(_))))
+            .count();
+        assert_eq!(winners, 1, "{results:?}");
+        assert_eq!(replays, 1, "{results:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7657,6 +8165,134 @@ impl StorageConnection {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Verifier persist-once (task 3.9b).
+//
+// Both methods run in one `BEGIN IMMEDIATE` transaction and reuse the 3.9a
+// round/project/current-round validation, which also enforces the
+// `verifier_state`/`verifier_json` pair through [`RoundRow::from_row`]. No
+// method ever overwrites a persisted `done` result.
+// ---------------------------------------------------------------------------
+
+impl StorageConnection {
+    /// Atomically marks the current round's verifier as running.
+    ///
+    /// The round must exist, belong to `round.project_id`, be the current round
+    /// of its task and carry a consistent `verifier_state`/`verifier_json` pair.
+    /// A round without a verifier state is moved to [`VerifierState::Running`];
+    /// an already-`running` round has its marker refreshed (the previous attempt
+    /// may have died mid-flight); a completed ([`VerifierState::Done`]) round is
+    /// left untouched and its persisted result is returned, so a stale `begin`
+    /// can never undo a finished run.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, project, verifier payload, SQL, JSON or paths.
+    pub fn begin_verifier(
+        &mut self,
+        round: RoundRef,
+    ) -> Result<VerifierUpdateOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (task, row) = validate_current_round(&transaction, &round)?;
+        let prior = row.verifier_state;
+        if prior == Some(VerifierState::Done) {
+            return Ok(VerifierUpdateOutcome::AlreadyDone(RoundUpdateOutcome {
+                round: row,
+                task,
+            }));
+        }
+
+        transaction
+            .execute(
+                "UPDATE rounds SET verifier_state = ?1, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    VerifierState::Running.as_str(),
+                    now,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let persisted = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        if prior == Some(VerifierState::Running) {
+            Ok(VerifierUpdateOutcome::AlreadyRunning(persisted))
+        } else {
+            Ok(VerifierUpdateOutcome::Started(persisted))
+        }
+    }
+
+    /// Atomically persists a completed verifier result exactly once.
+    ///
+    /// The round must exist, belong to `input.round.project_id`, be the current
+    /// round of its task and carry a consistent `verifier_state`/`verifier_json`
+    /// pair. A round without a completed result is moved to
+    /// [`VerifierState::Done`] with the serialized [`Verification`]. A round
+    /// whose persisted `done` result is identical to `input.verification` is
+    /// replayed without any write, matching the reference implementation that
+    /// reuses a finished run verbatim. A different persisted result is rejected
+    /// fail closed and nothing is written, so a completed result can never be
+    /// silently replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, project, verifier payload, SQL, JSON or paths.
+    pub fn complete_verifier(
+        &mut self,
+        input: CompleteVerifierInput,
+    ) -> Result<VerifierUpdateOutcome, RoundUpdateError> {
+        let verifier_json = serde_json::to_string(&input.verification)
+            .map_err(|_| RoundUpdateError::InvalidVerifier)?;
+
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (task, row) = validate_current_round(&transaction, &input.round)?;
+        if row.verifier_state == Some(VerifierState::Done) {
+            return match row.verifier_json.as_ref() {
+                Some(existing) if existing == &input.verification => {
+                    Ok(VerifierUpdateOutcome::Replayed(RoundUpdateOutcome {
+                        round: row,
+                        task,
+                    }))
+                }
+                _ => Err(RoundUpdateError::VerifierResultConflict),
+            };
+        }
+
+        transaction
+            .execute(
+                "UPDATE rounds SET verifier_state = ?1, verifier_json = ?2, updated_at = ?3 \
+                 WHERE task_id = ?4 AND round_number = ?5",
+                params![
+                    VerifierState::Done.as_str(),
+                    verifier_json,
+                    now,
+                    input.round.task_id.to_string(),
+                    i64::from(input.round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let persisted =
+            read_round_update_outcome(&transaction, input.round.task_id, input.round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(VerifierUpdateOutcome::Completed(persisted))
+    }
+}
+
 /// A typed reference to one existing round.
 ///
 /// The project id is part of the reference so every lifecycle method can reject
@@ -7805,6 +8441,10 @@ pub enum RoundUpdateError {
     InvalidJson,
     /// The worker deadline input is not finite, positive or strictly later.
     InvalidDeadline,
+    /// A different verifier result is already persisted for this round.
+    VerifierResultConflict,
+    /// The verifier result cannot be represented as persisted JSON.
+    InvalidVerifier,
     /// The persisted state is internally inconsistent.
     InvalidPersistedState,
     /// A `tasks` row could not be mapped.
@@ -7835,6 +8475,10 @@ impl fmt::Display for RoundUpdateError {
             Self::InvalidInput => f.write_str("round update input is invalid"),
             Self::InvalidJson => f.write_str("round result json is invalid"),
             Self::InvalidDeadline => f.write_str("worker deadline is invalid"),
+            Self::VerifierResultConflict => {
+                f.write_str("a verifier result is already persisted for this round")
+            }
+            Self::InvalidVerifier => f.write_str("verifier result is invalid"),
             Self::InvalidPersistedState => f.write_str("persisted round state is invalid"),
             Self::TaskRow(_) => f.write_str("task row could not be mapped"),
             Self::RoundRow(_) => f.write_str("round row could not be mapped"),
@@ -7850,6 +8494,55 @@ impl Error for RoundUpdateError {
             Self::RoundRow(error) => Some(error),
             Self::Database(error) => Some(error),
             _ => None,
+        }
+    }
+}
+
+/// Input for [`StorageConnection::complete_verifier`] (task 3.9b).
+///
+/// The round is the exact current round of its task; the verification is the
+/// compact outcome the reference implementation persists as `verifier_json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteVerifierInput {
+    /// Round whose verifier result is being persisted.
+    pub round: RoundRef,
+    /// Completed verifier outcome to persist once.
+    pub verification: Verification,
+}
+
+/// The persisted result of one atomic verifier lifecycle transition (task 3.9b).
+///
+/// Every variant wraps the persisted [`RoundUpdateOutcome`] read back through
+/// the production [`RoundRow::from_row`]/[`Task::from_row`] mapping, so the
+/// value is the exact committed state. [`VerifierUpdateOutcome::Replayed`] and
+/// [`VerifierUpdateOutcome::AlreadyDone`] carry the original persisted result
+/// and were produced without mutating any row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VerifierUpdateOutcome {
+    /// `begin_verifier`: the round had no verifier state and is now `running`.
+    Started(RoundUpdateOutcome),
+    /// `begin_verifier`: the round was already `running`; the marker was
+    /// refreshed.
+    AlreadyRunning(RoundUpdateOutcome),
+    /// `begin_verifier`: the round was already `done`; the result was left
+    /// untouched.
+    AlreadyDone(RoundUpdateOutcome),
+    /// `complete_verifier`: the result was persisted for the first time.
+    Completed(RoundUpdateOutcome),
+    /// `complete_verifier`: an identical result was already persisted; no write.
+    Replayed(RoundUpdateOutcome),
+}
+
+impl VerifierUpdateOutcome {
+    /// Returns the persisted round/task pair carried by this outcome.
+    #[must_use]
+    pub fn outcome(&self) -> &RoundUpdateOutcome {
+        match self {
+            Self::Started(outcome)
+            | Self::AlreadyRunning(outcome)
+            | Self::AlreadyDone(outcome)
+            | Self::Completed(outcome)
+            | Self::Replayed(outcome) => outcome,
         }
     }
 }

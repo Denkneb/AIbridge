@@ -121,6 +121,23 @@ Data model и serde compatibility без runtime logic.
 
 ### 3.9. Atomic round/verifier updates
 
+- **3.9a. Atomic round/task lifecycle updates — завершено.** Типизированные
+  lifecycle-API на `StorageConnection` (`create_revision_round`,
+  `bind_round_session`, `prepare_round`, `mark_round_sent`,
+  `mark_round_observing`, `mark_worker_started`, `finish_round`): каждая
+  операция в одной `BEGIN IMMEDIATE` транзакции, проверка round-переходов по
+  `ROUND_TRANSITIONS` и task-переходов через `TaskStatus::require_transition`.
+- **3.9b. Verifier persist-once — завершено.** `begin_verifier` и
+  `complete_verifier` атомарно ведут verifier lifecycle/result: `running` с
+  идемпотентным обновлением и без отката `done`, однократная фиксация `done` +
+  `verifier_json`, replay идентичного завершённого результата без записи
+  (Python-семантика reuse) и fail-closed `VerifierResultConflict` для
+  отличающегося результата. Проверяются task/round, project membership,
+  current round и пара `verifier_state`/`verifier_json`; events не пишутся.
+- **Остаётся (следующий незавершённый шаг потока 3):** cooperative close и
+  `reopen_failed_round`, затем задачи **3.10** (storage isolation/импорт копии)
+  и **3.11** (ownership/format marker).
+
 ### 3.10. Storage isolation и односторонний импорт копии
 
 Проверить, что Python- и Rust-реализации используют раздельные state root,

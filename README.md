@@ -113,14 +113,30 @@ endpoints, а перенос истории — только односторо�
   безопасны и не раскрывают ids, session/message ids, SQL, JSON и пути. Verifier
   persist-once, cooperative close, `reopen_failed_round` и schema/fixtures
   изменения не входят.
+- Завершён этап **3.9b. Verifier persist-once**: `bridge-storage` предоставляет
+  типизированные API на `StorageConnection` — `begin_verifier` и
+  `complete_verifier` (типы `CompleteVerifierInput`, `VerifierUpdateOutcome`).
+  Оба вызова выполняются в одной `BEGIN IMMEDIATE` транзакции и переиспользуют
+  проверку 3.9a (существование task/round, project membership, current round), а
+  также согласованность пары `verifier_state`/`verifier_json` через
+  `RoundRow::from_row`. `begin_verifier` переводит round без verifier-состояния в
+  `running`, идемпотентно обновляет уже `running` и никогда не откатывает
+  `done` (возвращает сохранённый результат); `complete_verifier` однократно
+  фиксирует `done` + `verifier_json`. Повтор идентичного завершённого результата
+  возвращает `Replayed` без записи (Python-семантика reuse), а отличающийся
+  результат — fail-closed `VerifierResultConflict` без записей, поэтому
+  завершённый результат нельзя молча заменить. Verifier-переходы не пишут
+  events, а повреждённая пара/state отвергается fail closed. Cooperative close,
+  `reopen_failed_round` и schema/fixtures изменения не входят.
 - Зафиксирована (документация, ещё не реализовано) стратегия изоляции storage:
   Python и Rust используют раздельные state root, SQLite, locks, PID/ownership
   records, token-файлы, логи и endpoints, а перенос истории — односторонний
   импорт WAL-aware копии при остановленном Python runtime без общей рабочей БД.
   Реализация — задачи **3.10** (storage isolation/импорт копии) и **3.11**
   (ownership/format marker).
-- Следующий этап — **3.9b. Verifier persist-once** (весь поток 3.9 ещё не
-  завершён).
+- Следующий незавершённый шаг потока 3 — оставшиеся подэтапы **3.9**
+  (cooperative close и `reopen_failed_round`), затем **3.10** (storage
+  isolation/импорт копии) и **3.11** (ownership/format marker).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

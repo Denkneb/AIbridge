@@ -37,7 +37,18 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   `result_json`, декодирует `verifier_json` как `Verification` и отвергает
   несогласованную пару `verifier_state`/`verifier_json`, не добавляя
   query/list/write API и не меняя fixtures.
-- Следующий этап — **3.5. Initialization совместимой пустой БД**.
+- Завершён этап **3.5. Initialization совместимой пустой БД**:
+  `bridge-storage` предоставляет публичный `initialize`, который на runtime
+  connection атомарно (одна `BEGIN IMMEDIATE` транзакция с DDL и маркерами
+  `PRAGMA user_version=6` + `meta.schema_version='6'`) и идемпотентно создаёт
+  итоговую schema v6 (`meta`/`tasks`/`rounds`/`events`,
+  `ux_tasks_active`/`ux_rounds_request`/`ix_events_task`) для отсутствующего файла
+  или действительно пустой БД; уже совместимая v6 валидируется полным frozen
+  contract и не меняется, а несовместимая, частичная или чужая БД, а также
+  `user_version` вне `0/6` завершаются fail closed без repair/upgrade.
+  Конкурентные вызовы сериализуются writer-транзакцией. DDL вынесен в единый
+  production-контракт, используемый и тестами; fixtures не изменяются.
+- Следующий этап — **3.6. Get/list/pagination queries**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

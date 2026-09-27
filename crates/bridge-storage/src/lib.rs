@@ -31,9 +31,10 @@
 //! [`RoundRow::from_row`], which turns a schema v6 `rounds` row into a complete
 //! storage-owned [`RoundRow`] (all twenty-one columns) and likewise fails closed
 //! on corrupted persisted data, including an inconsistent
-//! `verifier_state`/`verifier_json` pair. Initialization/migrations and all
-//! write/query APIs remain out of scope (tasks 3.5+); there is no
-//! list/get/pagination API here.
+//! `verifier_state`/`verifier_json` pair. Atomic, idempotent, fail-closed
+//! initialization of a compatible empty schema v6 database (task 3.5) is
+//! provided by [`initialize`]. Schema migrations and all list/get/pagination or
+//! write APIs remain out of scope (tasks 3.6+).
 
 use std::error::Error;
 use std::fmt;
@@ -43,7 +44,9 @@ use std::str::FromStr;
 use bridge_domain::{
     ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerifierState,
 };
-use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, params};
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Row, TransactionBehavior, params,
+};
 
 /// The only supported `PRAGMA user_version` / `meta.schema_version`.
 pub const SCHEMA_VERSION: i64 = 6;
@@ -292,8 +295,17 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Inspection, InspectError> {
     }
 
     let connection = open_read_only(path)?;
-    let user_version = read_user_version(&connection)?;
-    let tables = read_tables(&connection)?;
+    validate_database(&connection)
+}
+
+/// Validates an open connection against the frozen schema v6 contract.
+///
+/// This is the shared core of [`inspect`] and [`initialize`]: it reads the
+/// version markers, the user tables, the named indexes and the foreign keys and
+/// checks all of them against the contract. It performs no writes.
+fn validate_database(connection: &Connection) -> Result<Inspection, InspectError> {
+    let user_version = read_user_version(connection)?;
+    let tables = read_tables(connection)?;
 
     if user_version != SCHEMA_VERSION {
         return Err(InspectError::UnsupportedUserVersion {
@@ -301,11 +313,11 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Inspection, InspectError> {
         });
     }
 
-    let meta_schema_version = read_meta_schema_version(&connection, &tables)?;
+    let meta_schema_version = read_meta_schema_version(connection, &tables)?;
     validate_version_pair(user_version, &meta_schema_version)?;
 
-    let indexes = read_indexes(&connection)?;
-    let foreign_keys = read_foreign_keys(&connection, &tables)?;
+    let indexes = read_indexes(connection)?;
+    let foreign_keys = read_foreign_keys(connection, &tables)?;
 
     validate_schema(&tables, &indexes, &foreign_keys).map_err(InspectError::IncompatibleSchema)?;
 
@@ -366,9 +378,11 @@ fn classify_error(error: rusqlite::Error) -> InspectError {
 }
 
 fn read_user_version(connection: &Connection) -> Result<i64, InspectError> {
-    connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(classify_error)
+    query_user_version(connection).map_err(classify_error)
+}
+
+fn query_user_version(connection: &Connection) -> rusqlite::Result<i64> {
+    connection.query_row("PRAGMA user_version", [], |row| row.get(0))
 }
 
 fn read_meta_schema_version(
@@ -563,6 +577,76 @@ fn index(name: &str, table: &str, columns: &[&str], unique: bool, partial: bool)
         partial,
     }
 }
+
+/// The exact schema v6 DDL emitted by Python `Storage.initialize`.
+///
+/// This is the single production source of truth for the schema that
+/// [`initialize`] creates: it mirrors the frozen Python DDL (including
+/// `IF NOT EXISTS`) and produces exactly the tables, columns, indexes and
+/// foreign keys described by [`v6_contract`]. The tests create their synthetic
+/// databases from this same constant, so the DDL and the structural contract
+/// can never drift apart.
+const V6_SCHEMA_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    status TEXT NOT NULL,
+    session_id TEXT,
+    task TEXT NOT NULL,
+    allowed_paths TEXT NOT NULL,
+    test_commands TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    base_head TEXT,
+    snapshot TEXT,
+    revision_count INTEGER NOT NULL DEFAULT 0,
+    close_requested_at TEXT,
+    close_reason TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_active
+    ON tasks(project_id) WHERE status IN
+    ('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown');
+CREATE TABLE IF NOT EXISTS rounds (
+    task_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    round_number INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    outbound_message_id TEXT,
+    attempted INTEGER NOT NULL DEFAULT 0,
+    response_message_id TEXT,
+    response TEXT,
+    error_code TEXT,
+    result_json TEXT,
+    findings TEXT,
+    session_id TEXT,
+    worker_started_at TEXT,
+    worker_deadline_at TEXT,
+    verifier_state TEXT,
+    verifier_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, round_number),
+    FOREIGN KEY (task_id) REFERENCES tasks(task_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rounds_request ON rounds(project_id, request_id);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    round_number INTEGER,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_events_task ON events(task_id, id);
+"#;
 
 /// The frozen schema v6 contract, transcribed from
 /// `docs/fixtures/sqlite/expected.json` and verified against it by the tests.
@@ -993,6 +1077,141 @@ fn configure(connection: &Connection) -> Result<(), ConnectError> {
         });
     }
 
+    Ok(())
+}
+
+/// A typed, safe error raised while initializing a database.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains row data, secrets or machine-specific paths.
+/// Schema object names and version numbers may appear. The underlying
+/// connection, inspection or SQLite error, when present, is reachable only
+/// through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum InitializeError {
+    /// The runtime connection could not be opened or configured.
+    Connect(ConnectError),
+    /// `PRAGMA user_version` is neither `0` nor [`SCHEMA_VERSION`].
+    UnsupportedUserVersion { found: i64 },
+    /// A `user_version=0` database that already contains user objects
+    /// (a partial or foreign schema) and is therefore never initialized.
+    NonEmptyUninitialized,
+    /// An existing schema v6 database that does not match the frozen contract.
+    Incompatible(InspectError),
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for InitializeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect(_) => f.write_str("storage connection could not be opened"),
+            Self::UnsupportedUserVersion { found } => {
+                write!(f, "unsupported schema version {found}")
+            }
+            Self::NonEmptyUninitialized => f.write_str("uninitialized database is not empty"),
+            Self::Incompatible(_) => {
+                f.write_str("database schema is not compatible with schema v6")
+            }
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for InitializeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Connect(error) => Some(error),
+            Self::Incompatible(error) => Some(error),
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Atomically initializes `path` as a compatible, empty schema v6 database.
+///
+/// The database is opened with the runtime connection ([`connect`]) and the
+/// whole initialization runs inside a single `BEGIN IMMEDIATE` transaction, so
+/// the DDL and the version markers (`PRAGMA user_version` and
+/// `meta.schema_version`) either all commit or all roll back. The resulting
+/// database has exactly the tables, columns, indexes and foreign keys of the
+/// frozen v6 contract and no user rows.
+///
+/// The state is classified *after* the write lock is held, so concurrent
+/// callers serialize on the writer transaction: the first one creates schema v6
+/// and every later one observes the committed v6 schema and performs an
+/// idempotent no-op.
+///
+/// Only a missing file, or a truly empty database (`user_version=0` with no
+/// user objects and no schema markers), is initialized. An already compatible
+/// v6 database is validated against the full contract and left untouched. Every
+/// other state fails closed without repair or upgrade: a different
+/// `user_version`, a v6 database that does not match the contract, or a
+/// `user_version=0` database that already contains user objects.
+///
+/// # Errors
+///
+/// Returns a typed category (see [`InitializeError`]). No error message
+/// contains row data, secrets or machine-specific paths.
+pub fn initialize(path: impl AsRef<Path>) -> Result<(), InitializeError> {
+    let path = path.as_ref();
+    let mut storage = connect(path).map_err(InitializeError::Connect)?;
+    let connection = storage.connection_mut();
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(InitializeError::Database)?;
+
+    let user_version = query_user_version(&transaction).map_err(InitializeError::Database)?;
+    let non_empty = has_user_objects(&transaction).map_err(InitializeError::Database)?;
+
+    match user_version {
+        SCHEMA_VERSION => {
+            validate_database(&transaction).map_err(InitializeError::Incompatible)?;
+            transaction.commit().map_err(InitializeError::Database)?;
+        }
+        0 if !non_empty => {
+            apply_schema_v6(&transaction, V6_SCHEMA_DDL)?;
+            transaction.commit().map_err(InitializeError::Database)?;
+        }
+        0 => return Err(InitializeError::NonEmptyUninitialized),
+        found => return Err(InitializeError::UnsupportedUserVersion { found }),
+    }
+
+    Ok(())
+}
+
+/// Whether `connection` contains any user object (table, index, trigger or
+/// view); internal `sqlite_*` objects are ignored.
+fn has_user_objects(connection: &Connection) -> rusqlite::Result<bool> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Applies the schema v6 DDL and both version markers on an open transaction.
+///
+/// The caller owns the surrounding transaction; this function only issues
+/// statements, so a failure leaves the transaction open for the caller to roll
+/// back by dropping it.
+fn apply_schema_v6(connection: &Connection, ddl: &str) -> Result<(), InitializeError> {
+    connection
+        .execute_batch(ddl)
+        .map_err(InitializeError::Database)?;
+    connection
+        .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+        .map_err(InitializeError::Database)?;
+    connection
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+            params![SCHEMA_VERSION.to_string()],
+        )
+        .map_err(InitializeError::Database)?;
     Ok(())
 }
 
@@ -1508,13 +1727,14 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InspectError, RoundRow,
-        RoundRowError, SCHEMA_VERSION, SchemaMismatch, Table, Task, TaskRowError, connect, inspect,
-        open_read_only, v6_contract,
+        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InitializeError,
+        InspectError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch, Table, Task,
+        TaskRowError, V6_SCHEMA_DDL, apply_schema_v6, connect, initialize, inspect, open_read_only,
+        query_user_version, v6_contract,
     };
     use bridge_domain::{RoundKind, RoundStatus, TaskStatus, VerifierState};
-    use rusqlite::Connection;
     use rusqlite::types::Value as SqlValue;
+    use rusqlite::{Connection, TransactionBehavior};
     use serde_json::Value;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1528,70 +1748,9 @@ mod tests {
 
     const FK_CLAUSE: &str = "FOREIGN KEY (task_id) REFERENCES tasks(task_id)";
 
-    /// The schema v6 DDL, byte-for-byte equivalent to
-    /// `docs/fixtures/sqlite/generate.py` (minus `IF NOT EXISTS`, since the
-    /// synthetic databases are always created fresh).
-    const V6_SCHEMA: &str = r#"
-CREATE TABLE meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-CREATE TABLE tasks (
-    task_id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    workspace TEXT NOT NULL,
-    status TEXT NOT NULL,
-    session_id TEXT,
-    task TEXT NOT NULL,
-    allowed_paths TEXT NOT NULL,
-    test_commands TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    base_head TEXT,
-    snapshot TEXT,
-    revision_count INTEGER NOT NULL DEFAULT 0,
-    close_requested_at TEXT,
-    close_reason TEXT
-);
-CREATE UNIQUE INDEX ux_tasks_active
-    ON tasks(project_id) WHERE status IN
-    ('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown');
-CREATE TABLE rounds (
-    task_id TEXT NOT NULL,
-    project_id TEXT NOT NULL,
-    round_number INTEGER NOT NULL,
-    request_id TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    outbound_message_id TEXT,
-    attempted INTEGER NOT NULL DEFAULT 0,
-    response_message_id TEXT,
-    response TEXT,
-    error_code TEXT,
-    result_json TEXT,
-    findings TEXT,
-    session_id TEXT,
-    worker_started_at TEXT,
-    worker_deadline_at TEXT,
-    verifier_state TEXT,
-    verifier_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (task_id, round_number),
-    FOREIGN KEY (task_id) REFERENCES tasks(task_id)
-);
-CREATE UNIQUE INDEX ux_rounds_request ON rounds(project_id, request_id);
-CREATE TABLE events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL,
-    round_number INTEGER,
-    kind TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX ix_events_task ON events(task_id, id);
-"#;
+    /// The schema v6 DDL shared with production initialization: the tests build
+    /// their synthetic databases from the very constant [`initialize`] uses.
+    const V6_SCHEMA: &str = V6_SCHEMA_DDL;
 
     fn fixture_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/fixtures/sqlite")
@@ -1955,6 +2114,296 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             !sidecar(&source, "-shm").exists(),
             "committed fixture got a -shm sidecar"
         );
+    }
+
+    /// Snapshots the logical state that a fail-closed initialization must never
+    /// change: the `PRAGMA user_version` and every user object.
+    fn logical_state(path: &Path) -> (i64, Vec<(String, String)>) {
+        let connection = Connection::open(path).expect("open database for state snapshot");
+        let user_version = query_user_version(&connection).expect("read user_version for snapshot");
+        let mut statement = connection
+            .prepare(
+                "SELECT type, name FROM sqlite_master \
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .expect("prepare user object query");
+        let objects = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query user objects")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect user objects");
+        (user_version, objects)
+    }
+
+    /// Asserts that `path` matches the frozen schema v6 contract exactly.
+    fn assert_compatible_v6(path: &Path) {
+        let inspection = inspect(path).expect("initialized database must be inspectable");
+        assert_eq!(inspection.user_version(), SCHEMA_VERSION);
+        assert_eq!(inspection.meta_schema_version(), "6");
+        let observed = normalize(Contract {
+            tables: inspection.tables().to_vec(),
+            indexes: inspection.indexes().to_vec(),
+            foreign_keys: inspection.foreign_keys().to_vec(),
+        });
+        let expected = expected_contract(&load_expected());
+        assert_eq!(
+            observed, expected,
+            "initialized schema differs from expected.json"
+        );
+    }
+
+    /// Asserts that `path` is a compatible v6 database with no user rows.
+    fn assert_compatible_empty_v6(path: &Path) {
+        assert_compatible_v6(path);
+        let connection = Connection::open(path).expect("open initialized database");
+        for table in ["tasks", "rounds", "events"] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count rows");
+            assert_eq!(count, 0, "new database must be empty of {table} rows");
+        }
+    }
+
+    #[test]
+    fn initialize_missing_file_creates_compatible_empty_schema() {
+        let dir = TempDir::new("initialize-missing");
+        let path = dir.join("state.sqlite");
+        assert!(!path.exists(), "database must not exist before initialize");
+
+        initialize(&path).expect("missing file must be initialized");
+        assert!(path.exists(), "initialize must create the database file");
+        assert_compatible_empty_v6(&path);
+    }
+
+    #[test]
+    fn initialize_truly_empty_file_creates_compatible_empty_schema() {
+        let dir = TempDir::new("initialize-empty-file");
+        let path = dir.join("state.sqlite");
+        std::fs::write(&path, b"").expect("write empty file");
+
+        initialize(&path).expect("empty file must be initialized");
+        assert_compatible_empty_v6(&path);
+    }
+
+    #[test]
+    fn initialize_is_idempotent_and_preserves_rows() {
+        let dir = TempDir::new("initialize-idempotent");
+        let path = dir.join("state.sqlite");
+        initialize(&path).expect("first initialize must succeed");
+        {
+            let connection = Connection::open(&path).expect("open initialized database");
+            connection
+                .execute(
+                    "INSERT INTO tasks (task_id, project_id, workspace, status, task, \
+                     allowed_paths, test_commands, created_at, updated_at, revision_count) \
+                     VALUES (?1, 'proj', '/fixture/workspace', 'implementing', 't', '[]', '[]', \
+                     '2026-01-01T00:00:00.000+00:00', '2026-01-01T00:00:00.000+00:00', 0)",
+                    rusqlite::params![VALID_TASK_ID],
+                )
+                .expect("insert task row");
+        }
+
+        initialize(&path).expect("second initialize must be an idempotent no-op");
+
+        let connection = Connection::open(&path).expect("open after second initialize");
+        let (task_id, project_id): (String, String) = connection
+            .query_row("SELECT task_id, project_id FROM tasks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("task row must be preserved");
+        assert_eq!(task_id, VALID_TASK_ID);
+        assert_eq!(project_id, "proj");
+        assert_eq!(
+            query_user_version(&connection).expect("read user_version"),
+            SCHEMA_VERSION
+        );
+        drop(connection);
+        assert_compatible_v6(&path);
+    }
+
+    #[test]
+    fn failed_schema_creation_rolls_back_every_change() {
+        let dir = TempDir::new("initialize-rollback");
+        let path = dir.join("state.sqlite");
+        let mut storage = connect(&path).expect("connect must succeed");
+        {
+            let connection = storage.connection_mut();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin immediate");
+            let bad_ddl = "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+                           CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
+            let error =
+                apply_schema_v6(&transaction, bad_ddl).expect_err("duplicate table must fail");
+            assert!(matches!(error, InitializeError::Database(_)), "{error:?}");
+        }
+
+        let connection = storage.connection();
+        assert_eq!(
+            query_user_version(connection).expect("read user_version"),
+            0,
+            "rolled back initialization must keep user_version=0"
+        );
+        let objects: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count user objects");
+        assert_eq!(objects, 0, "partial schema survived the rollback");
+    }
+
+    #[test]
+    fn concurrent_initialize_serializes_to_one_schema() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("initialize-concurrent");
+        let path = dir.join("state.sqlite");
+        // Pre-create the database in WAL mode so the threads contend only on the
+        // writer transaction, not on the journal-mode switch.
+        drop(connect(&path).expect("pre-create database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                initialize(path.as_path())
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .expect("initialize thread must not panic")
+                .expect("concurrent initialize must succeed");
+        }
+
+        assert_compatible_empty_v6(&path);
+    }
+
+    #[test]
+    fn initialize_on_fixture_copy_is_noop_and_leaves_fixture_untouched() {
+        let source = fixture_dir().join("active-v6.sqlite");
+        let before = std::fs::read(&source).expect("read fixture");
+        let dir = TempDir::new("initialize-fixture-copy");
+        let copy = dir.join("state.sqlite");
+        std::fs::copy(&source, &copy).expect("copy fixture");
+
+        initialize(&copy).expect("initializing a v6 copy must be a no-op");
+        let inspection = inspect(&copy).expect("copy must stay compatible");
+        assert_eq!(inspection.user_version(), SCHEMA_VERSION);
+        assert_eq!(inspection.meta_schema_version(), "6");
+
+        assert_eq!(std::fs::read(&source).expect("re-read fixture"), before);
+        assert!(
+            !sidecar(&source, "-wal").exists(),
+            "committed fixture got a -wal sidecar"
+        );
+        assert!(
+            !sidecar(&source, "-shm").exists(),
+            "committed fixture got a -shm sidecar"
+        );
+    }
+
+    #[test]
+    fn initialize_errors_do_not_leak_the_path() {
+        let dir = TempDir::new("initialize-path-leak");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+        let path = dir.join("blocker/state.sqlite");
+
+        let error = initialize(&path).expect_err("unusable parent must be rejected");
+        assert!(
+            matches!(
+                error,
+                InitializeError::Connect(ConnectError::CreateDirectory)
+            ),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(!message.contains("blocker"), "path leaked: {message}");
+        assert!(
+            !message.contains(&path.to_string_lossy().into_owned()),
+            "path leaked: {message}"
+        );
+    }
+
+    #[test]
+    fn initialize_rejects_unknown_user_version_without_changes() {
+        let dir = TempDir::new("initialize-version5");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        execute(&path, "PRAGMA user_version = 5");
+        let before = logical_state(&path);
+
+        let error = initialize(&path).expect_err("version 5 must be rejected");
+        assert!(
+            matches!(error, InitializeError::UnsupportedUserVersion { found: 5 }),
+            "{error:?}"
+        );
+        assert_eq!(
+            logical_state(&path),
+            before,
+            "failed initialize changed the database"
+        );
+    }
+
+    #[test]
+    fn initialize_rejects_incompatible_v6_without_changes() {
+        let dir = TempDir::new("initialize-incompatible-v6");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        execute(&path, "DROP INDEX ux_tasks_active");
+        let before = logical_state(&path);
+
+        let error = initialize(&path).expect_err("incompatible v6 must be rejected");
+        assert!(
+            matches!(error, InitializeError::Incompatible(_)),
+            "{error:?}"
+        );
+        assert_eq!(logical_state(&path), before);
+    }
+
+    #[test]
+    fn initialize_rejects_non_empty_uninitialized_without_changes() {
+        let dir = TempDir::new("initialize-non-empty-v0");
+        let path = dir.join("state.sqlite");
+        execute(
+            &path,
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        );
+        let before = logical_state(&path);
+        assert_eq!(before.0, 0, "fixture must start at user_version 0");
+
+        let error = initialize(&path).expect_err("non-empty v0 must be rejected");
+        assert!(
+            matches!(error, InitializeError::NonEmptyUninitialized),
+            "{error:?}"
+        );
+        assert_eq!(logical_state(&path), before);
+    }
+
+    #[test]
+    fn initialize_rejects_partial_v0_schema_without_changes() {
+        let dir = TempDir::new("initialize-partial-v0");
+        let path = dir.join("state.sqlite");
+        execute(&path, "CREATE TABLE tasks (task_id TEXT PRIMARY KEY)");
+        let before = logical_state(&path);
+
+        let error = initialize(&path).expect_err("partial v0 must be rejected");
+        assert!(
+            matches!(error, InitializeError::NonEmptyUninitialized),
+            "{error:?}"
+        );
+        assert_eq!(logical_state(&path), before);
     }
 
     #[test]

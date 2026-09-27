@@ -2,9 +2,9 @@
 
 Машиночитаемый manifest: [fixtures/sqlite/expected.json](fixtures/sqlite/expected.json).
 Это контрактные fixtures для будущих Rust-задач потока 3 (SQLite storage) и
-задачи 3.10 (cross-language read/write); они описывают наблюдаемую schema и
-состояния существующего Python-кода, а не целевую реализацию. Rust здесь не
-реализуется.
+задачи 3.10 (storage isolation и односторонний импорт копии); они описывают
+наблюдаемую schema и состояния существующего Python-кода и остаются immutable
+эталоном семантики, а не целевой реализацией. Rust здесь не реализуется.
 
 Fixtures намеренно детерминированы: без timestamps текущего времени, секретов,
 реальных tokens/passwords и абсолютных machine-specific путей внутри БД. JSON
@@ -145,18 +145,29 @@ python3 docs/fixtures/sqlite/verify.py     # read-only проверка
 
 ## Использование в дифференциальных Python/Rust tests
 
+Fixtures immutable и описывают наблюдаемое Python-поведение. Их нельзя
+изменять и нельзя использовать как общую рабочую БД двух реализаций.
+
 1. Читать `databases` из `expected.json`.
-2. Скопировать нужный `*.sqlite` в изолированный state-каталог и открыть
-   **копию** read-write (Python `Storage.connect` включает WAL и создаёт
-   sidecar-файлы; сами fixtures остаются чистыми).
-3. Выполнить mapping/queries в Python-реализации и в Rust-реализации.
-4. Сравнить нормализованные rows и статусы с `expected.json`; для
-   write-сценариев (задача 3.10) — результат записи и последующее чтение.
+2. Для каждой реализации скопировать нужный `*.sqlite` в её собственный
+   изолированный временный state-каталог и открыть **только эту копию**
+   read-write (Python `Storage.connect` включает WAL и создаёт sidecar-файлы;
+   сами fixtures остаются чистыми). Python и Rust никогда не открывают один и
+   тот же файл.
+3. Выполнить mapping/queries и write-сценарии в Python-реализации на её копии и
+   независимо в Rust-реализации на её копии.
+4. Сравнить нормализованные rows и статусы каждой копии с `expected.json`;
+   write-результаты не переносятся между реализациями.
 5. Проверять `invariants` (уникальность активной task, FK, идемпотентность
    `request_id`, `verifier_state`).
 
+Migration test — отдельный односторонний сценарий: WAL-aware копия Python
+state при остановленном Python runtime импортируется в Rust state; исходный
+Python state не изменяется, а обратная запись Rust state в Python state
+запрещена.
+
 Такой harness воспроизводит fixtures на текущей Python suite и позже
-становится общим differential-раннером Python/Rust.
+становится differential-раннером на независимых копиях Python и Rust.
 
 ## Ограничения
 

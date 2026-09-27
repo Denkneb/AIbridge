@@ -16,9 +16,19 @@ Codex/OpenCode сохраняют streaming, permissions, tools и slash-ком�
 Мутации задач требуют отдельной модели review и authorization; случайные GUI
 кнопки не должны обходить существующий workflow.
 
+### Раздельные state Python и Rust
+
+Реализации не делят рабочую БД или runtime state. У Python и Rust свои state
+root, SQLite, locks, PID/ownership records, token-файлы, логи и endpoints.
+Перенос истории — только односторонний импорт WAL-aware копии при остановленном
+Python runtime; исходный Python state не изменяется и служит точкой отката.
+
 ### projects.toml — источник истины
 
 CLI и GUI не должны расходиться или использовать разные базы настроек.
+`projects.toml` остаётся каноническим и общим для чтения; запись допускается
+только от активной реализации при остановленных runtime, поэтому конкурентной
+записи не возникает.
 
 ## Риски
 
@@ -38,8 +48,11 @@ fixtures, одинаковая mock history и сравнение SQLite/securit
 
 ### SQLite dual writers
 
-Две реализации могут нарушить invariant одной активной задачи. Нужны process
-locks, read-only migration phase и запрет одновременного запуска.
+Даже при поэтапной миграции две реализации не должны открывать одну рабочую БД.
+Изоляция гарантируется раздельными state root и ownership/format marker:
+одновременный запуск Python и Rust для проекта запрещён, а общая запись
+отсутствует by design. Вместо dual write используется односторонний импорт
+WAL-aware копии Python state в Rust state.
 
 ### libgit2 против Git CLI
 

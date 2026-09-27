@@ -5,6 +5,10 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
 инспекцией SQLite (`bridge-storage`) и CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
 добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
+Python и Rust никогда не делят рабочую БД или runtime state: у каждой реализации
+свои state root, SQLite, locks, PID/ownership records, token-файлы, логи и
+endpoints, а перенос истории — только односторонний импорт WAL-aware копии при
+остановленном Python runtime.
 
 ## Статус миграции
 
@@ -109,6 +113,12 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   безопасны и не раскрывают ids, session/message ids, SQL, JSON и пути. Verifier
   persist-once, cooperative close, `reopen_failed_round` и schema/fixtures
   изменения не входят.
+- Зафиксирована (документация, ещё не реализовано) стратегия изоляции storage:
+  Python и Rust используют раздельные state root, SQLite, locks, PID/ownership
+  records, token-файлы, логи и endpoints, а перенос истории — односторонний
+  импорт WAL-aware копии при остановленном Python runtime без общей рабочей БД.
+  Реализация — задачи **3.10** (storage isolation/импорт копии) и **3.11**
+  (ownership/format marker).
 - Следующий этап — **3.9b. Verifier persist-once** (весь поток 3.9 ещё не
   завершён).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).

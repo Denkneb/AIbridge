@@ -61,12 +61,77 @@ implementing -> awaiting_review -> revising -> awaiting_review -> accepted
 
 ## Хранилище
 
-- Сохраняются путь и формат `state.sqlite`.
-- Сохраняются WAL, foreign keys, busy timeout и `BEGIN IMMEDIATE`.
-- `PRAGMA user_version` меняется только отдельной миграцией.
+- Python и Rust никогда не используют общую рабочую БД или общий runtime state.
+- Каждая реализация владеет отдельным state root, `state.sqlite`, WAL/SHM
+  sidecar-файлами, locks, PID/ownership records, token-файлами и логами.
+- Внутри собственного state каждой реализации сохраняются WAL, foreign keys,
+  busy timeout и `BEGIN IMMEDIATE`.
+- `PRAGMA user_version` меняется только отдельной миграцией внутри владельца
+  state.
 - Идемпотентность обеспечивается `request_id` и хешем payload.
-- GUI читает SQLite через `bridge-storage`, а не через MCP.
+- GUI читает только Rust-owned SQLite через `bridge-storage`, а не через MCP.
 - Один проект имеет не более одной незавершённой задачи.
+
+## Изоляция Python и Rust
+
+У каждой реализации отдельный namespace по умолчанию:
+
+| Артефакт | Python (существующий) | Rust (изолированный) |
+| --- | --- | --- |
+| config | `$XDG_CONFIG_HOME/agent-bridge/projects.toml` | тот же файл, read-only |
+| secrets/token | `$XDG_CONFIG_HOME/agent-bridge/secrets/` | `$XDG_CONFIG_HOME/agent-bridge-rs/secrets/` |
+| state root | `$XDG_STATE_HOME/agent-bridge` | `$XDG_STATE_HOME/agent-bridge-rs` |
+| project state | `.../agent-bridge/<project_id>/` | `.../agent-bridge-rs/<project_id>/` |
+| database | `<state_dir>/state.sqlite` | `<state_dir>/state.sqlite` в Rust root |
+| locks | `mcp.lock`, `worker.lock`, `runtime.lock` | те же имена в Rust root |
+| PID/ownership | `<state_dir>/<kind>.process.json` | в Rust state dir |
+| logs | `<state_dir>/*.log` | в Rust state dir |
+| endpoints/ports | порты проекта Python | отдельный Rust namespace портов |
+
+`projects.toml` остаётся единственным источником конфигурации. Rust читает его
+read-only в период сосуществования и не пишет, пока существует Python runtime;
+запись допускается только от активной реализации при остановленных runtime
+проекта, поэтому конкурентной записи не возникает.
+
+Активным владельцем проекта одновременно является ровно одна реализация. При
+переключении проекта его endpoints, порты и token-файлы переводятся в namespace
+нового владельца в рамках переключения, когда Python runtime уже остановлен, а
+Rust state проверен; одновременного использования одного endpoint/token двумя
+реализациями не происходит.
+
+## Ownership и fail-closed
+
+Rust state помечается ownership/format marker:
+
+- sidecar `<state_dir>/.agent-bridge-state.json` с `implementation="rust"`,
+  `format_version`, `project_id`, `state_root`;
+- additive строка `meta.runtime_owner='rust'` в БД (schema v6 и
+  `meta.schema_version` не меняются).
+
+Rust fail-closed отказывается открывать или инициализировать state, если:
+
+- каталог лежит вне настроенного Rust state root или совпадает с Python state
+  root;
+- sidecar marker отсутствует или `implementation != "rust"`;
+- `meta.runtime_owner` присутствует и не равен `rust`;
+- живые locks или ownership records другой реализации относятся к проекту.
+
+Эквивалентный guard на стороне Python оформляется отдельной задачей; до неё
+изоляция обеспечивается раздельными namespace, запретом одновременного запуска
+и Rust-side проверкой.
+
+## Односторонний импорт истории
+
+История переносится только явным односторонним импортом:
+
+1. остановить Python runtime проекта и убедиться в отсутствии живых locks и
+   process records;
+2. снять WAL-aware копию Python `state.sqlite` (вместе с `-wal`/`-shm` либо
+   через backup API/`VACUUM INTO`) в Rust state dir;
+3. выставить Rust ownership marker и проверить schema v6;
+4. исходный Python state остаётся неизменным и служит точкой отката.
+
+Обратная запись Rust state в Python state запрещена.
 
 ## Процессы
 

@@ -121,9 +121,24 @@ Data model и serde compatibility без runtime logic.
 
 ### 3.9. Atomic round/verifier updates
 
-### 3.10. Cross-language read/write test
+### 3.10. Storage isolation и односторонний импорт копии
 
-**Готовность потока:** совместимость без изменения schema version.
+Проверить, что Python- и Rust-реализации используют раздельные state root,
+SQLite-файлы, locks, PID/ownership records, token-файлы, логи и endpoints;
+write tests выполняются только на независимых временных копиях каждой
+реализации. Импорт — односторонний: WAL-aware копия Python state при
+остановленном Python runtime, исходный Python state не изменяется. Contract
+fixtures Python остаются эталоном семантики; запись обеими реализациями в одну
+рабочую БД не предполагается.
+
+### 3.11. Ownership/format marker и fail-closed guard
+
+Зафиксировать sidecar marker (`implementation="rust"`, `format_version`) и
+additive `meta.runtime_owner='rust'`; Rust отказывается открывать state другой
+реализации или чужого namespace. Schema v6 и contract fixtures не меняются.
+
+**Готовность потока:** семантика совместима без изменения schema version, а
+Python- и Rust-state изолированы и связаны только односторонним импортом копии.
 
 ## Поток 4. Security и Git
 
@@ -375,21 +390,32 @@ Data model и serde compatibility без runtime logic.
 
 ## Поток 14. Миграция
 
-### 14.1. Read-only запуск на копии state
+### 14.1. Read-only запуск на изолированной копии state
 
-### 14.2. Rust dashboard с Python runtime
+### 14.2. Односторонний импорт WAL-aware копии Python state в Rust state
 
-### 14.3. Backup и rollback rehearsal
+Python runtime остановлен; исходный Python state не изменяется и сохраняется
+для отката.
 
-### 14.4. Один тестовый проект на Rust runtime
+### 14.3. Проверка Rust state и ownership marker
 
-### 14.5. Crash/recovery drill
+Schema v6, `meta.runtime_owner='rust'` и sidecar marker; fail-closed при чужом
+state.
 
-### 14.6. Soak period и метрики
+### 14.4. Backup и независимый rollback rehearsal
 
-### 14.7. Последовательный перевод проектов
+Откат возвращает к неизменённому Python state; Rust state не переносится
+обратно.
 
-### 14.8. Решение об архивировании Python
+### 14.5. Один тестовый проект на Rust runtime
+
+### 14.6. Crash/recovery drill
+
+### 14.7. Soak period и метрики
+
+### 14.8. Последовательный перевод проектов
+
+### 14.9. Решение об архивировании Python
 
 ## Экономия контекста
 

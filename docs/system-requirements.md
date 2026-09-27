@@ -26,17 +26,32 @@ runtime от pidfd и файловых блокировок.
 
 ## Runtime layout
 
-Сохраняются XDG-пути:
+Python сохраняет существующий XDG layout, Rust получает отдельный namespace:
 
 ```text
+# Python (существующий, не меняется)
 ~/.config/agent-bridge/projects.toml
 ~/.config/agent-bridge/secrets/
 ~/.local/state/agent-bridge/<project_id>/state.sqlite
 ~/.local/state/agent-bridge/<project_id>/*.log
+
+# Rust (изолированный)
+~/.config/agent-bridge-rs/secrets/
+~/.local/state/agent-bridge-rs/<project_id>/state.sqlite
+~/.local/state/agent-bridge-rs/<project_id>/*.log
 ```
 
-`--config` и `--state-root` продолжают работать. GUI не создаёт альтернативную
-базу project settings.
+`projects.toml` остаётся общим каноническим файлом конфигурации: Rust читает
+его read-only в период сосуществования и не пишет, пока существует Python
+runtime. Запись допускается только от активной реализации при остановленных
+runtime, поэтому конкурентной записи не возникает.
+
+`--config` указывает на общий `projects.toml`. `--state-root` по умолчанию
+различается: `$XDG_STATE_HOME/agent-bridge` для Python и
+`$XDG_STATE_HOME/agent-bridge-rs` для Rust. Явно переданный `--state-root`
+принимается только если он не указывает на state другой реализации: иначе Rust
+fail-closed отказывается запускаться по ownership/format marker. GUI не создаёт
+альтернативную базу project settings.
 
 ## Предлагаемые зависимости
 

@@ -1903,8 +1903,7 @@ fn project_env_open_error(path: &Path, source: std::io::Error) -> DomainError {
             DomainError::not_found("project env file not found").with_source(source)
         }
         std::io::ErrorKind::PermissionDenied => {
-            DomainError::permission_denied("project env file could not be read")
-                .with_source(source)
+            DomainError::permission_denied("project env file could not be read").with_source(source)
         }
         _ => match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -2018,8 +2017,8 @@ fn split_env_lines(text: &str) -> Vec<&str> {
     let mut chars = text.char_indices().peekable();
     while let Some((index, ch)) = chars.next() {
         let boundary = match ch {
-            '\n' | '\u{000b}' | '\u{000c}' | '\u{001c}' | '\u{001d}' | '\u{001e}'
-            | '\u{0085}' | '\u{2028}' | '\u{2029}' => true,
+            '\n' | '\u{000b}' | '\u{000c}' | '\u{001c}' | '\u{001d}' | '\u{001e}' | '\u{0085}'
+            | '\u{2028}' | '\u{2029}' => true,
             '\r' => {
                 if let Some((_, '\n')) = chars.peek() {
                     chars.next();
@@ -2090,7 +2089,7 @@ mod tests {
     use super::{
         AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config,
         MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY,
-        PROTECTED_ENV_NAMES, PROJECTS_TABLE, ProjectEnv, WORKSPACE_KEY, load_config,
+        PROJECTS_TABLE, PROTECTED_ENV_NAMES, ProjectEnv, WORKSPACE_KEY, load_config,
         parse_project_env, parse_projects, split_env_lines,
     };
     use bridge_domain::{DomainError, ErrorKind, ProjectId};
@@ -5021,8 +5020,11 @@ mod tests {
 
     #[test]
     fn opencode_env_values_are_literal_without_expansion() {
-        let env = read_env(b"A=$HOME\nB=$(id)\nC=`id`\nD=\"quoted\"\nE='single'\n", 0o600)
-            .expect("must parse");
+        let env = read_env(
+            b"A=$HOME\nB=$(id)\nC=`id`\nD=\"quoted\"\nE='single'\n",
+            0o600,
+        )
+        .expect("must parse");
         assert_eq!(env.get("A"), Some("$HOME"));
         assert_eq!(env.get("B"), Some("$(id)"));
         assert_eq!(env.get("C"), Some("`id`"));
@@ -5111,7 +5113,11 @@ mod tests {
             b"NAMED\0=\0value\n",
         ] {
             let error = read_env(content, 0o600).expect_err("NUL must be rejected");
-            assert_eq!(error.kind(), ErrorKind::InvalidInput, "content: {content:?}");
+            assert_eq!(
+                error.kind(),
+                ErrorKind::InvalidInput,
+                "content: {content:?}"
+            );
             assert_eq!(
                 error.to_string(),
                 "project env file line contains a NUL byte",
@@ -5125,8 +5131,7 @@ mod tests {
     fn rejects_protected_opencode_env_names() {
         for name in PROTECTED_ENV_NAMES {
             let content = format!("{name}=value\n");
-            let error =
-                read_env(content.as_bytes(), 0o600).expect_err("protected name must fail");
+            let error = read_env(content.as_bytes(), 0o600).expect_err("protected name must fail");
             assert_eq!(error.kind(), ErrorKind::InvalidInput, "name: {name}");
             assert_eq!(
                 error.to_string(),

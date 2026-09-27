@@ -241,7 +241,10 @@ impl fmt::Display for InspectError {
                 f.write_str("schema version markers are inconsistent")
             }
             Self::IncompatibleSchema(mismatch) => {
-                write!(f, "database schema is not compatible with schema v6: {mismatch}")
+                write!(
+                    f,
+                    "database schema is not compatible with schema v6: {mismatch}"
+                )
             }
             Self::Database(_) => f.write_str("storage database error"),
         }
@@ -318,14 +321,9 @@ fn read_only_uri(path: &Path) -> String {
     let mut encoded = String::new();
     for &byte in path.as_os_str().as_encoded_bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'.'
-            | b'_'
-            | b'~'
-            | b'/' => encoded.push(char::from(byte)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(char::from(byte))
+            }
             _ => {
                 encoded.push('%');
                 encoded.push(hex_digit(byte >> 4));
@@ -522,8 +520,7 @@ fn read_foreign_keys(
         }
     }
     foreign_keys.sort_by(|left, right| {
-        (left.table.as_str(), left.from.as_str())
-            .cmp(&(right.table.as_str(), right.from.as_str()))
+        (left.table.as_str(), left.from.as_str()).cmp(&(right.table.as_str(), right.from.as_str()))
     });
     Ok(foreign_keys)
 }
@@ -659,14 +656,20 @@ fn validate_schema(
 
 fn validate_tables(expected: &[Table], observed: &[Table]) -> Result<(), SchemaMismatch> {
     for expected_table in expected {
-        if !observed.iter().any(|table| table.name == expected_table.name) {
+        if !observed
+            .iter()
+            .any(|table| table.name == expected_table.name)
+        {
             return Err(SchemaMismatch::MissingTable {
                 table: expected_table.name.clone(),
             });
         }
     }
     for observed_table in observed {
-        if !expected.iter().any(|table| table.name == observed_table.name) {
+        if !expected
+            .iter()
+            .any(|table| table.name == observed_table.name)
+        {
             return Err(SchemaMismatch::UnexpectedTable {
                 table: observed_table.name.clone(),
             });
@@ -726,9 +729,13 @@ fn validate_columns(expected: &Table, observed: &Table) -> Result<(), SchemaMism
 fn validate_indexes(expected: &[Index], observed: &[Index]) -> Result<(), SchemaMismatch> {
     let mut matched = vec![false; observed.len()];
     for expected_index in expected {
-        if let Some(position) = observed.iter().enumerate().find_map(|(position, candidate)| {
-            (candidate == expected_index && !matched[position]).then_some(position)
-        }) {
+        if let Some(position) = observed
+            .iter()
+            .enumerate()
+            .find_map(|(position, candidate)| {
+                (candidate == expected_index && !matched[position]).then_some(position)
+            })
+        {
             matched[position] = true;
         } else if observed
             .iter()
@@ -759,14 +766,17 @@ fn validate_foreign_keys(
 ) -> Result<(), SchemaMismatch> {
     let mut matched = vec![false; observed.len()];
     for expected_key in expected {
-        if let Some(position) = observed.iter().enumerate().find_map(|(position, candidate)| {
-            (candidate == expected_key && !matched[position]).then_some(position)
-        }) {
-            matched[position] = true;
-        } else if observed
+        if let Some(position) = observed
             .iter()
-            .any(|candidate| candidate.table == expected_key.table && candidate.from == expected_key.from)
+            .enumerate()
+            .find_map(|(position, candidate)| {
+                (candidate == expected_key && !matched[position]).then_some(position)
+            })
         {
+            matched[position] = true;
+        } else if observed.iter().any(|candidate| {
+            candidate.table == expected_key.table && candidate.from == expected_key.from
+        }) {
             return Err(SchemaMismatch::ForeignKeyDefinition {
                 table: expected_key.table.clone(),
                 from: expected_key.from.clone(),
@@ -1121,7 +1131,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             .map(|key| ForeignKey {
                 table: key["table"].as_str().expect("foreign key table").to_owned(),
                 from: key["from"].as_str().expect("foreign key from").to_owned(),
-                to_table: key["to_table"].as_str().expect("foreign key to_table").to_owned(),
+                to_table: key["to_table"]
+                    .as_str()
+                    .expect("foreign key to_table")
+                    .to_owned(),
                 to_column: key["to_column"]
                     .as_str()
                     .expect("foreign key to_column")
@@ -1139,7 +1152,9 @@ CREATE INDEX ix_events_task ON events(task_id, id);
     }
 
     fn normalize(mut contract: Contract) -> Contract {
-        contract.tables.sort_by(|left, right| left.name.cmp(&right.name));
+        contract
+            .tables
+            .sort_by(|left, right| left.name.cmp(&right.name));
         for table in &mut contract.tables {
             table
                 .columns
@@ -1177,7 +1192,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
                 indexes: inspection.indexes().to_vec(),
                 foreign_keys: inspection.foreign_keys().to_vec(),
             });
-            assert_eq!(observed, expected, "{name} schema differs from expected.json");
+            assert_eq!(
+                observed, expected,
+                "{name} schema differs from expected.json"
+            );
         }
     }
 
@@ -1205,8 +1223,14 @@ CREATE INDEX ix_events_task ON events(task_id, id);
                 metadata_after.modified().expect("fixture mtime"),
                 "{name} mtime changed"
             );
-            assert!(!sidecar(&path, "-wal").exists(), "{name} left a -wal sidecar");
-            assert!(!sidecar(&path, "-shm").exists(), "{name} left a -shm sidecar");
+            assert!(
+                !sidecar(&path, "-wal").exists(),
+                "{name} left a -wal sidecar"
+            );
+            assert!(
+                !sidecar(&path, "-shm").exists(),
+                "{name} left a -shm sidecar"
+            );
         }
     }
 
@@ -1414,7 +1438,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
         let path = dir.join("state.sqlite");
         let error = inspect(&path).expect_err("missing database must be rejected");
         assert!(matches!(error, InspectError::NotFound), "{error:?}");
-        assert!(!path.exists(), "inspection created the missing database file");
+        assert!(
+            !path.exists(),
+            "inspection created the missing database file"
+        );
     }
 
     #[test]
@@ -1458,7 +1485,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
         create_v6(&path);
         execute(&path, "DELETE FROM meta");
         let error = inspect(&path).expect_err("missing meta.schema_version must be rejected");
-        assert!(matches!(error, InspectError::MissingSchemaVersion), "{error:?}");
+        assert!(
+            matches!(error, InspectError::MissingSchemaVersion),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1474,7 +1504,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
         assert!(
             matches!(
                 error,
-                InspectError::MismatchedSchemaVersion { user_version: 6, .. }
+                InspectError::MismatchedSchemaVersion {
+                    user_version: 6,
+                    ..
+                }
             ),
             "{error:?}"
         );
@@ -1490,7 +1523,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             "UPDATE meta SET value = 'six' WHERE key = 'schema_version'",
         );
         let error = inspect(&path).expect_err("malformed meta.schema_version must be rejected");
-        assert!(matches!(error, InspectError::MalformedSchemaVersion), "{error:?}");
+        assert!(
+            matches!(error, InspectError::MalformedSchemaVersion),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1617,7 +1653,10 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             }
             Mutation::AddColumn(table, column) => {
                 create_v6(path);
-                execute(path, &format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"));
+                execute(
+                    path,
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"),
+                );
             }
             Mutation::DropIndex(index) => {
                 create_v6(path);
@@ -1630,14 +1669,18 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             Mutation::RedefineIndex => {
                 create_v6(path);
                 execute(path, "DROP INDEX ux_rounds_request");
-                execute(path, "CREATE UNIQUE INDEX ux_rounds_request ON rounds(request_id)");
+                execute(
+                    path,
+                    "CREATE UNIQUE INDEX ux_rounds_request ON rounds(request_id)",
+                );
             }
             Mutation::NoForeignKey => {
                 let schema = V6_SCHEMA.replace(&format!(",\n    {FK_CLAUSE}"), "");
                 create_database(path, &schema);
             }
             Mutation::CascadeForeignKey => {
-                let schema = V6_SCHEMA.replace(FK_CLAUSE, &format!("{FK_CLAUSE} ON DELETE CASCADE"));
+                let schema =
+                    V6_SCHEMA.replace(FK_CLAUSE, &format!("{FK_CLAUSE} ON DELETE CASCADE"));
                 create_database(path, &schema);
             }
             Mutation::ExtraForeignKey => {

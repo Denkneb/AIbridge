@@ -49,9 +49,21 @@
 //! `rounds` row (`round_number=1`, `implement`, `pending`, `attempted=0`) and
 //! one `events` row (`created`, `task created (implement)`), all sharing a
 //! single UTC RFC3339 millisecond timestamp, and returns the created [`Task`]
-//! through the existing [`Task::from_row`] contract. Request idempotency/replay
-//! (task 3.8), revision rounds, round/verifier updates and schema migrations
-//! remain out of scope.
+//! through the existing [`Task::from_row`] contract.
+//!
+//! Request idempotency (task 3.8) extends the same call: inside the very same
+//! `BEGIN IMMEDIATE` transaction the exact `project_id`+`request_id` round is
+//! looked up through [`RoundRow::from_row`] *before* any insert. A matching
+//! `implement`/`round_number=1`/`payload_hash` request whose linked task exists
+//! in the same project returns [`CreateTaskOutcome::Replayed`] with the original
+//! [`Task`] and writes nothing; a different hash or a non-`implement` round is a
+//! [`CreateTaskError::RequestConflict`]; an unmappable round, a non-initial
+//! `implement` round, a missing/unmappable linked task or a task/project
+//! mismatch is a fail-closed [`CreateTaskError::InvalidPersistedState`]. The
+//! check and the inserts share one writer transaction, so concurrent identical
+//! requests yield exactly one [`CreateTaskOutcome::Created`] and one
+//! [`CreateTaskOutcome::Replayed`]. Revision rounds, round/verifier updates and
+//! schema migrations remain out of scope.
 
 use std::error::Error;
 use std::fmt;
@@ -1114,11 +1126,11 @@ impl StorageConnection {
     }
 
     /// Atomically creates a task, its initial implementation round and its
-    /// `created` event.
+    /// `created` event, or replays an already-committed request.
     ///
-    /// The whole creation runs inside one `BEGIN IMMEDIATE` transaction, so the
-    /// three rows either all commit or all roll back. Exactly these rows are
-    /// written:
+    /// The whole operation runs inside one `BEGIN IMMEDIATE` transaction, so the
+    /// check for an existing request and the three inserts are serialized with
+    /// every other writer. On a fresh request exactly these rows are written:
     ///
     /// * one `tasks` row with `status = implementing` and `revision_count = 0`;
     /// * one `rounds` row with `round_number = 1`, `kind = implement`,
@@ -1130,14 +1142,28 @@ impl StorageConnection {
     /// precision) for `created_at`/`updated_at`. The initial round kind is never
     /// caller-controlled: it is always [`RoundKind::Implement`].
     ///
+    /// When the project already has a round for the exact `request_id`, the
+    /// existing round is mapped through [`RoundRow::from_row`] and the linked
+    /// task through [`Task::from_row`] *without writing anything*:
+    ///
+    /// * an `implement`, `round_number = 1` round with the same `payload_hash`
+    ///   and a linked task in the same project returns
+    ///   [`CreateTaskOutcome::Replayed`] with the original task; the newly
+    ///   supplied `task_id` and every other payload field are ignored and never
+    ///   replace persisted data;
+    /// * a different `payload_hash`, or a round whose kind is not `implement`,
+    ///   is a [`CreateTaskError::RequestConflict`];
+    /// * a round that does not map, a non-initial `implement` round, a missing
+    ///   or unmappable linked task, or a linked task in another project is a
+    ///   fail-closed [`CreateTaskError::InvalidPersistedState`].
+    ///
+    /// A request with no existing round keeps the task-3.7 semantics: input is
+    /// validated before the transaction, and an active task for another request
+    /// is a [`CreateTaskError::ProjectBusy`].
+    ///
     /// The returned [`Task`] is read back inside the same transaction through
     /// the production [`TASK_COLUMNS`]/[`Task::from_row`] contract used by
     /// [`StorageConnection::get_task`], so the value is the exact persisted row.
-    ///
-    /// Request idempotency/replay is deliberately not implemented: a reused
-    /// `request_id` of the same project is a [`CreateTaskError::RequestConflict`],
-    /// while the same `request_id` in a different project is allowed by the
-    /// project-scoped `ux_rounds_request` index.
     ///
     /// # Errors
     ///
@@ -1145,7 +1171,10 @@ impl StorageConnection {
     /// serialization failures are detected before the transaction starts, so
     /// they never write anything. No error message contains ids, project, task
     /// text, workspace, request id, payload hash, paths, SQL or JSON.
-    pub fn create_task(&mut self, input: CreateTaskInput) -> Result<Task, CreateTaskError> {
+    pub fn create_task(
+        &mut self,
+        input: CreateTaskInput,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
         let prepared = PreparedCreateTask::new(input)?;
         let now = utc_now_rfc3339_millis();
 
@@ -1153,6 +1182,12 @@ impl StorageConnection {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(CreateTaskError::Database)?;
+
+        if let Some(existing) = find_existing_request(&transaction, &prepared)? {
+            let task = replay_existing_request(&transaction, &prepared, existing)?;
+            transaction.commit().map_err(CreateTaskError::Database)?;
+            return Ok(CreateTaskOutcome::Replayed(task));
+        }
 
         transaction
             .execute(
@@ -1237,7 +1272,54 @@ impl StorageConnection {
 
         transaction.commit().map_err(CreateTaskError::Database)?;
 
-        Ok(task)
+        Ok(CreateTaskOutcome::Created(task))
+    }
+}
+
+/// The outcome of an idempotent [`StorageConnection::create_task`] call.
+///
+/// [`Created`](Self::Created) means this call inserted the task, its initial
+/// round and its `created` event, so the caller owns starting the worker.
+/// [`Replayed`](Self::Replayed) means an identical request had already been
+/// committed: no rows were written and the caller must *not* start the worker
+/// again. Both variants carry the persisted [`Task`], read back through
+/// [`Task::from_row`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum CreateTaskOutcome {
+    /// The request was new and its rows were inserted.
+    Created(Task),
+    /// The request was already committed and its original task was returned.
+    Replayed(Task),
+}
+
+impl CreateTaskOutcome {
+    /// The persisted task, whether it was created or replayed.
+    #[must_use]
+    pub fn task(&self) -> &Task {
+        match self {
+            Self::Created(task) | Self::Replayed(task) => task,
+        }
+    }
+
+    /// Consumes the outcome, returning the persisted task.
+    #[must_use]
+    pub fn into_task(self) -> Task {
+        match self {
+            Self::Created(task) | Self::Replayed(task) => task,
+        }
+    }
+
+    /// Whether this outcome is a [`CreateTaskOutcome::Created`].
+    #[must_use]
+    pub fn is_created(&self) -> bool {
+        matches!(self, Self::Created(_))
+    }
+
+    /// Whether this outcome is a [`CreateTaskOutcome::Replayed`].
+    #[must_use]
+    pub fn is_replayed(&self) -> bool {
+        matches!(self, Self::Replayed(_))
     }
 }
 
@@ -1353,7 +1435,8 @@ pub enum CreateTaskError {
     ProjectBusy,
     /// A task with the same `task_id` already exists.
     TaskIdConflict,
-    /// The `request_id` is already used in this project (`ux_rounds_request`).
+    /// The `request_id` is already used in this project with a different
+    /// payload hash, or with a non-`implement` round kind.
     RequestConflict,
     /// The input is invalid: empty required text or a non-object snapshot.
     InvalidInput,
@@ -1361,6 +1444,8 @@ pub enum CreateTaskError {
     Serialization,
     /// The created `tasks` row could not be mapped.
     TaskRow(TaskRowError),
+    /// An existing request maps to a corrupt or inconsistent persisted state.
+    InvalidPersistedState(ReplayStateError),
     /// An unexpected SQLite failure.
     Database(rusqlite::Error),
 }
@@ -1374,6 +1459,9 @@ impl fmt::Display for CreateTaskError {
             Self::InvalidInput => f.write_str("task creation input is invalid"),
             Self::Serialization => f.write_str("task creation input could not be serialized"),
             Self::TaskRow(_) => f.write_str("task row could not be mapped"),
+            Self::InvalidPersistedState(_) => {
+                f.write_str("existing request maps to an invalid persisted state")
+            }
             Self::Database(_) => f.write_str("storage database error"),
         }
     }
@@ -1383,10 +1471,127 @@ impl Error for CreateTaskError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::TaskRow(error) => Some(error),
+            Self::InvalidPersistedState(error) => Some(error),
             Self::Database(error) => Some(error),
             _ => None,
         }
     }
+}
+
+/// A typed, safe reason why an existing request could not be replayed.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains ids, project, task text, workspace, request id,
+/// payload hash, paths, SQL or JSON. The underlying row-mapping error, when
+/// present, is reachable only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ReplayStateError {
+    /// The stored `rounds` row does not map to a valid [`RoundRow`].
+    RoundRow(RoundRowError),
+    /// The round is an `implement` round but not round number 1.
+    InvalidRoundNumber,
+    /// The task referenced by the round does not exist.
+    MissingTask,
+    /// The referenced `tasks` row does not map to a valid [`Task`].
+    TaskRow(TaskRowError),
+    /// The referenced task belongs to a different project than the round.
+    ProjectMismatch,
+}
+
+impl fmt::Display for ReplayStateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RoundRow(_) => f.write_str("existing request round row is invalid"),
+            Self::InvalidRoundNumber => {
+                f.write_str("existing request implement round is not the initial round")
+            }
+            Self::MissingTask => f.write_str("existing request references a missing task"),
+            Self::TaskRow(_) => f.write_str("existing request task row is invalid"),
+            Self::ProjectMismatch => {
+                f.write_str("existing request task belongs to a different project")
+            }
+        }
+    }
+}
+
+impl Error for ReplayStateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RoundRow(error) => Some(error),
+            Self::TaskRow(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Looks up the single existing `rounds` row for the exact project and request.
+///
+/// The project-scoped `ux_rounds_request` index guarantees at most one row. The
+/// found row is mapped through [`RoundRow::from_row`] but the mapping result is
+/// returned unchanged so the caller can classify a corrupt candidate.
+fn find_existing_request(
+    connection: &Connection,
+    prepared: &PreparedCreateTask,
+) -> Result<Option<Result<RoundRow, RoundRowError>>, CreateTaskError> {
+    connection
+        .query_row(
+            &format!(
+                "SELECT {ROUND_COLUMNS} FROM rounds WHERE project_id = ?1 AND request_id = ?2"
+            ),
+            params![prepared.project_id, prepared.request_id],
+            |row| Ok(RoundRow::from_row(row)),
+        )
+        .optional()
+        .map_err(CreateTaskError::Database)
+}
+
+/// Resolves an existing request into the original [`Task`] or a typed conflict.
+///
+/// This performs no writes. A same-`payload_hash` `implement`/`round_number=1`
+/// round with an existing, same-project linked task replays; every other
+/// persisted state is a [`CreateTaskError::RequestConflict`] or a fail-closed
+/// [`CreateTaskError::InvalidPersistedState`].
+fn replay_existing_request(
+    connection: &Connection,
+    prepared: &PreparedCreateTask,
+    existing: Result<RoundRow, RoundRowError>,
+) -> Result<Task, CreateTaskError> {
+    let round = existing.map_err(|error| {
+        CreateTaskError::InvalidPersistedState(ReplayStateError::RoundRow(error))
+    })?;
+
+    if round.kind != RoundKind::Implement || round.payload_hash != prepared.payload_hash {
+        return Err(CreateTaskError::RequestConflict);
+    }
+    if round.round_number != 1 {
+        return Err(CreateTaskError::InvalidPersistedState(
+            ReplayStateError::InvalidRoundNumber,
+        ));
+    }
+
+    let task = connection
+        .query_row(
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            params![round.task_id.to_string()],
+            |row| Ok(Task::from_row(row)),
+        )
+        .optional()
+        .map_err(CreateTaskError::Database)?
+        .ok_or(CreateTaskError::InvalidPersistedState(
+            ReplayStateError::MissingTask,
+        ))?
+        .map_err(|error| {
+            CreateTaskError::InvalidPersistedState(ReplayStateError::TaskRow(error))
+        })?;
+
+    if task.project_id != round.project_id {
+        return Err(CreateTaskError::InvalidPersistedState(
+            ReplayStateError::ProjectMismatch,
+        ));
+    }
+
+    Ok(task)
 }
 
 /// Classifies a failed `tasks` insert into the active-project or task-id
@@ -2338,10 +2543,10 @@ fn check_verifier_consistency(
 mod tests {
     use super::{
         BUSY_TIMEOUT_MS, Column, ConnectError, Contract, CreateTaskError, CreateTaskInput,
-        ForeignKey, Index, InitializeError, InspectError, QueryError, RoundRow, RoundRowError,
-        SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError,
-        V6_SCHEMA_DDL, apply_schema_v6, connect, initialize, inspect, open_read_only,
-        query_user_version, v6_contract,
+        CreateTaskOutcome, ForeignKey, Index, InitializeError, InspectError, QueryError,
+        ReplayStateError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch,
+        StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6,
+        connect, initialize, inspect, open_read_only, query_user_version, v6_contract,
     };
     use bridge_domain::{ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, VerifierState};
     use rusqlite::types::Value as SqlValue;
@@ -4831,9 +5036,11 @@ mod tests {
         let task_id = query_task_id(1);
         let input = create_task_input(task_id, &project, "req-1");
 
-        let task = storage
+        let outcome = storage
             .create_task(input)
             .expect("create_task must succeed");
+        assert!(outcome.is_created(), "fresh request must be Created");
+        let task = outcome.into_task();
 
         assert_eq!(count_rows(&storage, "tasks"), 1);
         assert_eq!(count_rows(&storage, "rounds"), 1);
@@ -5183,9 +5390,11 @@ mod tests {
         input.base_head = Some("2222222222222222222222222222222222222222".to_owned());
         input.snapshot = Some(serde_json::json!({"head": "abc"}));
 
-        let task = storage
+        let outcome = storage
             .create_task(input)
             .expect("create_task must succeed");
+        assert!(outcome.is_created(), "fresh request must be Created");
+        let task = outcome.into_task();
 
         assert_eq!(task.task_id, task_id);
         assert_eq!(task.project_id, project);
@@ -5267,6 +5476,560 @@ mod tests {
             "{error:?}"
         );
         assert_create_error_is_safe(&error, SECRET);
+    }
+
+    /// Seeds one `tasks` row with a raw connection (foreign keys off) so tests
+    /// can build states the runtime connection would refuse to write.
+    fn seed_task_raw(path: &Path, task_id: &str, project_id: &str, status: &str) {
+        let connection = Connection::open(path).expect("open seed database");
+        connection
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+                 test_commands, created_at, updated_at, revision_count) \
+                 VALUES (?1, ?2, '/fixture/workspace', ?3, 't', '[]', '[]', ?4, ?4, 0)",
+                rusqlite::params![task_id, project_id, status, TS_EARLY],
+            )
+            .expect("seed task");
+    }
+
+    /// Seeds one `rounds` row with a raw connection (foreign keys off) so tests
+    /// can build a missing-task or otherwise corrupt replay candidate.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_round_raw(
+        path: &Path,
+        task_id: &str,
+        project_id: &str,
+        round_number: i64,
+        request_id: &str,
+        payload_hash: &str,
+        kind: &str,
+    ) {
+        let connection = Connection::open(path).expect("open seed database");
+        connection
+            .execute_batch("PRAGMA foreign_keys=OFF;")
+            .expect("disable foreign keys for seeding");
+        connection
+            .execute(
+                "INSERT INTO rounds (task_id, project_id, round_number, request_id, payload_hash, \
+                 kind, status, attempted, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7)",
+                rusqlite::params![
+                    task_id,
+                    project_id,
+                    round_number,
+                    request_id,
+                    payload_hash,
+                    kind,
+                    TS_EARLY
+                ],
+            )
+            .expect("seed round");
+    }
+
+    /// Dumps every column of every row of `table` in physical order so a test
+    /// can prove that a replay mutated nothing.
+    fn dump_rows(storage: &StorageConnection, table: &str) -> Vec<Vec<SqlValue>> {
+        let mut statement = storage
+            .connection()
+            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .expect("prepare dump");
+        let column_count = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                let mut values = Vec::with_capacity(column_count);
+                for index in 0..column_count {
+                    values.push(row.get::<_, SqlValue>(index)?);
+                }
+                Ok(values)
+            })
+            .expect("query dump");
+        rows.map(|row| row.expect("dump row")).collect()
+    }
+
+    #[test]
+    fn create_task_replay_returns_original_task_without_mutation() {
+        let (_dir, mut storage) = open_query_storage("replay-equal");
+        let project = query_project(QUERY_PROJECT_A);
+        let original_id = query_task_id(1);
+
+        let created = storage
+            .create_task(create_task_input(original_id, &project, "req-replay"))
+            .expect("first create must succeed");
+        assert!(created.is_created(), "{created:?}");
+        let original = created.into_task();
+
+        let tasks_before = dump_rows(&storage, "tasks");
+        let rounds_before = dump_rows(&storage, "rounds");
+        let events_before = dump_rows(&storage, "events");
+
+        let mut replay = create_task_input(query_task_id(2), &project, "req-replay");
+        replay.workspace = "/other/workspace".to_owned();
+        replay.task = "different task text".to_owned();
+        replay.allowed_paths = vec!["other.py".to_owned()];
+        replay.test_commands = vec!["cargo test".to_owned()];
+        replay.base_head = Some("2222222222222222222222222222222222222222".to_owned());
+        replay.snapshot = Some(serde_json::json!({"head": "different"}));
+
+        let replayed = storage.create_task(replay).expect("replay must succeed");
+        assert!(replayed.is_replayed(), "{replayed:?}");
+        let replayed_task = replayed.into_task();
+
+        assert_eq!(replayed_task, original);
+        assert_eq!(replayed_task.task_id, original_id);
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+        assert_eq!(dump_rows(&storage, "tasks"), tasks_before);
+        assert_eq!(dump_rows(&storage, "rounds"), rounds_before);
+        assert_eq!(dump_rows(&storage, "events"), events_before);
+    }
+
+    #[test]
+    fn create_task_replay_different_payload_hash_is_request_conflict() {
+        let (_dir, mut storage) = open_query_storage("replay-hash-conflict");
+        let project = query_project(QUERY_PROJECT_A);
+        storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-x"))
+            .expect("first create must succeed");
+
+        let mut second = create_task_input(query_task_id(2), &project, "req-x");
+        second.payload_hash = "hash-other".to_owned();
+        let error = storage
+            .create_task(second)
+            .expect_err("different hash must conflict");
+        assert!(
+            matches!(error, CreateTaskError::RequestConflict),
+            "{error:?}"
+        );
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_replay_same_request_wins_over_project_busy() {
+        let (_dir, mut storage) = open_query_storage("replay-before-busy");
+        let project = query_project(QUERY_PROJECT_A);
+        storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-1"))
+            .expect("first create must succeed");
+
+        let outcome = storage
+            .create_task(create_task_input(query_task_id(2), &project, "req-1"))
+            .expect("same request must replay before ProjectBusy");
+        assert!(outcome.is_replayed(), "{outcome:?}");
+        assert_eq!(outcome.task().task_id, query_task_id(1));
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_replay_revision_kind_is_request_conflict() {
+        let dir = TempDir::new("replay-revise");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_task_raw(
+            &path,
+            &query_task_id(9).to_string(),
+            project.as_str(),
+            "accepted",
+        );
+        seed_round_raw(
+            &path,
+            &query_task_id(9).to_string(),
+            project.as_str(),
+            1,
+            "req-rev",
+            "hash-req-rev",
+            "revise",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-rev"))
+            .expect_err("revision-kind request must conflict");
+        assert!(
+            matches!(error, CreateTaskError::RequestConflict),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_unmappable_round_is_invalid_persisted_state() {
+        let dir = TempDir::new("replay-bad-round");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_round_raw(
+            &path,
+            &query_task_id(5).to_string(),
+            project.as_str(),
+            1,
+            "req-badround",
+            "hash-req-badround",
+            "bogus",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(
+                query_task_id(1),
+                &project,
+                "req-badround",
+            ))
+            .expect_err("unmappable round must fail closed");
+        assert!(
+            matches!(
+                error,
+                CreateTaskError::InvalidPersistedState(ReplayStateError::RoundRow(_))
+            ),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_non_initial_implement_round_is_invalid_persisted_state() {
+        let dir = TempDir::new("replay-non-initial");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_task_raw(
+            &path,
+            &query_task_id(6).to_string(),
+            project.as_str(),
+            "accepted",
+        );
+        seed_round_raw(
+            &path,
+            &query_task_id(6).to_string(),
+            project.as_str(),
+            2,
+            "req-non1",
+            "hash-req-non1",
+            "implement",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-non1"))
+            .expect_err("non-initial implement round must fail closed");
+        assert!(
+            matches!(
+                error,
+                CreateTaskError::InvalidPersistedState(ReplayStateError::InvalidRoundNumber)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_missing_linked_task_is_invalid_persisted_state() {
+        let dir = TempDir::new("replay-missing-task");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_round_raw(
+            &path,
+            &query_task_id(7).to_string(),
+            project.as_str(),
+            1,
+            "req-missing",
+            "hash-req-missing",
+            "implement",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-missing"))
+            .expect_err("missing linked task must fail closed");
+        assert!(
+            matches!(
+                error,
+                CreateTaskError::InvalidPersistedState(ReplayStateError::MissingTask)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_unmappable_task_is_invalid_persisted_state() {
+        let dir = TempDir::new("replay-bad-task");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_task_raw(
+            &path,
+            &query_task_id(8).to_string(),
+            project.as_str(),
+            "bogus-status",
+        );
+        seed_round_raw(
+            &path,
+            &query_task_id(8).to_string(),
+            project.as_str(),
+            1,
+            "req-maperr",
+            "hash-req-maperr",
+            "implement",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-maperr"))
+            .expect_err("unmappable linked task must fail closed");
+        assert!(
+            matches!(
+                error,
+                CreateTaskError::InvalidPersistedState(ReplayStateError::TaskRow(_))
+            ),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_task_project_mismatch_is_invalid_persisted_state() {
+        let dir = TempDir::new("replay-project-mismatch");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        seed_task_raw(
+            &path,
+            &query_task_id(9).to_string(),
+            project_b.as_str(),
+            "accepted",
+        );
+        seed_round_raw(
+            &path,
+            &query_task_id(9).to_string(),
+            project_a.as_str(),
+            1,
+            "req-mismatch",
+            "hash-req-mismatch",
+            "implement",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let error = storage
+            .create_task(create_task_input(
+                query_task_id(1),
+                &project_a,
+                "req-mismatch",
+            ))
+            .expect_err("project mismatch must fail closed");
+        assert!(
+            matches!(
+                error,
+                CreateTaskError::InvalidPersistedState(ReplayStateError::ProjectMismatch)
+            ),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_replay_corrupt_errors_do_not_leak_input() {
+        const SECRET: &str = "super-secret-token";
+        let dir = TempDir::new("replay-error-safety");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        seed_round_raw(
+            &path,
+            &query_task_id(5).to_string(),
+            project.as_str(),
+            1,
+            SECRET,
+            SECRET,
+            "bogus",
+        );
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let mut input = create_task_input(query_task_id(1), &project, SECRET);
+        input.payload_hash = SECRET.to_owned();
+        let error = storage
+            .create_task(input)
+            .expect_err("corrupt replay must fail closed");
+        assert!(
+            matches!(error, CreateTaskError::InvalidPersistedState(_)),
+            "{error:?}"
+        );
+        assert_create_error_is_safe(&error, SECRET);
+    }
+
+    #[test]
+    fn create_task_same_request_across_projects_replays_independently() {
+        let (_dir, mut storage) = open_query_storage("replay-cross-project");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+
+        let first_a = storage
+            .create_task(create_task_input(
+                query_task_id(1),
+                &project_a,
+                "req-shared",
+            ))
+            .expect("project a create must succeed");
+        assert!(first_a.is_created());
+        let first_b = storage
+            .create_task(create_task_input(
+                query_task_id(2),
+                &project_b,
+                "req-shared",
+            ))
+            .expect("project b create must succeed");
+        assert!(first_b.is_created());
+
+        let replay_a = storage
+            .create_task(create_task_input(
+                query_task_id(3),
+                &project_a,
+                "req-shared",
+            ))
+            .expect("project a replay must succeed");
+        assert!(replay_a.is_replayed());
+        assert_eq!(replay_a.task().task_id, query_task_id(1));
+        let replay_b = storage
+            .create_task(create_task_input(
+                query_task_id(4),
+                &project_b,
+                "req-shared",
+            ))
+            .expect("project b replay must succeed");
+        assert!(replay_b.is_replayed());
+        assert_eq!(replay_b.task().task_id, query_task_id(2));
+
+        assert_eq!(count_rows(&storage, "tasks"), 2);
+        assert_eq!(count_rows(&storage, "rounds"), 2);
+        assert_eq!(count_rows(&storage, "events"), 2);
+    }
+
+    #[test]
+    fn create_task_concurrent_same_request_same_hash_yields_one_created_one_replayed() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("replay-concurrent-same");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let project = query_project(QUERY_PROJECT_A);
+        let mut handles = Vec::new();
+        for n in 1..=2_u32 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect must succeed");
+                storage.create_task(create_task_input(
+                    query_task_id(n),
+                    &project,
+                    "req-concurrent",
+                ))
+            }));
+        }
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let created = results
+            .iter()
+            .filter(|result| matches!(result, Ok(CreateTaskOutcome::Created(_))))
+            .count();
+        let replayed = results
+            .iter()
+            .filter(|result| matches!(result, Ok(CreateTaskOutcome::Replayed(_))))
+            .count();
+        assert_eq!(created, 1, "{results:?}");
+        assert_eq!(replayed, 1, "{results:?}");
+        let ids: Vec<TaskId> = results
+            .iter()
+            .map(|result| {
+                result
+                    .as_ref()
+                    .expect("both calls must succeed")
+                    .task()
+                    .task_id
+            })
+            .collect();
+        assert_eq!(ids[0], ids[1], "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_concurrent_same_request_different_hash_yields_one_created_one_conflict() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("replay-concurrent-hash");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let project = query_project(QUERY_PROJECT_A);
+        let mut handles = Vec::new();
+        for n in 1..=2_u32 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect must succeed");
+                let mut input = create_task_input(query_task_id(n), &project, "req-race");
+                input.payload_hash = format!("hash-{n}");
+                storage.create_task(input)
+            }));
+        }
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let created = results
+            .iter()
+            .filter(|result| matches!(result, Ok(CreateTaskOutcome::Created(_))))
+            .count();
+        let conflicts = results
+            .iter()
+            .filter(|result| matches!(result, Err(CreateTaskError::RequestConflict)))
+            .count();
+        assert_eq!(created, 1, "{results:?}");
+        assert_eq!(conflicts, 1, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
     }
 
     struct TempDir {

@@ -68,11 +68,24 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   через существующий mapping. Ошибка round/event после task insert полностью
   откатывает все три строки; типизированный `CreateTaskError`
   (`ProjectBusy`/`TaskIdConflict`/`RequestConflict`/`InvalidInput`/
-  `Serialization`/`TaskRow`/`Database`) не раскрывает ids, project, task text,
-  workspace, request, hash, пути, SQL и JSON. Request idempotency/replay (3.8)
-  намеренно не реализована: повтор `request_id` того же project — типизированный
-  конфликт, одинаковый `request_id` разных projects разрешён schema.
-- Следующий этап — **3.8. Request idempotency**.
+  `Serialization`/`TaskRow`/`InvalidPersistedState`/`Database`) не раскрывает
+  ids, project, task text, workspace, request, hash, пути, SQL и JSON.
+- Завершён этап **3.8. Request idempotency**: `StorageConnection::create_task`
+  в той же `BEGIN IMMEDIATE` транзакции до inserts находит round по точной паре
+  `project_id`+`request_id` и маппит его через `RoundRow::from_row`. Совпадающий
+  `implement`/`round_number=1`/`payload_hash` с существующим task того же project
+  возвращает типизированный `CreateTaskOutcome::Replayed` с исходным `Task` и
+  ничего не пишет (новые `task_id`/payload игнорируются, timestamps, status,
+  session, revision_count и JSON не меняются, event не добавляется); другой
+  `payload_hash` или `kind != implement` — `RequestConflict`; немаппящийся round,
+  не-первый `implement` round, отсутствующий/немаппящийся linked task или
+  несовпадение project — fail-closed `InvalidPersistedState` без записей. Для
+  нового request сохраняется семантика 3.7 (`ProjectBusy` при активной чужой
+  задаче, точные task+initial round+event, `CreateTaskOutcome::Created`).
+  Конкурентные одинаковые запросы дают ровно один `Created` и остальные
+  `Replayed`, конкурентные разные hash — один `Created` и `RequestConflict`, без
+  частичных строк; одинаковый `request_id` разных projects независим.
+- Следующий этап — **3.9. Atomic round/verifier updates**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

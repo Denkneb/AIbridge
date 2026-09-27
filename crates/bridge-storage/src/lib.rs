@@ -27,16 +27,22 @@
 //!
 //! Task row mapping (task 3.3) is provided by [`Task::from_row`], which turns a
 //! schema v6 `tasks` row into a fully typed [`Task`] and fails closed on
-//! corrupted persisted data. Initialization/migrations and all write/query
-//! APIs remain out of scope (tasks 3.5+); there is no list/get/pagination API
-//! here.
+//! corrupted persisted data. Round row mapping (task 3.4) is provided by
+//! [`RoundRow::from_row`], which turns a schema v6 `rounds` row into a complete
+//! storage-owned [`RoundRow`] (all twenty-one columns) and likewise fails closed
+//! on corrupted persisted data, including an inconsistent
+//! `verifier_state`/`verifier_json` pair. Initialization/migrations and all
+//! write/query APIs remain out of scope (tasks 3.5+); there is no
+//! list/get/pagination API here.
 
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use bridge_domain::{ProjectId, TaskId, TaskStatus};
+use bridge_domain::{
+    ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerifierState,
+};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, params};
 
 /// The only supported `PRAGMA user_version` / `meta.schema_version`.
@@ -1211,13 +1217,302 @@ fn read_snapshot(row: &Row<'_>) -> Result<Option<serde_json::Value>, TaskRowErro
     Ok(Some(value))
 }
 
+/// A complete, typed view of one schema v6 `rounds` row.
+///
+/// All twenty-one columns are represented. Domain-typed columns use [`TaskId`],
+/// [`ProjectId`], [`RoundKind`], [`RoundStatus`] and [`VerifierState`];
+/// `result_json` is an optional decoded JSON object (a stored JSON `null` maps
+/// to `None`) and `verifier_json` is an optional decoded domain
+/// [`Verification`]. Opaque identifiers, message ids, hashes and timestamps stay
+/// as the exact stored strings.
+///
+/// This is a storage-owned, complete row model; it deliberately neither extends
+/// nor duplicates the purpose of the minimal [`bridge_domain::Round`] domain
+/// view.
+///
+/// # Mapping contract
+///
+/// [`RoundRow::from_row`] is the only constructor. It fails closed on an
+/// unknown kind, status or verifier state, an invalid task or project id, a
+/// `round_number` outside `1..=u32::MAX`, an `attempted` value other than
+/// SQLite `0`/`1`, malformed or wrong-shaped JSON, a SQLite type mismatch and an
+/// inconsistent `verifier_state`/`verifier_json` pair. The synthetic
+/// `task-<n>` identifiers used by the committed SQLite fixtures are not valid
+/// UUIDs and are therefore rejected by design; the fixtures themselves are
+/// never changed or weakened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoundRow {
+    /// Owning task (`task_id`), parsed as a UUID.
+    pub task_id: TaskId,
+    /// Owning project (`project_id`).
+    pub project_id: ProjectId,
+    /// One-based round number within the task (`round_number`), `1..=u32::MAX`.
+    pub round_number: u32,
+    /// Idempotency key that created the round (`request_id`).
+    pub request_id: String,
+    /// Hash of the request payload (`payload_hash`).
+    pub payload_hash: String,
+    /// Whether this is the initial or a revision round (`kind`).
+    pub kind: RoundKind,
+    /// Current lifecycle status (`status`).
+    pub status: RoundStatus,
+    /// Outbound OpenCode message id, when prepared (`outbound_message_id`).
+    pub outbound_message_id: Option<String>,
+    /// Whether the prompt was attempted (`attempted`), stored as `0` or `1`.
+    pub attempted: bool,
+    /// Response OpenCode message id, when resolved (`response_message_id`).
+    pub response_message_id: Option<String>,
+    /// Assistant response text (`response`).
+    pub response: Option<String>,
+    /// Machine-readable failure code (`error_code`).
+    pub error_code: Option<String>,
+    /// Decoded change-collection result (`result_json`): a JSON object, or
+    /// `None` for SQL `NULL` or a stored JSON `null`.
+    pub result_json: Option<serde_json::Value>,
+    /// Revision findings text (`findings`), preserved verbatim.
+    pub findings: Option<String>,
+    /// Bound OpenCode session, when resolved (`session_id`).
+    pub session_id: Option<String>,
+    /// Worker start timestamp (`worker_started_at`).
+    pub worker_started_at: Option<String>,
+    /// Worker deadline timestamp (`worker_deadline_at`).
+    pub worker_deadline_at: Option<String>,
+    /// Persisted verifier lifecycle marker (`verifier_state`), when a verifier
+    /// run exists.
+    pub verifier_state: Option<VerifierState>,
+    /// Decoded verifier outcome (`verifier_json`), when persisted.
+    pub verifier_json: Option<Verification>,
+    /// Creation timestamp (`created_at`).
+    pub created_at: String,
+    /// Last update timestamp (`updated_at`).
+    pub updated_at: String,
+}
+
+impl RoundRow {
+    /// Maps one `rounds` row into a [`RoundRow`].
+    ///
+    /// The row must expose the twenty-one schema v6 `rounds` columns by name; a
+    /// missing column is reported as [`RoundRowError::MissingColumn`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category for every kind of corrupted persisted data
+    /// (see [`RoundRowError`]). No error message contains row data, response,
+    /// findings, identifiers, hashes, paths or JSON payloads.
+    pub fn from_row(row: &Row<'_>) -> Result<Self, RoundRowError> {
+        let task_id = TaskId::from_str(&read_round_typed::<String>(row, "task_id")?)
+            .map_err(|_| RoundRowError::InvalidTaskId)?;
+        let project_id = ProjectId::from_str(&read_round_typed::<String>(row, "project_id")?)
+            .map_err(|_| RoundRowError::InvalidProjectId)?;
+        let round_number = u32::try_from(read_round_typed::<i64>(row, "round_number")?)
+            .ok()
+            .filter(|value| *value >= 1)
+            .ok_or(RoundRowError::InvalidRoundNumber)?;
+        let request_id = read_round_typed::<String>(row, "request_id")?;
+        let payload_hash = read_round_typed::<String>(row, "payload_hash")?;
+        let kind = RoundKind::from_str(&read_round_typed::<String>(row, "kind")?)
+            .map_err(|_| RoundRowError::UnknownKind)?;
+        let status = RoundStatus::from_str(&read_round_typed::<String>(row, "status")?)
+            .map_err(|_| RoundRowError::UnknownStatus)?;
+        let outbound_message_id = read_round_typed::<Option<String>>(row, "outbound_message_id")?;
+        let attempted = match read_round_typed::<i64>(row, "attempted")? {
+            0 => false,
+            1 => true,
+            _ => return Err(RoundRowError::InvalidAttempted),
+        };
+        let response_message_id = read_round_typed::<Option<String>>(row, "response_message_id")?;
+        let response = read_round_typed::<Option<String>>(row, "response")?;
+        let error_code = read_round_typed::<Option<String>>(row, "error_code")?;
+        let result_json = read_result_json(row)?;
+        let findings = read_round_typed::<Option<String>>(row, "findings")?;
+        let session_id = read_round_typed::<Option<String>>(row, "session_id")?;
+        let worker_started_at = read_round_typed::<Option<String>>(row, "worker_started_at")?;
+        let worker_deadline_at = read_round_typed::<Option<String>>(row, "worker_deadline_at")?;
+        let verifier_state = match read_round_typed::<Option<String>>(row, "verifier_state")? {
+            Some(raw) => Some(
+                VerifierState::from_str(&raw).map_err(|_| RoundRowError::UnknownVerifierState)?,
+            ),
+            None => None,
+        };
+        let verifier_json = read_verifier_json(row)?;
+        check_verifier_consistency(verifier_state, verifier_json.as_ref())?;
+        let created_at = read_round_typed::<String>(row, "created_at")?;
+        let updated_at = read_round_typed::<String>(row, "updated_at")?;
+
+        Ok(Self {
+            task_id,
+            project_id,
+            round_number,
+            request_id,
+            payload_hash,
+            kind,
+            status,
+            outbound_message_id,
+            attempted,
+            response_message_id,
+            response,
+            error_code,
+            result_json,
+            findings,
+            session_id,
+            worker_started_at,
+            worker_deadline_at,
+            verifier_state,
+            verifier_json,
+            created_at,
+            updated_at,
+        })
+    }
+}
+
+/// A typed, safe error raised while mapping a `rounds` row.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that names only the schema column at fault. It never contains row
+/// data: response, findings, identifiers, hashes, paths, JSON payloads or
+/// timestamps are never rendered. The underlying SQLite error, when present, is
+/// reachable only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RoundRowError {
+    /// A required column is absent from the mapped row.
+    MissingColumn { column: &'static str },
+    /// A column holds a SQLite type that does not match the schema v6 contract.
+    ColumnType { column: &'static str },
+    /// `task_id` is not a valid UUID.
+    InvalidTaskId,
+    /// `project_id` is not a valid project id.
+    InvalidProjectId,
+    /// `kind` is not a known round kind.
+    UnknownKind,
+    /// `status` is not a known round status.
+    UnknownStatus,
+    /// `verifier_state` is not a known verifier state.
+    UnknownVerifierState,
+    /// `round_number` is outside `1..=u32::MAX`.
+    InvalidRoundNumber,
+    /// `attempted` is a SQLite integer other than `0` or `1`.
+    InvalidAttempted,
+    /// A JSON column is not valid JSON.
+    MalformedJson { column: &'static str },
+    /// A JSON column does not have the contract shape.
+    WrongJsonShape { column: &'static str },
+    /// `verifier_state` and `verifier_json` contradict each other.
+    InconsistentVerifier,
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for RoundRowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingColumn { column } => {
+                write!(f, "round row is missing column {column}")
+            }
+            Self::ColumnType { column } => {
+                write!(f, "round row column {column} has an unexpected SQLite type")
+            }
+            Self::InvalidTaskId => f.write_str("round row has an invalid task id"),
+            Self::InvalidProjectId => f.write_str("round row has an invalid project id"),
+            Self::UnknownKind => f.write_str("round row has an unknown kind"),
+            Self::UnknownStatus => f.write_str("round row has an unknown status"),
+            Self::UnknownVerifierState => f.write_str("round row has an unknown verifier state"),
+            Self::InvalidRoundNumber => f.write_str("round row has an invalid round number"),
+            Self::InvalidAttempted => f.write_str("round row has an invalid attempted flag"),
+            Self::MalformedJson { column } => {
+                write!(f, "round row column {column} is not valid JSON")
+            }
+            Self::WrongJsonShape { column } => {
+                write!(f, "round row column {column} has an unexpected JSON shape")
+            }
+            Self::InconsistentVerifier => {
+                f.write_str("round row has an inconsistent verifier pair")
+            }
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for RoundRowError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+fn read_round_typed<T: rusqlite::types::FromSql>(
+    row: &Row<'_>,
+    column: &'static str,
+) -> Result<T, RoundRowError> {
+    row.get::<_, T>(column)
+        .map_err(|error| classify_round_row_error(error, column))
+}
+
+fn classify_round_row_error(error: rusqlite::Error, column: &'static str) -> RoundRowError {
+    match error {
+        rusqlite::Error::InvalidColumnName(_) | rusqlite::Error::InvalidColumnIndex(_) => {
+            RoundRowError::MissingColumn { column }
+        }
+        rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
+            RoundRowError::ColumnType { column }
+        }
+        other => RoundRowError::Database(other),
+    }
+}
+
+fn read_result_json(row: &Row<'_>) -> Result<Option<serde_json::Value>, RoundRowError> {
+    const COLUMN: &str = "result_json";
+    let Some(raw) = read_round_typed::<Option<String>>(row, COLUMN)? else {
+        return Ok(None);
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| RoundRowError::MalformedJson { column: COLUMN })?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    if !value.is_object() {
+        return Err(RoundRowError::WrongJsonShape { column: COLUMN });
+    }
+    Ok(Some(value))
+}
+
+fn read_verifier_json(row: &Row<'_>) -> Result<Option<Verification>, RoundRowError> {
+    const COLUMN: &str = "verifier_json";
+    let Some(raw) = read_round_typed::<Option<String>>(row, COLUMN)? else {
+        return Ok(None);
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| RoundRowError::MalformedJson { column: COLUMN })?;
+    if !value.is_object() {
+        return Err(RoundRowError::WrongJsonShape { column: COLUMN });
+    }
+    let verification: Verification = serde_json::from_value(value)
+        .map_err(|_| RoundRowError::WrongJsonShape { column: COLUMN })?;
+    Ok(Some(verification))
+}
+
+fn check_verifier_consistency(
+    state: Option<VerifierState>,
+    verification: Option<&Verification>,
+) -> Result<(), RoundRowError> {
+    match (state, verification) {
+        (Some(VerifierState::Done), Some(_))
+        | (Some(VerifierState::Running), None)
+        | (None, None) => Ok(()),
+        _ => Err(RoundRowError::InconsistentVerifier),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InspectError,
-        SCHEMA_VERSION, SchemaMismatch, Table, Task, TaskRowError, connect, inspect, v6_contract,
+        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InspectError, RoundRow,
+        RoundRowError, SCHEMA_VERSION, SchemaMismatch, Table, Task, TaskRowError, connect, inspect,
+        open_read_only, v6_contract,
     };
-    use bridge_domain::TaskStatus;
+    use bridge_domain::{RoundKind, RoundStatus, TaskStatus, VerifierState};
     use rusqlite::Connection;
     use rusqlite::types::Value as SqlValue;
     use serde_json::Value;
@@ -2273,6 +2568,515 @@ CREATE INDEX ix_events_task ON events(task_id, id);
         values[7] = SqlValue::Text(format!("{{\"secret\": \"{SECRET}\"}}"));
         let error = map_task_values(&values).expect_err("wrong shape must fail");
         assert_error_is_safe(&error, SECRET);
+    }
+
+    const ROUND_ROW_SELECT: &str = "SELECT ?1 AS task_id, ?2 AS project_id, ?3 AS round_number, \
+         ?4 AS request_id, ?5 AS payload_hash, ?6 AS kind, ?7 AS status, \
+         ?8 AS outbound_message_id, ?9 AS attempted, ?10 AS response_message_id, \
+         ?11 AS response, ?12 AS error_code, ?13 AS result_json, ?14 AS findings, \
+         ?15 AS session_id, ?16 AS worker_started_at, ?17 AS worker_deadline_at, \
+         ?18 AS verifier_state, ?19 AS verifier_json, ?20 AS created_at, ?21 AS updated_at";
+
+    const ROUND_ROW_COLUMNS: &str = "task_id, project_id, round_number, request_id, payload_hash, \
+         kind, status, outbound_message_id, attempted, response_message_id, response, error_code, \
+         result_json, findings, session_id, worker_started_at, worker_deadline_at, verifier_state, \
+         verifier_json, created_at, updated_at";
+
+    fn valid_verifier_json() -> String {
+        serde_json::json!({
+            "status": "passed",
+            "commands": [{"command": "pytest -q", "duration": 1.234, "exit_code": 0}],
+            "log": "verification/task-1/round_1"
+        })
+        .to_string()
+    }
+
+    /// A valid row with every one of the twenty-one `rounds` columns present,
+    /// using a UUID `task_id` (the committed fixtures use synthetic `task-<n>`
+    /// ids and are not mapped here).
+    fn valid_round_values() -> Vec<SqlValue> {
+        vec![
+            SqlValue::Text(VALID_TASK_ID.to_owned()),
+            SqlValue::Text("proj".to_owned()),
+            SqlValue::Integer(1),
+            SqlValue::Text("req-1".to_owned()),
+            SqlValue::Text("hash-req-1".to_owned()),
+            SqlValue::Text("implement".to_owned()),
+            SqlValue::Text("complete".to_owned()),
+            SqlValue::Text("msg-1".to_owned()),
+            SqlValue::Integer(1),
+            SqlValue::Text("msg-2".to_owned()),
+            SqlValue::Text("Implemented the change.".to_owned()),
+            SqlValue::Null,
+            SqlValue::Text("{\"changed_paths\":[]}".to_owned()),
+            SqlValue::Null,
+            SqlValue::Text("ses-1".to_owned()),
+            SqlValue::Text("2026-01-01T00:00:01.000+00:00".to_owned()),
+            SqlValue::Text("2026-01-01T00:15:01.000+00:00".to_owned()),
+            SqlValue::Text("done".to_owned()),
+            SqlValue::Text(valid_verifier_json()),
+            SqlValue::Text("2026-01-01T00:00:00.000+00:00".to_owned()),
+            SqlValue::Text("2026-01-01T00:00:03.000+00:00".to_owned()),
+        ]
+    }
+
+    /// Maps a synthetic `SELECT` of the twenty-one `rounds` columns through
+    /// [`RoundRow::from_row`], exercising a real [`rusqlite::Row`].
+    fn map_round_values(values: &[SqlValue]) -> Result<RoundRow, RoundRowError> {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .query_row(
+                ROUND_ROW_SELECT,
+                rusqlite::params_from_iter(values.iter().cloned()),
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("row query must execute")
+    }
+
+    fn assert_round_error_is_safe(error: &RoundRowError, secret: &str) {
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert!(
+            !display.contains(secret),
+            "Display leaked row data: {display}"
+        );
+        assert!(!debug.contains(secret), "Debug leaked row data: {debug}");
+    }
+
+    #[test]
+    fn round_row_maps_all_twenty_one_columns() {
+        let row = map_round_values(&valid_round_values()).expect("valid row must map");
+
+        assert_eq!(row.task_id.to_string(), VALID_TASK_ID);
+        assert_eq!(row.project_id.as_str(), "proj");
+        assert_eq!(row.round_number, 1);
+        assert_eq!(row.request_id, "req-1");
+        assert_eq!(row.payload_hash, "hash-req-1");
+        assert_eq!(row.kind, RoundKind::Implement);
+        assert_eq!(row.status, RoundStatus::Complete);
+        assert_eq!(row.outbound_message_id.as_deref(), Some("msg-1"));
+        assert!(row.attempted);
+        assert_eq!(row.response_message_id.as_deref(), Some("msg-2"));
+        assert_eq!(row.response.as_deref(), Some("Implemented the change."));
+        assert_eq!(row.error_code, None);
+        assert_eq!(
+            row.result_json,
+            Some(serde_json::json!({"changed_paths": []}))
+        );
+        assert_eq!(row.findings, None);
+        assert_eq!(row.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(
+            row.worker_started_at.as_deref(),
+            Some("2026-01-01T00:00:01.000+00:00")
+        );
+        assert_eq!(
+            row.worker_deadline_at.as_deref(),
+            Some("2026-01-01T00:15:01.000+00:00")
+        );
+        assert_eq!(row.verifier_state, Some(VerifierState::Done));
+        assert_eq!(
+            row.verifier_json
+                .as_ref()
+                .map(|verification| verification.status),
+            Some(bridge_domain::VerificationStatus::Passed)
+        );
+        assert_eq!(row.created_at, "2026-01-01T00:00:00.000+00:00");
+        assert_eq!(row.updated_at, "2026-01-01T00:00:03.000+00:00");
+    }
+
+    #[test]
+    fn round_row_maps_row_from_schema_v6_table() {
+        let dir = TempDir::new("round-row-schema");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+
+        let connection = Connection::open(&path).expect("open database");
+        connection
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+                 test_commands, created_at, updated_at, revision_count) \
+                 VALUES (?1, 'proj', '/fixture/workspace', 'implementing', 't', '[]', '[]', \
+                 '2026-01-01T00:00:00.000+00:00', '2026-01-01T00:00:00.000+00:00', 0)",
+                rusqlite::params![VALID_TASK_ID],
+            )
+            .expect("insert task row");
+        connection
+            .execute(
+                "INSERT INTO rounds (task_id, project_id, round_number, request_id, payload_hash, \
+                 kind, status, outbound_message_id, attempted, response_message_id, response, \
+                 error_code, result_json, findings, session_id, worker_started_at, \
+                 worker_deadline_at, verifier_state, verifier_json, created_at, updated_at) \
+                 VALUES (?1, 'proj', 1, 'req-1', 'hash-req-1', 'implement', 'observing', 'msg-1', \
+                 1, NULL, NULL, NULL, NULL, NULL, 'ses-1', '2026-01-01T00:00:01.000+00:00', \
+                 '2026-01-01T00:15:01.000+00:00', NULL, NULL, '2026-01-01T00:00:00.000+00:00', \
+                 '2026-01-01T00:00:01.000+00:00')",
+                rusqlite::params![VALID_TASK_ID],
+            )
+            .expect("insert round row");
+
+        let row = connection
+            .query_row(
+                &format!("SELECT {ROUND_ROW_COLUMNS} FROM rounds"),
+                [],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("row query must execute")
+            .expect("valid persisted row must map");
+
+        assert_eq!(row.task_id.to_string(), VALID_TASK_ID);
+        assert_eq!(row.kind, RoundKind::Implement);
+        assert_eq!(row.status, RoundStatus::Observing);
+        assert!(row.attempted);
+        assert_eq!(row.verifier_state, None);
+        assert_eq!(row.result_json, None);
+    }
+
+    #[test]
+    fn round_row_preserves_nullable_columns() {
+        let mut values = valid_round_values();
+        values[7] = SqlValue::Null;
+        values[9] = SqlValue::Null;
+        values[10] = SqlValue::Null;
+        values[11] = SqlValue::Null;
+        values[12] = SqlValue::Null;
+        values[13] = SqlValue::Null;
+        values[14] = SqlValue::Null;
+        values[15] = SqlValue::Null;
+        values[16] = SqlValue::Null;
+        values[17] = SqlValue::Null;
+        values[18] = SqlValue::Null;
+
+        let row = map_round_values(&values).expect("nullable row must map");
+        assert_eq!(row.outbound_message_id, None);
+        assert_eq!(row.response_message_id, None);
+        assert_eq!(row.response, None);
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.result_json, None);
+        assert_eq!(row.findings, None);
+        assert_eq!(row.session_id, None);
+        assert_eq!(row.worker_started_at, None);
+        assert_eq!(row.worker_deadline_at, None);
+        assert_eq!(row.verifier_state, None);
+        assert_eq!(row.verifier_json, None);
+    }
+
+    #[test]
+    fn round_row_maps_every_kind() {
+        for kind in RoundKind::ALL {
+            let mut values = valid_round_values();
+            values[5] = SqlValue::Text(kind.as_str().to_owned());
+            let row = map_round_values(&values).expect("known kind must map");
+            assert_eq!(row.kind, kind);
+        }
+    }
+
+    #[test]
+    fn round_row_maps_every_status() {
+        for status in RoundStatus::ALL {
+            let mut values = valid_round_values();
+            values[6] = SqlValue::Text(status.as_str().to_owned());
+            let row = map_round_values(&values).expect("known status must map");
+            assert_eq!(row.status, status);
+        }
+    }
+
+    #[test]
+    fn round_row_maps_every_verifier_state() {
+        for state in VerifierState::ALL {
+            let mut values = valid_round_values();
+            values[17] = SqlValue::Text(state.as_str().to_owned());
+            if state == VerifierState::Done {
+                values[18] = SqlValue::Text(valid_verifier_json());
+            } else {
+                values[18] = SqlValue::Null;
+            }
+            let row = map_round_values(&values).expect("known verifier state must map");
+            assert_eq!(row.verifier_state, Some(state));
+            assert_eq!(row.verifier_json.is_some(), state == VerifierState::Done);
+        }
+    }
+
+    #[test]
+    fn round_row_accepts_round_number_boundaries() {
+        for number in [1_i64, i64::from(u32::MAX)] {
+            let mut values = valid_round_values();
+            values[2] = SqlValue::Integer(number);
+            let row = map_round_values(&values).expect("boundary round number must map");
+            assert_eq!(i64::from(row.round_number), number);
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_round_number_out_of_range() {
+        for number in [0_i64, -1, i64::from(u32::MAX) + 1] {
+            let mut values = valid_round_values();
+            values[2] = SqlValue::Integer(number);
+            let error = map_round_values(&values).expect_err("out-of-range round number must fail");
+            assert!(
+                matches!(error, RoundRowError::InvalidRoundNumber),
+                "{number}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_row_maps_attempted_boolean() {
+        let mut values = valid_round_values();
+        values[8] = SqlValue::Integer(0);
+        let row = map_round_values(&values).expect("attempted=0 must map");
+        assert!(!row.attempted);
+
+        let mut values = valid_round_values();
+        values[8] = SqlValue::Integer(1);
+        let row = map_round_values(&values).expect("attempted=1 must map");
+        assert!(row.attempted);
+    }
+
+    #[test]
+    fn round_row_rejects_invalid_attempted() {
+        for attempted in [2_i64, -1] {
+            let mut values = valid_round_values();
+            values[8] = SqlValue::Integer(attempted);
+            let error = map_round_values(&values).expect_err("invalid attempted must fail");
+            assert!(
+                matches!(error, RoundRowError::InvalidAttempted),
+                "{attempted}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_unknown_vocabulary() {
+        let mut values = valid_round_values();
+        values[5] = SqlValue::Text("bogus".to_owned());
+        assert!(matches!(
+            map_round_values(&values).expect_err("unknown kind must fail"),
+            RoundRowError::UnknownKind
+        ));
+
+        let mut values = valid_round_values();
+        values[6] = SqlValue::Text("bogus".to_owned());
+        assert!(matches!(
+            map_round_values(&values).expect_err("unknown status must fail"),
+            RoundRowError::UnknownStatus
+        ));
+
+        let mut values = valid_round_values();
+        values[17] = SqlValue::Text("bogus".to_owned());
+        assert!(matches!(
+            map_round_values(&values).expect_err("unknown verifier state must fail"),
+            RoundRowError::UnknownVerifierState
+        ));
+    }
+
+    #[test]
+    fn round_row_rejects_invalid_identifiers() {
+        let mut values = valid_round_values();
+        values[0] = SqlValue::Text("task-1".to_owned());
+        assert!(matches!(
+            map_round_values(&values).expect_err("synthetic task id must fail"),
+            RoundRowError::InvalidTaskId
+        ));
+
+        let mut values = valid_round_values();
+        values[1] = SqlValue::Text(String::new());
+        assert!(matches!(
+            map_round_values(&values).expect_err("empty project id must fail"),
+            RoundRowError::InvalidProjectId
+        ));
+    }
+
+    #[test]
+    fn round_row_rejects_malformed_json_columns() {
+        for (index, column) in [(12_usize, "result_json"), (18, "verifier_json")] {
+            let mut values = valid_round_values();
+            values[index] = SqlValue::Text("{not json".to_owned());
+            let error = map_round_values(&values).expect_err("malformed JSON must fail");
+            match error {
+                RoundRowError::MalformedJson { column: actual } => assert_eq!(actual, column),
+                other => panic!("{column}: expected malformed JSON, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_wrong_shaped_result_json() {
+        for raw in ["[]", "\"text\"", "1", "true"] {
+            let mut values = valid_round_values();
+            values[12] = SqlValue::Text(raw.to_owned());
+            let error = map_round_values(&values).expect_err("wrong result shape must fail");
+            match error {
+                RoundRowError::WrongJsonShape { column } => assert_eq!(column, "result_json"),
+                other => panic!("result_json {raw}: expected wrong shape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_wrong_shaped_verifier_json() {
+        for raw in [
+            "[]",
+            "\"text\"",
+            "1",
+            "true",
+            "{\"status\":\"bogus\",\"log\":\"x\"}",
+            "{\"status\":\"passed\"}",
+        ] {
+            let mut values = valid_round_values();
+            values[18] = SqlValue::Text(raw.to_owned());
+            let error = map_round_values(&values).expect_err("wrong verifier shape must fail");
+            match error {
+                RoundRowError::WrongJsonShape { column } => assert_eq!(column, "verifier_json"),
+                other => panic!("verifier_json {raw}: expected wrong shape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn round_row_maps_json_null_result_json_to_none() {
+        let mut values = valid_round_values();
+        values[12] = SqlValue::Text("null".to_owned());
+        let row = map_round_values(&values).expect("JSON null result must map");
+        assert_eq!(row.result_json, None);
+    }
+
+    #[test]
+    fn round_row_rejects_inconsistent_verifier_pairs() {
+        let mut done_without_payload = valid_round_values();
+        done_without_payload[18] = SqlValue::Null;
+        assert!(matches!(
+            map_round_values(&done_without_payload).expect_err("done without payload must fail"),
+            RoundRowError::InconsistentVerifier
+        ));
+
+        let mut running_with_payload = valid_round_values();
+        running_with_payload[17] = SqlValue::Text("running".to_owned());
+        assert!(matches!(
+            map_round_values(&running_with_payload).expect_err("running with payload must fail"),
+            RoundRowError::InconsistentVerifier
+        ));
+
+        let mut absent_state_with_payload = valid_round_values();
+        absent_state_with_payload[17] = SqlValue::Null;
+        assert!(matches!(
+            map_round_values(&absent_state_with_payload)
+                .expect_err("absent state with payload must fail"),
+            RoundRowError::InconsistentVerifier
+        ));
+    }
+
+    #[test]
+    fn round_row_rejects_sqlite_type_mismatches() {
+        let cases: [(usize, &str, SqlValue); 5] = [
+            (0, "task_id", SqlValue::Null),
+            (2, "round_number", SqlValue::Text("1".to_owned())),
+            (8, "attempted", SqlValue::Text("1".to_owned())),
+            (12, "result_json", SqlValue::Integer(1)),
+            (17, "verifier_state", SqlValue::Integer(1)),
+        ];
+        for (index, column, replacement) in cases {
+            let mut values = valid_round_values();
+            values[index] = replacement;
+            let error = map_round_values(&values).expect_err("type mismatch must fail");
+            match error {
+                RoundRowError::ColumnType { column: actual } => assert_eq!(actual, column),
+                other => panic!("{column}: expected column type error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_missing_column() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        let result = connection
+            .query_row(
+                "SELECT ?1 AS task_id",
+                rusqlite::params![VALID_TASK_ID],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("row query must execute");
+        let error = result.expect_err("missing column must fail");
+        match error {
+            RoundRowError::MissingColumn { column } => assert_eq!(column, "project_id"),
+            other => panic!("expected missing column, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_row_rejects_fixture_synthetic_task_id_without_touching_fixture() {
+        let path = fixture_dir().join("active-v6.sqlite");
+        let before = std::fs::read(&path).expect("read fixture");
+
+        let connection = open_read_only(&path).expect("open fixture read-only");
+        let result = connection
+            .query_row(
+                &format!("SELECT {ROUND_ROW_COLUMNS} FROM rounds"),
+                [],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("row query must execute");
+        let error = result.expect_err("synthetic task id must be rejected");
+        assert!(matches!(error, RoundRowError::InvalidTaskId), "{error:?}");
+
+        assert_eq!(std::fs::read(&path).expect("re-read fixture"), before);
+        assert!(
+            !sidecar(&path, "-wal").exists(),
+            "fixture got a -wal sidecar"
+        );
+        assert!(
+            !sidecar(&path, "-shm").exists(),
+            "fixture got a -shm sidecar"
+        );
+    }
+
+    #[test]
+    fn round_row_errors_do_not_leak_row_data() {
+        const SECRET: &str = "super-secret-token";
+
+        let mut values = valid_round_values();
+        values[0] = SqlValue::Text(SECRET.to_owned());
+        let error = map_round_values(&values).expect_err("invalid uuid must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[5] = SqlValue::Text(SECRET.to_owned());
+        let error = map_round_values(&values).expect_err("unknown kind must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[6] = SqlValue::Text(SECRET.to_owned());
+        let error = map_round_values(&values).expect_err("unknown status must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[17] = SqlValue::Text(SECRET.to_owned());
+        let error = map_round_values(&values).expect_err("unknown verifier state must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[12] = SqlValue::Text(SECRET.to_owned());
+        let error = map_round_values(&values).expect_err("malformed result JSON must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[12] = SqlValue::Text(format!("[\"{SECRET}\"]"));
+        let error = map_round_values(&values).expect_err("wrong result shape must fail");
+        assert_round_error_is_safe(&error, SECRET);
+
+        let mut values = valid_round_values();
+        values[18] = SqlValue::Text(format!("{{\"secret\":\"{SECRET}\"}}"));
+        let error = map_round_values(&values).expect_err("wrong verifier shape must fail");
+        assert_round_error_is_safe(&error, SECRET);
+    }
+
+    #[test]
+    fn round_row_is_not_the_domain_round() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RoundRow>();
+        assert_ne!(
+            std::any::TypeId::of::<RoundRow>(),
+            std::any::TypeId::of::<bridge_domain::Round>()
+        );
     }
 
     struct TempDir {

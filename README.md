@@ -29,7 +29,15 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   `snapshot`) и fail closed отвергает неизвестный статус, невалидный task
   UUID, повреждённый JSON, несоответствие SQLite-типа и отрицательный
   `revision_count`, не добавляя query/list/write API.
-- Следующий этап — **3.4. Round row mapping**.
+- Завершён этап **3.4. Round row mapping**: `bridge-storage` преобразует строку
+  schema v6 таблицы `rounds` в полную типизированную storage-модель `RoundRow`
+  (все 21 колонка; `TaskId`, `ProjectId`, `RoundKind`, `RoundStatus`,
+  `VerifierState` и доменный `Verification`), проверяет диапазон
+  `round_number` 1..=u32::MAX, строгий SQLite-`attempted` 0/1, форму
+  `result_json`, декодирует `verifier_json` как `Verification` и отвергает
+  несогласованную пару `verifier_state`/`verifier_json`, не добавляя
+  query/list/write API и не меняя fixtures.
+- Следующий этап — **3.5. Initialization совместимой пустой БД**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

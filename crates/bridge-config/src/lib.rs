@@ -4,9 +4,10 @@
 //! project-id/workspace validation group (task 2.2), the endpoint/port
 //! validation group (task 2.3), the cross-project uniqueness group (task 2.4),
 //! the max-rounds/model/optional-path group (task 2.5), the
-//! auto-approve-permissions group (task 2.6) and the trusted-external-directory
-//! group (task 2.7). It reads a UTF-8 TOML file from an explicit path, requires
-//! a top-level `projects` table and, for every project entry, validates the
+//! auto-approve-permissions group (task 2.6), the trusted-external-directory
+//! group (task 2.7) and the credential-file reader (task 2.8). It reads a
+//! UTF-8 TOML file from an explicit path, requires a top-level `projects` table
+//! and, for every project entry, validates the
 //! project id against `^[a-z0-9][a-z0-9_-]{0,63}$`, resolves the `workspace` to
 //! an existing directory, parses the required `opencode_url` and the optional
 //! `mcp_url` into typed loopback endpoints, requires a positive integer
@@ -17,7 +18,9 @@
 //! specific `projects.toml`, never against the process working directory. After
 //! the individual projects pass, the loader rejects a canonical workspace, a
 //! server endpoint or an MCP token file that is reused, and an MCP token file
-//! that coincides with a password file.
+//! that coincides with a password file. Relative `password_file` and
+//! `mcp_token_file` paths are resolved the same lexical way and exposed as
+//! typed [`CredentialPath`] values.
 //!
 //! `auto_approve_permissions` is an optional TOML array of ordinary permission
 //! names. Every entry must be a non-empty string without surrounding whitespace,
@@ -45,10 +48,17 @@
 //! removal, non-standard IPv4 canonicalization, dot-segment folding) cannot
 //! silently widen the contract.
 //!
-//! The remaining validation groups (credential readers and the project env
-//! reader) are deliberately out of scope. The raw per-project table is preserved
-//! on [`ProjectEntry::values`] so those later tasks can inspect every key and
-//! value without re-parsing.
+//! The credentials reader (task 2.8) reads the resolved `password_file` and the
+//! optional `mcp_token_file` through [`ProjectEntry::read_password`] and
+//! [`ProjectEntry::read_mcp_token`], returning a redacting [`Secret`]. The read
+//! is fail-closed and mirrors the reference implementation
+//! (`src/agent_bridge/credentials.py`): the file must exist, must be a regular
+//! file that is not a symlink, must be owned by the current user and must not
+//! grant group/other access; its bytes must be UTF-8 and hold exactly one
+//! non-empty line (one trailing newline is removed). The project env reader
+//! (task 2.9) remains deliberately out of scope. The raw per-project table is
+//! preserved on [`ProjectEntry::values`] so that the later task can inspect
+//! every key and value without re-parsing.
 //!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
@@ -207,16 +217,115 @@ impl OpenCodeModel {
     }
 }
 
+/// A resolved credential file path.
+///
+/// Credential files are resolved once while the configuration loads: an
+/// absolute path is used as-is and a relative path is joined onto the directory
+/// that contains the specific `projects.toml`. The spelling is kept lexical so
+/// the reader can still detect a symlinked file; the cross-project uniqueness
+/// rules compare a separate, symlink-expanded resolution of the same path. The
+/// file itself is not required to exist until it is read.
+///
+/// The [`Debug`](fmt::Debug) representation never renders the path, because a
+/// credential location can itself be sensitive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialPath {
+    path: PathBuf,
+}
+
+impl CredentialPath {
+    /// Wraps an already resolved credential path.
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Returns the resolved path.
+    ///
+    /// A relative configured path has already been joined onto the directory
+    /// that contains `projects.toml`.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Reads and validates the credential file, returning its secret value.
+    ///
+    /// The file is opened exactly once with a fail-closed, no-symlink open; the
+    /// same descriptor is validated and then read, so the checks always
+    /// describe the inode that was actually read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe [`DomainError`] when the file is missing, is a symlink,
+    /// is not a regular file, is not owned by the current user, has group/other
+    /// permission bits set, is not valid UTF-8, is empty or holds more than one
+    /// line. The error never renders the path or the file contents.
+    pub fn read(&self) -> Result<Secret> {
+        read_credential(&self.path)
+    }
+}
+
+impl fmt::Debug for CredentialPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CredentialPath([redacted])")
+    }
+}
+
+/// A validated credential value.
+///
+/// The value is the single non-empty line read from a credential file. It is
+/// never rendered by [`Debug`](fmt::Debug) or [`Display`](fmt::Display); a
+/// caller must request it explicitly through [`Secret::expose_secret`], so a
+/// secret cannot leak into logs, commands or process records by accident.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret {
+    value: String,
+}
+
+impl Secret {
+    /// Wraps an already validated credential value.
+    fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    /// Exposes the secret value.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.value
+    }
+
+    /// Returns `true` when the value is empty.
+    ///
+    /// A [`Secret`] produced by the reader is never empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.value.is_empty()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret([redacted])")
+    }
+}
+
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
 /// A validated project entry.
 ///
 /// The entry carries the typed, validated [`ProjectId`], the canonical,
 /// absolute workspace [`Path`], the typed [`Endpoint`]/[`McpEndpoint`] values,
 /// the positive `max_rounds`, the optional [`OpenCodeModel`], the optional
-/// resolved `opencode_env_file` [`Path`], the deduplicated
+/// resolved `opencode_env_file` [`Path`], the resolved optional
+/// [`CredentialPath`] password/token locations, the deduplicated
 /// `auto_approve_permissions` list and the deduplicated, canonical
 /// `auto_approve_external_directories` list, so consumers never have to repeat
-/// the task 2.2–2.7 validation or re-parse raw values. The raw TOML table is
-/// preserved verbatim for the later validation groups (2.8–2.9), which inspect
+/// the task 2.2–2.8 validation or re-parse raw values. The raw TOML table is
+/// preserved verbatim for the later validation group (2.9), which inspects
 /// every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
@@ -227,6 +336,8 @@ pub struct ProjectEntry {
     max_rounds: u64,
     opencode_model: Option<OpenCodeModel>,
     opencode_env_file: Option<PathBuf>,
+    password_file: Option<CredentialPath>,
+    mcp_token_file: Option<CredentialPath>,
     auto_approve_permissions: Vec<String>,
     auto_approve_external_directories: Vec<PathBuf>,
     values: toml::Table,
@@ -276,6 +387,54 @@ impl ProjectEntry {
     #[must_use]
     pub fn opencode_env_file(&self) -> Option<&Path> {
         self.opencode_env_file.as_deref()
+    }
+
+    /// Returns the resolved `password_file` path, if configured.
+    ///
+    /// A relative configured path is resolved against the directory that
+    /// contains `projects.toml`; an absolute path is preserved verbatim.
+    #[must_use]
+    pub fn password_file(&self) -> Option<&CredentialPath> {
+        self.password_file.as_ref()
+    }
+
+    /// Returns the resolved optional `mcp_token_file` path.
+    ///
+    /// A relative configured path is resolved against the directory that
+    /// contains `projects.toml`; an absolute path is preserved verbatim. The
+    /// result is `None` when the key is absent.
+    #[must_use]
+    pub fn mcp_token_file(&self) -> Option<&CredentialPath> {
+        self.mcp_token_file.as_ref()
+    }
+
+    /// Reads and validates the project password file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bridge_domain::ErrorKind::NotFound`] when `password_file` is
+    /// not configured, plus any error of [`CredentialPath::read`] when it is.
+    pub fn read_password(&self) -> Result<Secret> {
+        match &self.password_file {
+            Some(path) => path.read(),
+            None => Err(DomainError::not_found(
+                "project password_file is not configured",
+            )),
+        }
+    }
+
+    /// Reads and validates the optional project MCP token file.
+    ///
+    /// Returns `Ok(None)` when `mcp_token_file` is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`CredentialPath::read`] when the key is present.
+    pub fn read_mcp_token(&self) -> Result<Option<Secret>> {
+        match &self.mcp_token_file {
+            Some(path) => path.read().map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Returns the auto-approved ordinary permission names.
@@ -487,13 +646,15 @@ fn parse_projects(text: &str) -> Result<BTreeMap<String, toml::Table>> {
 /// with a password file.
 ///
 /// The credential paths are resolved like the reference implementation: an
-/// absolute path is used as-is and a relative path is joined onto `config_dir`.
-/// The file itself is not required to exist and its contents are never read;
-/// only the normalized path is compared. The optional `opencode_env_file` is
-/// resolved the same lexical way (absolute preserved, relative joined onto
-/// `config_dir`) but is not read. Errors are static and never render a project
-/// id, workspace, URL, credential path, model value, permission value or config
-/// path.
+/// absolute path is used as-is and a relative path is joined onto `config_dir`,
+/// and the stored [`CredentialPath`] keeps that lexical spelling so the reader
+/// can still reject a symlinked file. The uniqueness rules compare a separate,
+/// symlink-expanded resolution of the same paths. The files themselves are not
+/// required to exist and their contents are never read during loading. The
+/// optional `opencode_env_file` is resolved the same lexical way (absolute
+/// preserved, relative joined onto `config_dir`) but is not read. Errors are
+/// static and never render a project id, workspace, URL, credential path, model
+/// value, permission value or config path.
 fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> Result<Config> {
     let mut projects = BTreeMap::new();
     let mut workspaces: BTreeSet<PathBuf> = BTreeSet::new();
@@ -527,9 +688,12 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         let auto_approve_external_directories =
             validate_auto_approve_external_directories(&values)?;
 
-        let password = resolve_password_file(&values, config_dir)?;
+        let password = resolve_password_file(&values, config_dir);
         let token = resolve_mcp_token_file(&values, config_dir)?;
-        credentials.push((password, token));
+        credentials.push((
+            resolve_credential_for_comparison(&password)?,
+            resolve_credential_for_comparison(&token)?,
+        ));
 
         projects.insert(
             raw_id,
@@ -541,6 +705,8 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 max_rounds,
                 opencode_model,
                 opencode_env_file,
+                password_file: password.map(CredentialPath::new),
+                mcp_token_file: token.map(CredentialPath::new),
                 auto_approve_permissions,
                 auto_approve_external_directories,
                 values,
@@ -558,28 +724,24 @@ fn duplicate_endpoint_error() -> DomainError {
     DomainError::invalid_input("project endpoint is already used by another project")
 }
 
-/// Resolves the optional `password_file` into a normalized path.
+/// Resolves the optional `password_file` into its lexical configured path.
 ///
 /// The key is optional here because the required-key rule belongs to a later
 /// task; when it is absent or not a string this helper simply reports no
-/// password path. The value is never rendered. Resolution is fallible because a
-/// cyclic or unreadable symlink in the path is rejected safely.
-fn resolve_password_file(values: &toml::Table, config_dir: &Path) -> Result<Option<PathBuf>> {
-    let Some(value) = values.get(PASSWORD_FILE_KEY) else {
-        return Ok(None);
-    };
-    let Some(raw) = value.as_str() else {
-        return Ok(None);
-    };
-    Ok(Some(resolve_credential_path(raw, config_dir)?))
+/// password path. The value is never rendered. The returned path is only
+/// joined onto `config_dir`; symlink expansion happens later and only for the
+/// uniqueness comparison, so the reader can still reject a symlinked file.
+fn resolve_password_file(values: &toml::Table, config_dir: &Path) -> Option<PathBuf> {
+    let raw = values.get(PASSWORD_FILE_KEY)?.as_str()?;
+    Some(join_credential_path(raw, config_dir))
 }
 
-/// Resolves the optional `mcp_token_file` into a normalized path.
+/// Resolves the optional `mcp_token_file` into its lexical configured path.
 ///
 /// The token must be a non-empty string when present. Its contents are never
-/// read; only the normalized path participates in the uniqueness rules.
-/// Resolution is fallible because a cyclic or unreadable symlink in the path is
-/// rejected safely.
+/// read; only a symlink-expanded form of the path participates in the
+/// uniqueness rules. The returned path is only joined onto `config_dir`;
+/// symlink expansion happens later and only for the uniqueness comparison.
 fn resolve_mcp_token_file(values: &toml::Table, config_dir: &Path) -> Result<Option<PathBuf>> {
     let Some(value) = values.get(MCP_TOKEN_FILE_KEY) else {
         return Ok(None);
@@ -592,7 +754,7 @@ fn resolve_mcp_token_file(values: &toml::Table, config_dir: &Path) -> Result<Opt
             "project mcp_token_file must not be empty",
         ));
     }
-    Ok(Some(resolve_credential_path(raw, config_dir)?))
+    Ok(Some(join_credential_path(raw, config_dir)))
 }
 
 /// Applies the credential-file uniqueness rules across all projects.
@@ -635,29 +797,33 @@ fn validate_credentials(credentials: &[(Option<PathBuf>, Option<PathBuf>)]) -> R
 /// instead of returning a lexical path; the loader must never fail open.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-/// Resolves a credential file path against `config_dir` for comparison.
+/// Joins a configured credential path onto the config directory.
 ///
-/// An absolute path is used as-is; a relative path is joined onto the config
-/// directory. The result mirrors the non-strict `Path.resolve()` of the
-/// reference implementation: symlinks in every existing prefix component are
-/// expanded even when the final file is missing, and `.`/`..` are normalized
-/// without ever escaping the root. The path is never required to exist and its
-/// contents are never read.
+/// An absolute path is used as-is; a relative path is joined onto the directory
+/// that contains the specific `projects.toml`. This is the lexical path the
+/// reference implementation stores on its project config and later opens, so a
+/// symlinked credential file is still visible to the reader.
+fn join_credential_path(raw: &str, config_dir: &Path) -> PathBuf {
+    let candidate = Path::new(raw);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        config_dir.join(candidate)
+    }
+}
+
+/// Resolves an optional credential path for the uniqueness comparison.
+///
+/// The reference implementation compares `Path.resolve()` values, so an
+/// existing symlink alias or `..` must collapse before two credential files are
+/// compared. This never changes the path stored for reading.
 ///
 /// # Errors
 ///
 /// Returns a safe [`DomainError`] when a symlink in the path cannot be read or
-/// the walk exceeds [`MAX_SYMLINK_HOPS`]. The message never renders the path;
-/// the underlying I/O diagnostic is retained only as the error source.
-fn resolve_credential_path(raw: &str, config_dir: &Path) -> Result<PathBuf> {
-    let candidate = Path::new(raw);
-    let absolute = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        config_dir.join(candidate)
-    };
-
-    resolve_non_strict(&absolute)
+/// the walk exceeds [`MAX_SYMLINK_HOPS`].
+fn resolve_credential_for_comparison(path: &Option<PathBuf>) -> Result<Option<PathBuf>> {
+    path.as_deref().map(resolve_non_strict).transpose()
 }
 
 /// Expands existing symlinks and normalizes a possibly missing tail.
@@ -1363,12 +1529,189 @@ fn credential_path_error(source: std::io::Error) -> DomainError {
     }
 }
 
+/// The `O_NOFOLLOW` open flag.
+///
+/// The standard library does not expose this flag and the crate avoids a native
+/// `libc` dependency, so the stable `fcntl.h` value is spelled out per Unix
+/// family. The flag makes the credential open fail closed instead of following
+/// a final-component symlink.
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400000;
+
+#[cfg(all(unix, not(target_os = "linux")))]
+const O_NOFOLLOW: i32 = 0o100;
+
+/// Opens a credential file without ever following a final-component symlink.
+///
+/// The open is fail-closed: a symlink at the credential path is refused by the
+/// kernel instead of being resolved, so a swap between validation and reading
+/// cannot redirect the read. The returned descriptor is validated and read
+/// exactly once; the path is never reopened.
+#[cfg(unix)]
+fn open_credential(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+        .map_err(|source| credential_open_error(path, source))
+}
+
+#[cfg(not(unix))]
+fn open_credential(path: &Path) -> Result<std::fs::File> {
+    std::fs::File::open(path).map_err(|source| credential_open_error(path, source))
+}
+
+/// Maps a credential-file open failure to a safe, typed [`DomainError`].
+///
+/// The message never renders the path; the underlying [`std::io::Error`] is
+/// retained only as the error source. A refused symlink (`ELOOP`, or a plain
+/// symlink on a platform without `O_NOFOLLOW`) is reported as the symlink
+/// violation of the reference reader.
+fn credential_open_error(path: &Path, source: std::io::Error) -> DomainError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            DomainError::not_found("credential file not found").with_source(source)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DomainError::permission_denied("credential file could not be read").with_source(source)
+        }
+        _ => {
+            let is_symlink = std::fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_symlink {
+                DomainError::invalid_input("credential file must not be a symlink")
+                    .with_source(source)
+            } else {
+                DomainError::internal("credential file could not be read").with_source(source)
+            }
+        }
+    }
+}
+
+/// Validates the metadata of the already-opened credential descriptor.
+///
+/// The checks mirror `credentials._validate` on the inode that was actually
+/// opened: a regular file owned by the current user with no group/other
+/// permission bits. The message never renders the path.
+#[cfg(unix)]
+fn validate_credential_metadata(metadata: &std::fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !metadata.is_file() {
+        return Err(DomainError::invalid_input(
+            "credential path is not a regular file",
+        ));
+    }
+    if metadata.uid() != current_effective_uid()? {
+        return Err(DomainError::invalid_input(
+            "credential file must be owned by the current user",
+        ));
+    }
+    if (metadata.mode() & 0o077) != 0 {
+        return Err(DomainError::invalid_input(
+            "credential file permissions too open (want 600)",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_credential_metadata(metadata: &std::fs::Metadata) -> Result<()> {
+    if !metadata.is_file() {
+        return Err(DomainError::invalid_input(
+            "credential path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the effective user id of the current process.
+///
+/// It is read from `/proc/self/status` so the reader needs no native `geteuid`
+/// binding and stays free of `unsafe`. The lookup fails closed when the
+/// effective uid cannot be determined, because the ownership rule must never
+/// silently pass.
+#[cfg(all(unix, target_os = "linux"))]
+fn current_effective_uid() -> Result<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").map_err(owner_check_error)?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:")
+            && let Some(uid) = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|raw| raw.parse().ok())
+        {
+            return Ok(uid);
+        }
+    }
+    Err(owner_check_error(std::io::Error::other(
+        "effective uid is unavailable",
+    )))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn current_effective_uid() -> Result<u32> {
+    Err(DomainError::internal(
+        "credential file owner could not be verified",
+    ))
+}
+
+/// Maps a failed effective-uid lookup to a safe, typed [`DomainError`].
+#[cfg(all(unix, target_os = "linux"))]
+fn owner_check_error(source: std::io::Error) -> DomainError {
+    DomainError::internal("credential file owner could not be verified").with_source(source)
+}
+
+/// Reads and validates a credential file, returning its secret value.
+///
+/// The file is opened once without following a symlink, the descriptor is
+/// validated, and the same descriptor is read, so a path swap cannot make the
+/// validation describe a different inode than the one read. The bytes must be
+/// UTF-8 and hold exactly one non-empty line; one trailing newline is removed,
+/// matching the reference reader.
+fn read_credential(path: &Path) -> Result<Secret> {
+    let mut file = open_credential(path)?;
+    let metadata = file.metadata().map_err(credential_read_error)?;
+    validate_credential_metadata(&metadata)?;
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut data).map_err(credential_read_error)?;
+    decode_credential(&data).map(Secret::new)
+}
+
+/// Maps a credential read failure to a safe, typed [`DomainError`].
+fn credential_read_error(source: std::io::Error) -> DomainError {
+    DomainError::internal("credential file could not be read").with_source(source)
+}
+
+/// Decodes credential bytes with the reference reader's content semantics.
+///
+/// Exactly one trailing `\n` is removed; the remaining value must be non-empty
+/// and must not contain a further `\n` or any `\r`.
+fn decode_credential(data: &[u8]) -> Result<String> {
+    let text = std::str::from_utf8(data).map_err(|source| {
+        DomainError::invalid_input("credential file is not valid UTF-8").with_source(source)
+    })?;
+    let value = text.strip_suffix('\n').unwrap_or(text);
+    if value.is_empty() {
+        return Err(DomainError::invalid_input("credential file is empty"));
+    }
+    if value.contains('\n') || value.contains('\r') {
+        return Err(DomainError::invalid_input(
+            "credential file must contain a single line",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config, MAX_ROUNDS_KEY,
-        MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY, PROJECTS_TABLE,
-        WORKSPACE_KEY, load_config, parse_projects,
+        AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config,
+        MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY,
+        PROJECTS_TABLE, WORKSPACE_KEY, load_config, parse_projects,
     };
     use bridge_domain::{DomainError, ErrorKind, ProjectId};
     use std::error::Error;
@@ -1418,6 +1761,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    /// Writes credential bytes and forces an explicit Unix mode.
+    fn write_credential(dir: &TempDir, name: &str, bytes: &[u8], mode: u32) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("credential must be writable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .expect("credential mode must be settable");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = mode;
+        }
+        path
     }
 
     /// Builds a minimal project table with a quoted id key and `workspace`.
@@ -3825,10 +4185,7 @@ mod tests {
             "auto_approve_external_directories = [\"{}\"]\n",
             link.to_str().expect("utf-8 path")
         );
-        let text = projects_toml(&[
-            ("proj", &proj_ws, &proj_extra),
-            ("beta", &beta_ws, ""),
-        ]);
+        let text = projects_toml(&[("proj", &proj_ws, &proj_extra), ("beta", &beta_ws, "")]);
         let config_path = dir.write("projects.toml", &text);
 
         let config = load_config(&config_path).expect("linked config must load");
@@ -3848,10 +4205,7 @@ mod tests {
             "auto_approve_external_directories = [\"{}\"]\n",
             dir.path().to_str().expect("utf-8 path")
         );
-        let text = projects_toml(&[
-            ("proj", &proj_ws, &parent_extra),
-            ("beta", &beta_ws, ""),
-        ]);
+        let text = projects_toml(&[("proj", &proj_ws, &parent_extra), ("beta", &beta_ws, "")]);
         let config_path = dir.write("projects.toml", &text);
 
         let config = load_config(&config_path).expect("linked config must load");
@@ -3871,10 +4225,7 @@ mod tests {
             a = unregistered.to_str().expect("utf-8 path"),
             b = beta_ws.to_str().expect("utf-8 path"),
         );
-        let text = projects_toml(&[
-            ("proj", &proj_ws, &proj_extra),
-            ("beta", &beta_ws, ""),
-        ]);
+        let text = projects_toml(&[("proj", &proj_ws, &proj_extra), ("beta", &beta_ws, "")]);
         let config_path = dir.write("projects.toml", &text);
 
         let config = load_config(&config_path).expect("linked config must load");
@@ -3915,10 +4266,7 @@ mod tests {
             "auto_approve_external_directories = [\"{}\"]\n",
             proj_ws.to_str().expect("utf-8 path")
         );
-        let text = projects_toml(&[
-            ("proj", &proj_ws, &proj_extra),
-            ("beta", &beta_ws, ""),
-        ]);
+        let text = projects_toml(&[("proj", &proj_ws, &proj_extra), ("beta", &beta_ws, "")]);
         let config_path = dir.write("projects.toml", &text);
 
         let config = load_config(&config_path).expect("linked config must load");
@@ -3938,5 +4286,291 @@ mod tests {
 
         assert!(config.linked_projects("proj").is_empty());
         assert!(config.linked_projects("unknown").is_empty());
+    }
+
+    // Task 2.8: the password and the optional MCP token are read through the
+    // typed credential API and the relative paths are resolved from the
+    // projects.toml directory.
+    #[test]
+    fn reads_password_and_optional_mcp_token_through_typed_api() {
+        let dir = TempDir::new("cred-read");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets");
+        let password_path = write_credential(&dir, "secrets/proj.password", b"pw-secret\n", 0o600);
+        let token_path = write_credential(&dir, "secrets/proj.mcp-token", b"mcp-secret\n", 0o600);
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                "mcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n",
+            ),
+        );
+
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert_eq!(
+            entry.password_file().expect("password path").as_path(),
+            password_path
+        );
+        assert_eq!(
+            entry.mcp_token_file().expect("token path").as_path(),
+            token_path
+        );
+
+        let password = entry.read_password().expect("password must read");
+        assert_eq!(password.expose_secret(), "pw-secret");
+        assert!(!password.is_empty());
+
+        let token = entry
+            .read_mcp_token()
+            .expect("token must read")
+            .expect("token must be present");
+        assert_eq!(token.expose_secret(), "mcp-secret");
+    }
+
+    #[test]
+    fn absent_password_file_is_not_configured_and_token_is_none() {
+        let dir = TempDir::new("cred-absent");
+        let workspace = dir.mkdir("ws");
+        let text = format!(
+            "[projects.proj]\nworkspace = \"{}\"\nopencode_url = \"http://127.0.0.1:4101\"\nmax_rounds = 3\n",
+            workspace.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write("projects.toml", &text);
+
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert!(entry.password_file().is_none());
+        assert!(entry.mcp_token_file().is_none());
+        assert!(
+            entry
+                .read_mcp_token()
+                .expect("token read must succeed")
+                .is_none()
+        );
+
+        let error = entry
+            .read_password()
+            .expect_err("password must be required");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "project password_file is not configured");
+    }
+
+    #[test]
+    fn missing_credential_file_fails_with_not_found() {
+        let dir = TempDir::new("cred-missing");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry.read_password().expect_err("missing file must fail");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "credential file not found");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_credential_file_is_rejected() {
+        let dir = TempDir::new("cred-symlink");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets");
+        let real = write_credential(&dir, "secrets/real.password", b"pw\n", 0o600);
+        let link = dir.path().join("secrets/proj.password");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry.read_password().expect_err("symlink must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "credential file must not be a symlink");
+    }
+
+    #[test]
+    fn directory_credential_path_is_not_a_regular_file() {
+        let dir = TempDir::new("cred-dir");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets/proj.password");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_password()
+            .expect_err("directory must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "credential path is not a regular file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_or_other_permissions_are_rejected() {
+        let dir = TempDir::new("cred-mode");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets");
+        write_credential(&dir, "secrets/proj.password", b"pw\n", 0o644);
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_password()
+            .expect_err("open mode must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "credential file permissions too open (want 600)"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_credential_is_rejected() {
+        let dir = TempDir::new("cred-utf8");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets");
+        write_credential(&dir, "secrets/proj.password", &[0xff, 0xfe, b'\n'], 0o600);
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_password()
+            .expect_err("invalid UTF-8 must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "credential file is not valid UTF-8");
+    }
+
+    #[test]
+    fn empty_or_blank_credentials_are_rejected() {
+        for (name, bytes) in [("empty", b"".as_slice()), ("newline", b"\n".as_slice())] {
+            let dir = TempDir::new("cred-empty");
+            let workspace = dir.mkdir("ws");
+            dir.mkdir("secrets");
+            write_credential(&dir, "secrets/proj.password", bytes, 0o600);
+            let config_path = dir.write(
+                "projects.toml",
+                &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+            );
+            let config = load_config(&config_path).expect("config must load");
+            let entry = config.project("proj").expect("project must exist");
+
+            let error = entry.read_password().expect_err("empty must be rejected");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "case: {name}");
+            assert_eq!(
+                error.to_string(),
+                "credential file is empty",
+                "case: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn multiline_credentials_are_rejected() {
+        for (name, bytes) in [
+            ("embedded newline", b"a\nb".as_slice()),
+            ("crlf", b"a\r\n".as_slice()),
+            ("extra newline", b"a\n\n".as_slice()),
+        ] {
+            let dir = TempDir::new("cred-multiline");
+            let workspace = dir.mkdir("ws");
+            dir.mkdir("secrets");
+            write_credential(&dir, "secrets/proj.password", bytes, 0o600);
+            let config_path = dir.write(
+                "projects.toml",
+                &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+            );
+            let config = load_config(&config_path).expect("config must load");
+            let entry = config.project("proj").expect("project must exist");
+
+            let error = entry
+                .read_password()
+                .expect_err("multiline must be rejected");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "case: {name}");
+            assert_eq!(
+                error.to_string(),
+                "credential file must contain a single line",
+                "case: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn credential_values_paths_and_errors_are_redacted() {
+        const SECRET: &str = "super-secret-credential-value";
+
+        let dir = TempDir::new("cred-redact");
+        let workspace = dir.mkdir("ws");
+        dir.mkdir("secrets");
+        let secret_path = write_credential(
+            &dir,
+            "secrets/proj.password",
+            format!("{SECRET}\n").as_bytes(),
+            0o600,
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        let secret = entry.read_password().expect("password must read");
+        let secret_debug = format!("{secret:?}");
+        let secret_display = secret.to_string();
+        assert!(
+            !secret_debug.contains(SECRET),
+            "Debug leaked secret: {secret_debug}"
+        );
+        assert!(
+            !secret_display.contains(SECRET),
+            "Display leaked secret: {secret_display}"
+        );
+
+        let credential_path = entry.password_file().expect("password path");
+        let path_debug = format!("{credential_path:?}");
+        let path_text = secret_path.to_str().expect("utf-8 path");
+        assert!(
+            !path_debug.contains(path_text),
+            "CredentialPath Debug leaked path: {path_debug}"
+        );
+
+        write_credential(
+            &dir,
+            "secrets/proj.password",
+            format!("{SECRET}\nsecond-line\n").as_bytes(),
+            0o600,
+        );
+        let error = entry
+            .read_password()
+            .expect_err("multiline must be rejected");
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(SECRET),
+            "error leaked secret: {rendered}"
+        );
+        assert!(
+            !rendered.contains(path_text),
+            "error leaked path: {rendered}"
+        );
     }
 }

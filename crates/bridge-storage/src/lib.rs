@@ -20,9 +20,11 @@
 //! non-sensitive information: schema object names and version numbers, never
 //! row data, secrets or machine-specific paths.
 //!
-//! This is only the inspection step of stream 3. WAL/`foreign_keys`/
-//! `busy_timeout` runtime setup, row mapping, initialization/migrations and all
-//! write APIs are intentionally out of scope (tasks 3.2+).
+//! The crate also provides a runtime read-write connection ([`connect`]) that
+//! applies and verifies `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON` and
+//! `PRAGMA busy_timeout=30000`, mirroring Python `Storage.connect`, without
+//! creating or migrating any schema. Row mapping, initialization/migrations and
+//! all write/query APIs remain out of scope (tasks 3.3+).
 
 use std::error::Error;
 use std::fmt;
@@ -787,11 +789,195 @@ fn validate_foreign_keys(
     Ok(())
 }
 
+/// The `PRAGMA journal_mode` required for every runtime connection.
+pub const JOURNAL_MODE: &str = "wal";
+
+/// The `PRAGMA busy_timeout` (milliseconds) required for every runtime
+/// connection, matching Python `Storage.connect`.
+pub const BUSY_TIMEOUT_MS: i64 = 30_000;
+
+/// A read-write SQLite connection already configured exactly like Python
+/// `Storage.connect`.
+///
+/// A value of this type can only be produced by [`connect`], which applies and
+/// then verifies `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON` and
+/// `PRAGMA busy_timeout=30000`. The wrapped [`Connection`] is closed when this
+/// value is dropped.
+#[derive(Debug)]
+pub struct StorageConnection {
+    connection: Connection,
+}
+
+impl StorageConnection {
+    /// The configured connection, for running queries.
+    ///
+    /// The connection already has WAL, foreign keys and the busy timeout in
+    /// effect; callers must not reconfigure them.
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    /// The configured connection mutably, for statements that need `&mut`.
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+}
+
+/// A typed, safe error raised while opening a runtime connection.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains row data, secrets or machine-specific paths. The
+/// underlying SQLite error, when present, is reachable only through
+/// [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ConnectError {
+    /// The parent directory could not be created.
+    CreateDirectory,
+    /// The file exists but cannot be opened read-write (for example a
+    /// directory, or a file without write permission).
+    NotUsable,
+    /// The file is not a SQLite database.
+    NotADatabase,
+    /// A required `PRAGMA` could not be executed.
+    Configure,
+    /// `PRAGMA journal_mode` did not become `wal`.
+    JournalMode { found: String },
+    /// `PRAGMA foreign_keys` did not become `1`.
+    ForeignKeys { found: i64 },
+    /// `PRAGMA busy_timeout` did not become [`BUSY_TIMEOUT_MS`].
+    BusyTimeout { found: i64 },
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateDirectory => f.write_str("storage directory could not be created"),
+            Self::NotUsable => f.write_str("database file cannot be opened read-write"),
+            Self::NotADatabase => f.write_str("file is not a SQLite database"),
+            Self::Configure => f.write_str("storage connection could not be configured"),
+            Self::JournalMode { found } => write!(f, "journal mode is {found}, not wal"),
+            Self::ForeignKeys { found } => write!(f, "foreign keys are {found}, not enabled"),
+            Self::BusyTimeout { found } => {
+                write!(f, "busy timeout is {found} ms, not {}", BUSY_TIMEOUT_MS)
+            }
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for ConnectError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Opens `path` read-write and configures it exactly like Python
+/// `Storage.connect`.
+///
+/// The missing parent directory is created (like `mkdir(parents=True,
+/// exist_ok=True)`), a missing database file is created empty, and every
+/// connection applies and then verifies `PRAGMA journal_mode=WAL`,
+/// `PRAGMA foreign_keys=ON` and `PRAGMA busy_timeout=30000`. If any pragma did
+/// not take effect the connection is rejected (fail closed) and closed. The
+/// schema, tables and `PRAGMA user_version` are never touched.
+///
+/// # Errors
+///
+/// Returns a typed category for filesystem and SQLite problems (see
+/// [`ConnectError`]). No error message contains row data, secrets or
+/// machine-specific paths.
+pub fn connect(path: impl AsRef<Path>) -> Result<StorageConnection, ConnectError> {
+    let path = path.as_ref();
+    create_parent_directory(path)?;
+    let connection = open_read_write(path)?;
+    configure(&connection)?;
+    Ok(StorageConnection { connection })
+}
+
+fn create_parent_directory(path: &Path) -> Result<(), ConnectError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|_| ConnectError::CreateDirectory)?;
+    }
+    Ok(())
+}
+
+fn open_read_write(path: &Path) -> Result<Connection, ConnectError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    Connection::open_with_flags(path, flags).map_err(classify_open_error)
+}
+
+fn classify_open_error(error: rusqlite::Error) -> ConnectError {
+    if let rusqlite::Error::SqliteFailure(inner, _) = &error {
+        match inner.code {
+            ErrorCode::CannotOpen | ErrorCode::ReadOnly => return ConnectError::NotUsable,
+            ErrorCode::NotADatabase => return ConnectError::NotADatabase,
+            _ => {}
+        }
+    }
+    ConnectError::Database(error)
+}
+
+fn classify_configure_error(error: rusqlite::Error) -> ConnectError {
+    if let rusqlite::Error::SqliteFailure(inner, _) = &error {
+        match inner.code {
+            ErrorCode::CannotOpen | ErrorCode::ReadOnly => return ConnectError::NotUsable,
+            ErrorCode::NotADatabase => return ConnectError::NotADatabase,
+            _ => {}
+        }
+    }
+    ConnectError::Configure
+}
+
+fn configure(connection: &Connection) -> Result<(), ConnectError> {
+    let journal_mode: String = connection
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .map_err(classify_configure_error)?;
+    if !journal_mode.eq_ignore_ascii_case(JOURNAL_MODE) {
+        return Err(ConnectError::JournalMode {
+            found: journal_mode,
+        });
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=30000;")
+        .map_err(classify_configure_error)?;
+
+    let foreign_keys: i64 = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .map_err(classify_configure_error)?;
+    if foreign_keys != 1 {
+        return Err(ConnectError::ForeignKeys {
+            found: foreign_keys,
+        });
+    }
+
+    let busy_timeout: i64 = connection
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .map_err(classify_configure_error)?;
+    if busy_timeout != BUSY_TIMEOUT_MS {
+        return Err(ConnectError::BusyTimeout {
+            found: busy_timeout,
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Column, Contract, ForeignKey, Index, InspectError, SCHEMA_VERSION, SchemaMismatch, Table,
-        inspect, v6_contract,
+        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InspectError,
+        SCHEMA_VERSION, SchemaMismatch, Table, connect, inspect, v6_contract,
     };
     use rusqlite::Connection;
     use serde_json::Value;
@@ -1022,6 +1208,204 @@ CREATE INDEX ix_events_task ON events(task_id, id);
             assert!(!sidecar(&path, "-wal").exists(), "{name} left a -wal sidecar");
             assert!(!sidecar(&path, "-shm").exists(), "{name} left a -shm sidecar");
         }
+    }
+
+    #[test]
+    fn connect_creates_database_and_enables_wal() {
+        let dir = TempDir::new("connect-create");
+        let path = dir.join("state.sqlite");
+        assert!(!path.exists(), "database must not exist before connect");
+
+        let storage = connect(&path).expect("connect must succeed");
+        assert!(path.exists(), "connect must create the database file");
+        let journal_mode: String = storage
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        assert_eq!(journal_mode, "wal");
+    }
+
+    #[test]
+    fn connect_applies_foreign_keys_and_busy_timeout() {
+        let dir = TempDir::new("connect-pragmas");
+        let path = dir.join("state.sqlite");
+        let storage = connect(&path).expect("connect must succeed");
+
+        let foreign_keys: i64 = storage
+            .connection()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys");
+        assert_eq!(foreign_keys, 1);
+
+        let busy_timeout: i64 = storage
+            .connection()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read busy_timeout");
+        assert_eq!(busy_timeout, BUSY_TIMEOUT_MS);
+        assert_eq!(busy_timeout, 30_000);
+    }
+
+    #[test]
+    fn connect_enforces_foreign_keys_behaviourally() {
+        let dir = TempDir::new("connect-fk");
+        let path = dir.join("state.sqlite");
+        {
+            let raw = Connection::open(&path).expect("open database for schema");
+            raw.execute_batch(
+                "CREATE TABLE parent (id INTEGER PRIMARY KEY); \
+                 CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL \
+                     REFERENCES parent(id));",
+            )
+            .expect("create schema");
+        }
+
+        let storage = connect(&path).expect("connect must succeed");
+        let connection = storage.connection();
+        connection
+            .execute("INSERT INTO parent (id) VALUES (1)", [])
+            .expect("valid parent insert");
+        connection
+            .execute("INSERT INTO child (id, parent_id) VALUES (1, 1)", [])
+            .expect("valid child insert");
+        let violation = connection.execute("INSERT INTO child (id, parent_id) VALUES (2, 999)", []);
+        assert!(violation.is_err(), "foreign key violation must be rejected");
+    }
+
+    #[test]
+    fn reconnect_preserves_configuration() {
+        let dir = TempDir::new("connect-reconnect");
+        let path = dir.join("state.sqlite");
+        drop(connect(&path).expect("first connect must succeed"));
+
+        let storage = connect(&path).expect("second connect must succeed");
+        let journal_mode: String = storage
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        assert_eq!(journal_mode, "wal");
+        let foreign_keys: i64 = storage
+            .connection()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys");
+        assert_eq!(foreign_keys, 1);
+        let busy_timeout: i64 = storage
+            .connection()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read busy_timeout");
+        assert_eq!(busy_timeout, BUSY_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn connect_creates_missing_parent_directory() {
+        let dir = TempDir::new("connect-parent");
+        let path = dir.join("nested/deep/state.sqlite");
+        let parent = path.parent().expect("path has a parent").to_path_buf();
+        assert!(!parent.exists(), "parent must not exist before connect");
+
+        drop(connect(&path).expect("connect must create the parent directory"));
+        assert!(parent.is_dir(), "parent directory must be created");
+        assert!(path.exists(), "database must be created");
+    }
+
+    #[test]
+    fn connect_does_not_change_user_version() {
+        let dir = TempDir::new("connect-user-version");
+
+        let fresh = dir.join("fresh.sqlite");
+        {
+            let storage = connect(&fresh).expect("connect fresh database");
+            let user_version: i64 = storage
+                .connection()
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("read user_version");
+            assert_eq!(user_version, 0);
+        }
+
+        let existing = dir.join("existing.sqlite");
+        create_v6(&existing);
+        {
+            let storage = connect(&existing).expect("connect existing database");
+            let user_version: i64 = storage
+                .connection()
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("read user_version");
+            assert_eq!(user_version, SCHEMA_VERSION);
+        }
+    }
+
+    #[test]
+    fn unusable_parent_is_reported_without_leaking_the_path() {
+        let dir = TempDir::new("connect-unusable-parent");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+        let path = dir.join("blocker/state.sqlite");
+
+        let error = connect(&path).expect_err("unusable parent must be rejected");
+        assert!(matches!(error, ConnectError::CreateDirectory), "{error:?}");
+        let message = error.to_string();
+        assert!(!message.contains("blocker"), "path leaked: {message}");
+        assert!(
+            !message.contains(&path.to_string_lossy().into_owned()),
+            "path leaked: {message}"
+        );
+    }
+
+    #[test]
+    fn directory_path_is_reported_without_leaking_the_path() {
+        let dir = TempDir::new("connect-directory");
+        let path = dir.join("state.sqlite");
+        std::fs::create_dir(&path).expect("create directory at database path");
+
+        let error = connect(&path).expect_err("directory path must be rejected");
+        assert!(matches!(error, ConnectError::NotUsable), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            !message.contains(&path.to_string_lossy().into_owned()),
+            "path leaked: {message}"
+        );
+    }
+
+    #[test]
+    fn non_database_file_is_reported_without_leaking_the_path() {
+        let dir = TempDir::new("connect-non-database");
+        let path = dir.join("state.sqlite");
+        std::fs::write(&path, b"this is not a sqlite database").expect("write junk");
+
+        let error = connect(&path).expect_err("non-database file must be rejected");
+        assert!(matches!(error, ConnectError::NotADatabase), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            !message.contains(&path.to_string_lossy().into_owned()),
+            "path leaked: {message}"
+        );
+    }
+
+    #[test]
+    fn connect_on_fixture_copy_leaves_committed_fixture_untouched() {
+        let source = fixture_dir().join("active-v6.sqlite");
+        let before = std::fs::read(&source).expect("read fixture");
+        let dir = TempDir::new("connect-fixture-copy");
+        let copy = dir.join("state.sqlite");
+        std::fs::copy(&source, &copy).expect("copy fixture");
+
+        {
+            let storage = connect(&copy).expect("connect fixture copy");
+            let journal_mode: String = storage
+                .connection()
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("read journal_mode");
+            assert_eq!(journal_mode, "wal");
+        }
+
+        assert_eq!(std::fs::read(&source).expect("re-read fixture"), before);
+        assert!(
+            !sidecar(&source, "-wal").exists(),
+            "committed fixture got a -wal sidecar"
+        );
+        assert!(
+            !sidecar(&source, "-shm").exists(),
+            "committed fixture got a -shm sidecar"
+        );
     }
 
     #[test]

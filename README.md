@@ -18,7 +18,12 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   проверяет согласованную пару `PRAGMA user_version=6` и
   `meta.schema_version='6'` и сверяет tables/columns/indexes/foreign keys с
   schema v6, не создавая, не мигрируя и не изменяя БД.
-- Следующий этап — **3.2. WAL, foreign keys и busy timeout**.
+- Завершён этап **3.2. WAL, foreign keys и busy timeout**: `bridge-storage`
+  предоставляет runtime read-write подключение, которое создаёт отсутствующий
+  parent directory, применяет и проверяет `PRAGMA journal_mode=WAL`,
+  `PRAGMA foreign_keys=ON` и `PRAGMA busy_timeout=30000` (fail closed) и
+  закрывается RAII, не создавая schema и не меняя `PRAGMA user_version`.
+- Следующий этап — **3.3. Task row mapping**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

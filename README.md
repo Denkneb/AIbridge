@@ -48,7 +48,16 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   `user_version` вне `0/6` завершаются fail closed без repair/upgrade.
   Конкурентные вызовы сериализуются writer-транзакцией. DDL вынесен в единый
   production-контракт, используемый и тестами; fixtures не изменяются.
-- Следующий этап — **3.6. Get/list/pagination queries**.
+- Завершён этап **3.6. Get/list/pagination queries**: `bridge-storage`
+  предоставляет read-only task query API на `StorageConnection`
+  (`get_task`, `get_active_task`, `list_tasks`, `count_tasks`) поверх единого
+  production-списка 15 колонок `tasks`; каждая найденная строка маппится через
+  `Task::from_row`, данные строго изолированы по `project_id`, active-фильтр
+  использует ровно словарь `TaskStatus::is_active`, `list_tasks` сортирует
+  `updated_at DESC, created_at DESC, task_id DESC` с пагинацией
+  `limit > 0`/`offset >= 0`, а типизированный `QueryError` не раскрывает ids,
+  project, row data, SQL и пути. Query API ничего не пишет и не меняет schema.
+- Следующий этап — **3.7. Atomic task creation**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

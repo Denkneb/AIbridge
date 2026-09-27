@@ -33,8 +33,16 @@
 //! on corrupted persisted data, including an inconsistent
 //! `verifier_state`/`verifier_json` pair. Atomic, idempotent, fail-closed
 //! initialization of a compatible empty schema v6 database (task 3.5) is
-//! provided by [`initialize`]. Schema migrations and all list/get/pagination or
-//! write APIs remain out of scope (tasks 3.6+).
+//! provided by [`initialize`].
+//!
+//! Read-only task query APIs (task 3.6) are provided as methods on
+//! [`StorageConnection`]: [`StorageConnection::get_task`],
+//! [`StorageConnection::get_active_task`], [`StorageConnection::list_tasks`] and
+//! [`StorageConnection::count_tasks`]. They use one production source for the
+//! exact fifteen `tasks` columns, map every found row through [`Task::from_row`],
+//! isolate data strictly by project, filter active tasks with the exact
+//! [`TaskStatus::is_active`] vocabulary and never write. Schema migrations,
+//! round queries and all write APIs remain out of scope (tasks 3.7+).
 
 use std::error::Error;
 use std::fmt;
@@ -44,8 +52,10 @@ use std::str::FromStr;
 use bridge_domain::{
     ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerifierState,
 };
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, TransactionBehavior, params,
+    params_from_iter,
 };
 
 /// The only supported `PRAGMA user_version` / `meta.schema_version`.
@@ -903,6 +913,15 @@ pub const JOURNAL_MODE: &str = "wal";
 /// connection, matching Python `Storage.connect`.
 pub const BUSY_TIMEOUT_MS: i64 = 30_000;
 
+/// The exact, ordered list of the fifteen schema v6 `tasks` columns.
+///
+/// This is the single production source for the task column list used by every
+/// read-only task query; it mirrors the frozen Python `_TASK_COLUMNS`. Every
+/// found row is mapped through [`Task::from_row`].
+const TASK_COLUMNS: &str = "task_id, project_id, workspace, status, session_id, task, \
+     allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
+     revision_count, close_requested_at, close_reason";
+
 /// A read-write SQLite connection already configured exactly like Python
 /// `Storage.connect`.
 ///
@@ -927,6 +946,219 @@ impl StorageConnection {
     /// The configured connection mutably, for statements that need `&mut`.
     pub fn connection_mut(&mut self) -> &mut Connection {
         &mut self.connection
+    }
+
+    /// Returns the task with the exact `task_id`, or `None` when it is absent.
+    ///
+    /// This mirrors Python `Storage.get_task`: it is not scoped by project and
+    /// matches the primary key exactly. The found row is mapped through
+    /// [`Task::from_row`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::TaskRow`] when the found row is corrupted, and
+    /// [`QueryError::Database`] for an unexpected SQLite failure. No error
+    /// message contains row data, identifiers, SQL or paths.
+    pub fn get_task(&self, task_id: TaskId) -> Result<Option<Task>, QueryError> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?");
+        let row = self
+            .connection
+            .query_row(&sql, params![task_id.to_string()], |row| {
+                Ok(Task::from_row(row))
+            })
+            .optional()
+            .map_err(QueryError::Database)?;
+        match row {
+            Some(Ok(task)) => Ok(Some(task)),
+            Some(Err(error)) => Err(QueryError::TaskRow(error)),
+            None => Ok(None),
+        }
+    }
+
+    /// Returns the single active task of `project_id`, or `None` when the
+    /// project has no active task.
+    ///
+    /// Active statuses are exactly the [`TaskStatus::is_active`] vocabulary
+    /// (`implementing`, `awaiting_review`, `revising`, `needs_user`, `failed`,
+    /// `delivery_unknown`). The project invariant `ux_tasks_active` guarantees
+    /// at most one such row. The found row is mapped through [`Task::from_row`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::TaskRow`] when the found row is corrupted, and
+    /// [`QueryError::Database`] for an unexpected SQLite failure. No error
+    /// message contains row data, identifiers, SQL or paths.
+    pub fn get_active_task(&self, project_id: &ProjectId) -> Result<Option<Task>, QueryError> {
+        let (filter, statuses) = active_status_filter();
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ? AND {filter}");
+        let mut parameters = Vec::with_capacity(statuses.len() + 1);
+        parameters.push(SqlValue::Text(project_id.as_str().to_owned()));
+        parameters.extend(statuses);
+        let row = self
+            .connection
+            .query_row(&sql, params_from_iter(parameters), |row| {
+                Ok(Task::from_row(row))
+            })
+            .optional()
+            .map_err(QueryError::Database)?;
+        match row {
+            Some(Ok(task)) => Ok(Some(task)),
+            Some(Err(error)) => Err(QueryError::TaskRow(error)),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists tasks of `project_id` in a deterministic, paginated order.
+    ///
+    /// The order is strictly `updated_at DESC, created_at DESC, task_id DESC`,
+    /// so equal timestamps cannot make a task appear on two pages or be skipped
+    /// between them. When `active_only` is set, only the exact
+    /// [`TaskStatus::is_active`] vocabulary is returned. `limit` must be
+    /// positive and `offset` non-negative; an `offset` past the end yields an
+    /// empty list. Every returned row is mapped through [`Task::from_row`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::InvalidLimit`] when `limit` is not positive,
+    /// [`QueryError::InvalidOffset`] when `offset` is negative,
+    /// [`QueryError::TaskRow`] when a returned row is corrupted, and
+    /// [`QueryError::Database`] for an unexpected SQLite failure. No error
+    /// message contains row data, identifiers, SQL or paths.
+    pub fn list_tasks(
+        &self,
+        project_id: &ProjectId,
+        active_only: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Task>, QueryError> {
+        if limit < 1 {
+            return Err(QueryError::InvalidLimit);
+        }
+        if offset < 0 {
+            return Err(QueryError::InvalidOffset);
+        }
+
+        let mut sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?");
+        let mut parameters = vec![SqlValue::Text(project_id.as_str().to_owned())];
+        if active_only {
+            let (filter, statuses) = active_status_filter();
+            sql.push_str(" AND ");
+            sql.push_str(&filter);
+            parameters.extend(statuses);
+        }
+        sql.push_str(" ORDER BY updated_at DESC, created_at DESC, task_id DESC LIMIT ? OFFSET ?");
+        parameters.push(SqlValue::Integer(limit));
+        parameters.push(SqlValue::Integer(offset));
+
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(QueryError::Database)?;
+        let rows = statement
+            .query_map(params_from_iter(parameters), |row| Ok(Task::from_row(row)))
+            .map_err(QueryError::Database)?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            let mapped = row.map_err(QueryError::Database)?;
+            tasks.push(mapped.map_err(QueryError::TaskRow)?);
+        }
+        Ok(tasks)
+    }
+
+    /// Counts tasks of `project_id`, optionally restricted to active tasks.
+    ///
+    /// This uses the same project and active-status filter as
+    /// [`StorageConnection::list_tasks`]. The result is the exact row count and
+    /// is therefore never negative. It does not map rows, so a corrupted row
+    /// does not turn a count into an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Database`] for an unexpected SQLite failure. No
+    /// error message contains row data, identifiers, SQL or paths.
+    pub fn count_tasks(
+        &self,
+        project_id: &ProjectId,
+        active_only: bool,
+    ) -> Result<i64, QueryError> {
+        let mut sql = String::from("SELECT COUNT(*) FROM tasks WHERE project_id = ?");
+        let mut parameters = vec![SqlValue::Text(project_id.as_str().to_owned())];
+        if active_only {
+            let (filter, statuses) = active_status_filter();
+            sql.push_str(" AND ");
+            sql.push_str(&filter);
+            parameters.extend(statuses);
+        }
+        self.connection
+            .query_row(&sql, params_from_iter(parameters), |row| row.get(0))
+            .map_err(QueryError::Database)
+    }
+}
+
+/// The exact [`TaskStatus::is_active`] vocabulary, derived from the single
+/// domain source of truth instead of hard-coded SQL literals.
+fn active_statuses() -> Vec<&'static str> {
+    TaskStatus::ALL
+        .iter()
+        .filter(|status| status.is_active())
+        .map(|status| status.as_str())
+        .collect()
+}
+
+/// Builds the `status IN (?, ...)` filter for [`active_statuses`] together with
+/// the matching parameter values, in the same order.
+fn active_status_filter() -> (String, Vec<SqlValue>) {
+    let statuses = active_statuses();
+    let mut filter = String::from("status IN (");
+    let mut values = Vec::with_capacity(statuses.len());
+    for (index, status) in statuses.into_iter().enumerate() {
+        if index > 0 {
+            filter.push(',');
+        }
+        filter.push('?');
+        values.push(SqlValue::Text(status.to_owned()));
+    }
+    filter.push(')');
+    (filter, values)
+}
+
+/// A typed, safe error raised while running a read-only task query.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains row data, identifiers, project ids, SQL or
+/// machine-specific paths. The underlying task-row or SQLite error, when
+/// present, is reachable only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum QueryError {
+    /// `limit` is not positive.
+    InvalidLimit,
+    /// `offset` is negative.
+    InvalidOffset,
+    /// A found `tasks` row could not be mapped.
+    TaskRow(TaskRowError),
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLimit => f.write_str("task query limit must be positive"),
+            Self::InvalidOffset => f.write_str("task query offset must be non-negative"),
+            Self::TaskRow(_) => f.write_str("task row could not be mapped"),
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for QueryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TaskRow(error) => Some(error),
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -1728,15 +1960,17 @@ fn check_verifier_consistency(
 mod tests {
     use super::{
         BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InitializeError,
-        InspectError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch, Table, Task,
-        TaskRowError, V6_SCHEMA_DDL, apply_schema_v6, connect, initialize, inspect, open_read_only,
-        query_user_version, v6_contract,
+        InspectError, QueryError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch,
+        StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6,
+        connect, initialize, inspect, open_read_only, query_user_version, v6_contract,
     };
-    use bridge_domain::{RoundKind, RoundStatus, TaskStatus, VerifierState};
+    use bridge_domain::{ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, VerifierState};
     use rusqlite::types::Value as SqlValue;
     use rusqlite::{Connection, TransactionBehavior};
     use serde_json::Value;
+    use std::error::Error;
     use std::path::{Path, PathBuf};
+    use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const FIXTURES: [&str; 4] = [
@@ -2701,10 +2935,6 @@ mod tests {
          ?12 AS snapshot, ?13 AS revision_count, ?14 AS close_requested_at, \
          ?15 AS close_reason";
 
-    const TASK_ROW_COLUMNS: &str = "task_id, project_id, workspace, status, session_id, task, \
-         allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
-         revision_count, close_requested_at, close_reason";
-
     /// A valid row with every column present, using a UUID `task_id` (the
     /// committed fixtures use synthetic `task-<n>` ids and are not mapped here).
     fn valid_task_values() -> Vec<SqlValue> {
@@ -2798,11 +3028,9 @@ mod tests {
             .expect("insert task row");
 
         let task = connection
-            .query_row(
-                &format!("SELECT {TASK_ROW_COLUMNS} FROM tasks"),
-                [],
-                |row| Ok(Task::from_row(row)),
-            )
+            .query_row(&format!("SELECT {TASK_COLUMNS} FROM tasks"), [], |row| {
+                Ok(Task::from_row(row))
+            })
             .expect("row query must execute")
             .expect("valid persisted row must map");
 
@@ -3525,6 +3753,634 @@ mod tests {
         assert_ne!(
             std::any::TypeId::of::<RoundRow>(),
             std::any::TypeId::of::<bridge_domain::Round>()
+        );
+    }
+
+    const QUERY_PROJECT_A: &str = "query-project-a";
+    const QUERY_PROJECT_B: &str = "query-project-b";
+
+    const TS_EARLY: &str = "2026-01-01T00:00:00.000+00:00";
+    const TS_MID: &str = "2026-01-02T00:00:00.000+00:00";
+    const TS_LATE: &str = "2026-01-03T00:00:00.000+00:00";
+
+    /// A distinct valid UUID per small `n`, never the synthetic `task-<n>` ids
+    /// used by the committed fixtures.
+    fn query_task_id(n: u32) -> TaskId {
+        TaskId::from_str(&format!("550e8400-e29b-41d4-a716-44665544{n:04}"))
+            .expect("generated task id must be a valid UUID")
+    }
+
+    fn query_project(name: &str) -> ProjectId {
+        ProjectId::from_str(name).expect("project id must be valid")
+    }
+
+    fn open_query_storage(tag: &str) -> (TempDir, StorageConnection) {
+        let dir = TempDir::new(tag);
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let storage = connect(&path).expect("connect must succeed");
+        (dir, storage)
+    }
+
+    fn insert_query_task(
+        storage: &StorageConnection,
+        task_id: TaskId,
+        project_id: &ProjectId,
+        status: TaskStatus,
+        created_at: &str,
+        updated_at: &str,
+    ) {
+        storage
+            .connection()
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+                 test_commands, created_at, updated_at, revision_count) \
+                 VALUES (?1, ?2, '/fixture/workspace', ?3, 'task text', '[]', '[]', ?4, ?5, 0)",
+                rusqlite::params![
+                    task_id.to_string(),
+                    project_id.as_str(),
+                    status.as_str(),
+                    created_at,
+                    updated_at
+                ],
+            )
+            .expect("insert task row");
+    }
+
+    #[test]
+    fn query_get_task_finds_exact_id_and_returns_none_for_missing() {
+        let (_dir, storage) = open_query_storage("query-get");
+        let project = query_project(QUERY_PROJECT_A);
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project,
+            TaskStatus::Implementing,
+            TS_EARLY,
+            TS_EARLY,
+        );
+
+        let found = storage
+            .get_task(query_task_id(1))
+            .expect("query must succeed")
+            .expect("task must be found");
+        assert_eq!(found.task_id, query_task_id(1));
+        assert_eq!(found.project_id, project);
+        assert_eq!(found.status, TaskStatus::Implementing);
+
+        assert!(
+            storage
+                .get_task(query_task_id(2))
+                .expect("query must succeed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn query_on_freshly_initialized_database_returns_empty_results() {
+        let dir = TempDir::new("query-initialized-empty");
+        let path = dir.join("state.sqlite");
+        assert!(!path.exists(), "database must not exist before initialize");
+
+        initialize(&path).expect("missing file must be initialized");
+        let storage = connect(&path).expect("connect must succeed");
+        let project = query_project(QUERY_PROJECT_A);
+
+        assert!(
+            storage
+                .get_task(query_task_id(1))
+                .expect("query must succeed")
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_active_task(&project)
+                .expect("query must succeed")
+                .is_none()
+        );
+        assert!(
+            storage
+                .list_tasks(&project, false, 10, 0)
+                .expect("query must succeed")
+                .is_empty()
+        );
+        assert!(
+            storage
+                .list_tasks(&project, true, 10, 0)
+                .expect("query must succeed")
+                .is_empty()
+        );
+        assert_eq!(storage.count_tasks(&project, false).expect("count"), 0);
+        assert_eq!(storage.count_tasks(&project, true).expect("count"), 0);
+    }
+
+    #[test]
+    fn query_isolates_projects() {
+        let (_dir, storage) = open_query_storage("query-isolation");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        let other = query_project("query-project-c");
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project_a,
+            TaskStatus::Implementing,
+            TS_EARLY,
+            TS_EARLY,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(2),
+            &project_b,
+            TaskStatus::AwaitingReview,
+            TS_MID,
+            TS_MID,
+        );
+
+        let active_a = storage
+            .get_active_task(&project_a)
+            .expect("query must succeed")
+            .expect("project a must have an active task");
+        assert_eq!(active_a.task_id, query_task_id(1));
+        let active_b = storage
+            .get_active_task(&project_b)
+            .expect("query must succeed")
+            .expect("project b must have an active task");
+        assert_eq!(active_b.task_id, query_task_id(2));
+        assert!(
+            storage
+                .get_active_task(&other)
+                .expect("query must succeed")
+                .is_none()
+        );
+
+        let listed_a: Vec<TaskId> = storage
+            .list_tasks(&project_a, false, 10, 0)
+            .expect("query must succeed")
+            .iter()
+            .map(|task| task.task_id)
+            .collect();
+        assert_eq!(listed_a, vec![query_task_id(1)]);
+        let listed_b: Vec<TaskId> = storage
+            .list_tasks(&project_b, false, 10, 0)
+            .expect("query must succeed")
+            .iter()
+            .map(|task| task.task_id)
+            .collect();
+        assert_eq!(listed_b, vec![query_task_id(2)]);
+        assert!(
+            storage
+                .list_tasks(&other, false, 10, 0)
+                .expect("query must succeed")
+                .is_empty()
+        );
+
+        assert_eq!(storage.count_tasks(&project_a, false).expect("count"), 1);
+        assert_eq!(storage.count_tasks(&project_b, false).expect("count"), 1);
+        assert_eq!(storage.count_tasks(&other, false).expect("count"), 0);
+    }
+
+    #[test]
+    fn query_active_vocabulary_matches_is_active() {
+        let (_dir, storage) = open_query_storage("query-active-vocabulary");
+        let active: Vec<TaskStatus> = TaskStatus::ALL
+            .iter()
+            .copied()
+            .filter(|status| status.is_active())
+            .collect();
+        assert_eq!(active.len(), 6);
+
+        for (index, status) in active.into_iter().enumerate() {
+            let project = query_project(&format!("query-active-{}", status.as_str()));
+            let number = u32::try_from(index + 1).expect("small index");
+            insert_query_task(
+                &storage,
+                query_task_id(number),
+                &project,
+                status,
+                TS_EARLY,
+                TS_EARLY,
+            );
+
+            let found = storage
+                .get_active_task(&project)
+                .expect("query must succeed")
+                .expect("active status must be found");
+            assert_eq!(found.status, status, "status {status}");
+            assert_eq!(
+                storage
+                    .list_tasks(&project, true, 10, 0)
+                    .expect("query must succeed")
+                    .len(),
+                1,
+                "status {status}"
+            );
+            assert_eq!(
+                storage.count_tasks(&project, true).expect("count"),
+                1,
+                "status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_active_filter_excludes_terminal_rows() {
+        let (_dir, storage) = open_query_storage("query-terminal");
+        let project = query_project(QUERY_PROJECT_A);
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project,
+            TaskStatus::Revising,
+            TS_MID,
+            TS_MID,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(2),
+            &project,
+            TaskStatus::Accepted,
+            TS_EARLY,
+            TS_EARLY,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(3),
+            &project,
+            TaskStatus::Closed,
+            TS_EARLY,
+            TS_EARLY,
+        );
+
+        let active = storage
+            .get_active_task(&project)
+            .expect("query must succeed")
+            .expect("active task must be found");
+        assert_eq!(active.task_id, query_task_id(1));
+
+        let active_only = storage
+            .list_tasks(&project, true, 10, 0)
+            .expect("query must succeed");
+        assert_eq!(active_only.len(), 1);
+        assert_eq!(active_only[0].task_id, query_task_id(1));
+
+        assert_eq!(
+            storage
+                .list_tasks(&project, false, 10, 0)
+                .expect("query must succeed")
+                .len(),
+            3
+        );
+        assert_eq!(storage.count_tasks(&project, true).expect("count"), 1);
+        assert_eq!(storage.count_tasks(&project, false).expect("count"), 3);
+    }
+
+    #[test]
+    fn query_rejects_second_active_task_in_project() {
+        let (_dir, storage) = open_query_storage("query-one-active");
+        let project = query_project(QUERY_PROJECT_A);
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project,
+            TaskStatus::Implementing,
+            TS_EARLY,
+            TS_EARLY,
+        );
+
+        let second = storage.connection().execute(
+            "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+             test_commands, created_at, updated_at, revision_count) \
+             VALUES (?1, ?2, '/fixture/workspace', 'revising', 't', '[]', '[]', ?3, ?3, 0)",
+            rusqlite::params![query_task_id(2).to_string(), project.as_str(), TS_MID],
+        );
+        assert!(
+            second.is_err(),
+            "second active task must violate ux_tasks_active"
+        );
+        assert_eq!(storage.count_tasks(&project, true).expect("count"), 1);
+    }
+
+    #[test]
+    fn query_list_order_is_deterministic() {
+        let (_dir, storage) = open_query_storage("query-order");
+        let project = query_project(QUERY_PROJECT_A);
+        // 1 and 2 share updated_at and created_at: task_id DESC breaks the tie.
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project,
+            TaskStatus::Accepted,
+            TS_EARLY,
+            TS_MID,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(2),
+            &project,
+            TaskStatus::Accepted,
+            TS_EARLY,
+            TS_MID,
+        );
+        // 3 shares updated_at but has a newer created_at: created_at DESC wins.
+        insert_query_task(
+            &storage,
+            query_task_id(3),
+            &project,
+            TaskStatus::Accepted,
+            TS_MID,
+            TS_MID,
+        );
+        // 4 has the newest created_at but an older updated_at: updated_at DESC
+        // dominates.
+        insert_query_task(
+            &storage,
+            query_task_id(4),
+            &project,
+            TaskStatus::Accepted,
+            TS_LATE,
+            TS_EARLY,
+        );
+
+        let order: Vec<TaskId> = storage
+            .list_tasks(&project, false, 10, 0)
+            .expect("query must succeed")
+            .iter()
+            .map(|task| task.task_id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                query_task_id(3),
+                query_task_id(2),
+                query_task_id(1),
+                query_task_id(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn query_list_pagination_is_stable() {
+        let (_dir, storage) = open_query_storage("query-pagination");
+        let project = query_project(QUERY_PROJECT_A);
+        for n in 1..=6_u32 {
+            let updated = format!("2026-01-0{n}T00:00:00.000+00:00");
+            insert_query_task(
+                &storage,
+                query_task_id(n),
+                &project,
+                TaskStatus::Accepted,
+                TS_EARLY,
+                &updated,
+            );
+        }
+
+        let all: Vec<TaskId> = storage
+            .list_tasks(&project, false, 10, 0)
+            .expect("query must succeed")
+            .iter()
+            .map(|task| task.task_id)
+            .collect();
+        assert_eq!(all.len(), 6);
+
+        let mut paged = Vec::new();
+        for offset in [0_i64, 2, 4] {
+            let page = storage
+                .list_tasks(&project, false, 2, offset)
+                .expect("query must succeed");
+            assert_eq!(page.len(), 2, "offset {offset}");
+            paged.extend(page.iter().map(|task| task.task_id));
+        }
+        assert_eq!(paged, all, "pages must reproduce the full order");
+
+        let mut unique: Vec<String> = paged.iter().map(ToString::to_string).collect();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 6, "a task appeared on two pages");
+
+        for offset in [6_i64, 7, 100] {
+            assert!(
+                storage
+                    .list_tasks(&project, false, 2, offset)
+                    .expect("query must succeed")
+                    .is_empty(),
+                "offset {offset} past the end must be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn query_rejects_invalid_limit_and_offset() {
+        let (_dir, storage) = open_query_storage("query-invalid-window");
+        let project = query_project(QUERY_PROJECT_A);
+
+        assert!(matches!(
+            storage.list_tasks(&project, false, 0, 0),
+            Err(QueryError::InvalidLimit)
+        ));
+        assert!(matches!(
+            storage.list_tasks(&project, false, -1, 0),
+            Err(QueryError::InvalidLimit)
+        ));
+        assert!(matches!(
+            storage.list_tasks(&project, false, 1, -1),
+            Err(QueryError::InvalidOffset)
+        ));
+        assert!(
+            storage
+                .list_tasks(&project, false, 1, 0)
+                .expect("valid window must succeed")
+                .is_empty()
+        );
+
+        let error = storage
+            .list_tasks(&project, false, 0, 0)
+            .expect_err("invalid limit must fail");
+        assert!(
+            !error.to_string().contains(QUERY_PROJECT_A),
+            "project leaked: {error}"
+        );
+        assert!(error.source().is_none());
+    }
+
+    #[test]
+    fn query_count_matches_list_length() {
+        let (_dir, storage) = open_query_storage("query-count-parity");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project_a,
+            TaskStatus::Implementing,
+            TS_EARLY,
+            TS_EARLY,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(2),
+            &project_a,
+            TaskStatus::Accepted,
+            TS_MID,
+            TS_MID,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(3),
+            &project_b,
+            TaskStatus::Revising,
+            TS_LATE,
+            TS_LATE,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(4),
+            &project_b,
+            TaskStatus::Closed,
+            TS_EARLY,
+            TS_EARLY,
+        );
+
+        for project in [&project_a, &project_b] {
+            for active_only in [false, true] {
+                let count = storage.count_tasks(project, active_only).expect("count");
+                let listed = storage
+                    .list_tasks(project, active_only, 100, 0)
+                    .expect("list")
+                    .len();
+                assert_eq!(
+                    usize::try_from(count).expect("count is non-negative"),
+                    listed
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn query_surfaces_corrupted_row_safely() {
+        let (_dir, storage) = open_query_storage("query-corrupted");
+        let project = query_project(QUERY_PROJECT_A);
+        storage
+            .connection()
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+                 test_commands, created_at, updated_at, revision_count) \
+                 VALUES (?1, ?2, '/fixture/workspace', 'super-secret-status', 't', '[]', '[]', \
+                 ?3, ?3, 0)",
+                rusqlite::params![query_task_id(1).to_string(), project.as_str(), TS_EARLY],
+            )
+            .expect("insert corrupted row");
+
+        let error = storage
+            .get_task(query_task_id(1))
+            .expect_err("corrupted row must fail");
+        assert!(
+            matches!(error, QueryError::TaskRow(TaskRowError::UnknownStatus)),
+            "{error:?}"
+        );
+        let display = error.to_string();
+        assert!(
+            !display.contains("super-secret-status"),
+            "status leaked: {display}"
+        );
+        assert!(
+            !display.contains(QUERY_PROJECT_A),
+            "project leaked: {display}"
+        );
+        assert!(error.source().is_some());
+
+        assert!(matches!(
+            storage.list_tasks(&project, false, 10, 0),
+            Err(QueryError::TaskRow(TaskRowError::UnknownStatus))
+        ));
+        // Counting does not map rows, so it still succeeds.
+        assert_eq!(storage.count_tasks(&project, false).expect("count"), 1);
+    }
+
+    #[test]
+    fn query_does_not_write_or_change_schema() {
+        let dir = TempDir::new("query-readonly");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let storage = connect(&path).expect("connect must succeed");
+        let project = query_project(QUERY_PROJECT_A);
+        insert_query_task(
+            &storage,
+            query_task_id(1),
+            &project,
+            TaskStatus::Implementing,
+            TS_EARLY,
+            TS_EARLY,
+        );
+        insert_query_task(
+            &storage,
+            query_task_id(2),
+            &project,
+            TaskStatus::Accepted,
+            TS_MID,
+            TS_MID,
+        );
+
+        let state_before = logical_state(&path);
+        let rows_before: i64 = storage
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("count rows");
+
+        storage
+            .get_task(query_task_id(1))
+            .expect("get must succeed");
+        storage
+            .get_active_task(&project)
+            .expect("active must succeed");
+        storage
+            .list_tasks(&project, true, 1, 0)
+            .expect("active list must succeed");
+        storage
+            .list_tasks(&project, false, 10, 0)
+            .expect("full list must succeed");
+        storage
+            .count_tasks(&project, false)
+            .expect("count must succeed");
+
+        assert_eq!(logical_state(&path), state_before, "schema changed");
+        let rows_after: i64 = storage
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(rows_after, rows_before, "row count changed");
+        assert_eq!(
+            query_user_version(storage.connection()).expect("read user_version"),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn query_on_fixture_copy_rejects_synthetic_id_without_touching_fixture() {
+        let source = fixture_dir().join("active-v6.sqlite");
+        let before = std::fs::read(&source).expect("read fixture");
+        let dir = TempDir::new("query-fixture-copy");
+        let copy = dir.join("state.sqlite");
+        std::fs::copy(&source, &copy).expect("copy fixture");
+
+        let storage = connect(&copy).expect("connect copy");
+        let project = query_project("proj");
+        let error = storage
+            .list_tasks(&project, false, 10, 0)
+            .expect_err("synthetic task id must be rejected");
+        assert!(
+            matches!(error, QueryError::TaskRow(TaskRowError::InvalidTaskId)),
+            "{error:?}"
+        );
+
+        assert_eq!(std::fs::read(&source).expect("re-read fixture"), before);
+        assert!(
+            !sidecar(&source, "-wal").exists(),
+            "committed fixture got a -wal sidecar"
+        );
+        assert!(
+            !sidecar(&source, "-shm").exists(),
+            "committed fixture got a -shm sidecar"
         );
     }
 

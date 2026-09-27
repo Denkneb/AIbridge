@@ -41,8 +41,17 @@
 //! [`StorageConnection::count_tasks`]. They use one production source for the
 //! exact fifteen `tasks` columns, map every found row through [`Task::from_row`],
 //! isolate data strictly by project, filter active tasks with the exact
-//! [`TaskStatus::is_active`] vocabulary and never write. Schema migrations,
-//! round queries and all write APIs remain out of scope (tasks 3.7+).
+//! [`TaskStatus::is_active`] vocabulary and never write.
+//!
+//! Atomic task creation (task 3.7) is provided by
+//! [`StorageConnection::create_task`]. In one `BEGIN IMMEDIATE` transaction it
+//! writes exactly one `tasks` row (`implementing`, `revision_count=0`), one
+//! `rounds` row (`round_number=1`, `implement`, `pending`, `attempted=0`) and
+//! one `events` row (`created`, `task created (implement)`), all sharing a
+//! single UTC RFC3339 millisecond timestamp, and returns the created [`Task`]
+//! through the existing [`Task::from_row`] contract. Request idempotency/replay
+//! (task 3.8), revision rounds, round/verifier updates and schema migrations
+//! remain out of scope.
 
 use std::error::Error;
 use std::fmt;
@@ -52,7 +61,7 @@ use std::str::FromStr;
 use bridge_domain::{
     ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerifierState,
 };
-use rusqlite::types::Value as SqlValue;
+use rusqlite::types::{Null, Value as SqlValue};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, TransactionBehavior, params,
     params_from_iter,
@@ -922,6 +931,16 @@ const TASK_COLUMNS: &str = "task_id, project_id, workspace, status, session_id, 
      allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
      revision_count, close_requested_at, close_reason";
 
+/// The exact, ordered list of the twenty-one schema v6 `rounds` columns.
+///
+/// This is the single production source for the round column list used by
+/// atomic task creation; it mirrors the frozen Python `_ROUND_COLUMNS` and the
+/// committed fixture rows.
+const ROUND_COLUMNS: &str = "task_id, project_id, round_number, request_id, payload_hash, \
+     kind, status, outbound_message_id, attempted, response_message_id, response, error_code, \
+     result_json, findings, session_id, worker_started_at, worker_deadline_at, verifier_state, \
+     verifier_json, created_at, updated_at";
+
 /// A read-write SQLite connection already configured exactly like Python
 /// `Storage.connect`.
 ///
@@ -1093,6 +1112,365 @@ impl StorageConnection {
             .query_row(&sql, params_from_iter(parameters), |row| row.get(0))
             .map_err(QueryError::Database)
     }
+
+    /// Atomically creates a task, its initial implementation round and its
+    /// `created` event.
+    ///
+    /// The whole creation runs inside one `BEGIN IMMEDIATE` transaction, so the
+    /// three rows either all commit or all roll back. Exactly these rows are
+    /// written:
+    ///
+    /// * one `tasks` row with `status = implementing` and `revision_count = 0`;
+    /// * one `rounds` row with `round_number = 1`, `kind = implement`,
+    ///   `status = pending` and `attempted = 0`;
+    /// * one `events` row with `kind = created` and message
+    ///   `task created (implement)`.
+    ///
+    /// All three rows share the exact same UTC RFC3339 timestamp (millisecond
+    /// precision) for `created_at`/`updated_at`. The initial round kind is never
+    /// caller-controlled: it is always [`RoundKind::Implement`].
+    ///
+    /// The returned [`Task`] is read back inside the same transaction through
+    /// the production [`TASK_COLUMNS`]/[`Task::from_row`] contract used by
+    /// [`StorageConnection::get_task`], so the value is the exact persisted row.
+    ///
+    /// Request idempotency/replay is deliberately not implemented: a reused
+    /// `request_id` of the same project is a [`CreateTaskError::RequestConflict`],
+    /// while the same `request_id` in a different project is allowed by the
+    /// project-scoped `ux_rounds_request` index.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`CreateTaskError`]). Invalid input and
+    /// serialization failures are detected before the transaction starts, so
+    /// they never write anything. No error message contains ids, project, task
+    /// text, workspace, request id, payload hash, paths, SQL or JSON.
+    pub fn create_task(&mut self, input: CreateTaskInput) -> Result<Task, CreateTaskError> {
+        let prepared = PreparedCreateTask::new(input)?;
+        let now = utc_now_rfc3339_millis();
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(CreateTaskError::Database)?;
+
+        transaction
+            .execute(
+                &format!(
+                    "INSERT INTO tasks ({TASK_COLUMNS}) VALUES \
+                     (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
+                ),
+                params![
+                    prepared.task_id.to_string(),
+                    prepared.project_id,
+                    prepared.workspace,
+                    TaskStatus::Implementing.as_str(),
+                    Null,
+                    prepared.text,
+                    prepared.allowed_paths_json,
+                    prepared.test_commands_json,
+                    now,
+                    now,
+                    prepared.base_head,
+                    prepared.snapshot_json,
+                    0_i64,
+                    Null,
+                    Null,
+                ],
+            )
+            .map_err(classify_task_insert_error)?;
+
+        transaction
+            .execute(
+                &format!(
+                    "INSERT INTO rounds ({ROUND_COLUMNS}) VALUES \
+                     (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+                ),
+                params![
+                    prepared.task_id.to_string(),
+                    prepared.project_id,
+                    1_i64,
+                    prepared.request_id,
+                    prepared.payload_hash,
+                    RoundKind::Implement.as_str(),
+                    RoundStatus::Pending.as_str(),
+                    Null,
+                    0_i64,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(classify_round_insert_error)?;
+
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    prepared.task_id.to_string(),
+                    1_i64,
+                    "created",
+                    format!("task created ({})", RoundKind::Implement.as_str()),
+                    now,
+                ],
+            )
+            .map_err(CreateTaskError::Database)?;
+
+        let task = transaction
+            .query_row(
+                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+                params![prepared.task_id.to_string()],
+                |row| Ok(Task::from_row(row)),
+            )
+            .map_err(CreateTaskError::Database)?
+            .map_err(CreateTaskError::TaskRow)?;
+
+        transaction.commit().map_err(CreateTaskError::Database)?;
+
+        Ok(task)
+    }
+}
+
+/// Input for [`StorageConnection::create_task`].
+///
+/// The initial round kind is intentionally not a field: task creation always
+/// writes a [`RoundKind::Implement`] round. `snapshot` must be `None` or a JSON
+/// object; any other shape is rejected before the transaction starts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateTaskInput {
+    /// Primary key of the new task.
+    pub task_id: TaskId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Workspace path persisted verbatim (`workspace`).
+    pub workspace: String,
+    /// Task text persisted verbatim (`task`).
+    pub task: String,
+    /// Idempotency key stored on the initial round (`request_id`).
+    pub request_id: String,
+    /// Hash of the request payload (`payload_hash`).
+    pub payload_hash: String,
+    /// Base Git head, when captured (`base_head`).
+    pub base_head: Option<String>,
+    /// Allowed workspace-relative paths, serialized as a JSON array of strings.
+    pub allowed_paths: Vec<String>,
+    /// Verification commands, serialized as a JSON array of strings.
+    pub test_commands: Vec<String>,
+    /// Workspace snapshot: `None` or a JSON object (`snapshot`).
+    pub snapshot: Option<serde_json::Value>,
+}
+
+/// A validated, serialized create-task request ready for the transaction.
+///
+/// This is produced only by [`PreparedCreateTask::new`], which performs every
+/// input check and JSON serialization *before* any write, so an invalid request
+/// can never touch the database.
+struct PreparedCreateTask {
+    task_id: TaskId,
+    project_id: String,
+    workspace: String,
+    text: String,
+    request_id: String,
+    payload_hash: String,
+    base_head: Option<String>,
+    allowed_paths_json: String,
+    test_commands_json: String,
+    snapshot_json: Option<String>,
+}
+
+impl PreparedCreateTask {
+    /// Validates and serializes `input` without touching the database.
+    ///
+    /// Required text values that would make the persisted row inconsistent
+    /// (`workspace`, `task`, `request_id`, `payload_hash`) must be non-empty,
+    /// and `snapshot` must be `None` or a JSON object. Path/command safety
+    /// policy is deliberately out of scope here.
+    fn new(input: CreateTaskInput) -> Result<Self, CreateTaskError> {
+        if input.workspace.is_empty() {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        if input.task.trim().is_empty() {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        if input.request_id.is_empty() {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        if input.payload_hash.is_empty() {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        if let Some(snapshot) = &input.snapshot
+            && !snapshot.is_object()
+        {
+            return Err(CreateTaskError::InvalidInput);
+        }
+
+        let allowed_paths_json = serde_json::to_string(&input.allowed_paths)
+            .map_err(|_| CreateTaskError::Serialization)?;
+        let test_commands_json = serde_json::to_string(&input.test_commands)
+            .map_err(|_| CreateTaskError::Serialization)?;
+        let snapshot_json = match &input.snapshot {
+            Some(snapshot) => {
+                Some(serde_json::to_string(snapshot).map_err(|_| CreateTaskError::Serialization)?)
+            }
+            None => None,
+        };
+
+        Ok(Self {
+            task_id: input.task_id,
+            project_id: input.project_id.to_string(),
+            workspace: input.workspace,
+            text: input.task,
+            request_id: input.request_id,
+            payload_hash: input.payload_hash,
+            base_head: input.base_head,
+            allowed_paths_json,
+            test_commands_json,
+            snapshot_json,
+        })
+    }
+}
+
+/// A typed, safe error raised while atomically creating a task.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains ids, project, task text, workspace, request id,
+/// payload hash, paths, SQL or JSON. The underlying task-row or SQLite error,
+/// when present, is reachable only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CreateTaskError {
+    /// The project already has an active task (`ux_tasks_active`).
+    ProjectBusy,
+    /// A task with the same `task_id` already exists.
+    TaskIdConflict,
+    /// The `request_id` is already used in this project (`ux_rounds_request`).
+    RequestConflict,
+    /// The input is invalid: empty required text or a non-object snapshot.
+    InvalidInput,
+    /// A JSON field could not be serialized.
+    Serialization,
+    /// The created `tasks` row could not be mapped.
+    TaskRow(TaskRowError),
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for CreateTaskError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProjectBusy => f.write_str("project already has an unfinished task"),
+            Self::TaskIdConflict => f.write_str("task id already exists"),
+            Self::RequestConflict => f.write_str("request id is already used in this project"),
+            Self::InvalidInput => f.write_str("task creation input is invalid"),
+            Self::Serialization => f.write_str("task creation input could not be serialized"),
+            Self::TaskRow(_) => f.write_str("task row could not be mapped"),
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for CreateTaskError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TaskRow(error) => Some(error),
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Classifies a failed `tasks` insert into the active-project or task-id
+/// conflict, falling back to [`CreateTaskError::Database`].
+fn classify_task_insert_error(error: rusqlite::Error) -> CreateTaskError {
+    if let rusqlite::Error::SqliteFailure(inner, message) = &error {
+        if let Some(message) = message {
+            if message.contains("tasks.task_id") {
+                return CreateTaskError::TaskIdConflict;
+            }
+            if message.contains("tasks.project_id") {
+                return CreateTaskError::ProjectBusy;
+            }
+        }
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY {
+            return CreateTaskError::TaskIdConflict;
+        }
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+            return CreateTaskError::ProjectBusy;
+        }
+    }
+    CreateTaskError::Database(error)
+}
+
+/// Classifies a failed `rounds` insert as the project-scoped request conflict,
+/// falling back to [`CreateTaskError::Database`].
+fn classify_round_insert_error(error: rusqlite::Error) -> CreateTaskError {
+    if let rusqlite::Error::SqliteFailure(inner, message) = &error {
+        if let Some(message) = message
+            && (message.contains("rounds.request_id") || message.contains("rounds.project_id"))
+        {
+            return CreateTaskError::RequestConflict;
+        }
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+            return CreateTaskError::RequestConflict;
+        }
+    }
+    CreateTaskError::Database(error)
+}
+
+/// Returns the current UTC time as an RFC3339 string with millisecond precision
+/// and a `+00:00` offset, matching Python `Storage.utcnow`
+/// (`datetime.now(timezone.utc).isoformat(timespec="milliseconds")`).
+fn utc_now_rfc3339_millis() -> String {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let seconds = elapsed.as_secs();
+    let milliseconds = elapsed.subsec_millis();
+    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
+    let second_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = second_of_day / 3_600;
+    let minute = (second_of_day % 3_600) / 60;
+    let second = second_of_day % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{milliseconds:03}+00:00"
+    )
+}
+
+/// Converts days since the Unix epoch to a proleptic Gregorian `(year, month,
+/// day)` triple using Howard Hinnant's `civil_from_days` algorithm.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = u32::try_from(day_of_year - (153 * month_prime + 2) / 5 + 1).unwrap_or(1);
+    let month = u32::try_from(if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    })
+    .unwrap_or(1);
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month, day)
 }
 
 /// The exact [`TaskStatus::is_active`] vocabulary, derived from the single
@@ -1959,10 +2337,11 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InitializeError,
-        InspectError, QueryError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch,
-        StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6,
-        connect, initialize, inspect, open_read_only, query_user_version, v6_contract,
+        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, CreateTaskError, CreateTaskInput,
+        ForeignKey, Index, InitializeError, InspectError, QueryError, RoundRow, RoundRowError,
+        SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError,
+        V6_SCHEMA_DDL, apply_schema_v6, connect, initialize, inspect, open_read_only,
+        query_user_version, v6_contract,
     };
     use bridge_domain::{ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, VerifierState};
     use rusqlite::types::Value as SqlValue;
@@ -4382,6 +4761,512 @@ mod tests {
             !sidecar(&source, "-shm").exists(),
             "committed fixture got a -shm sidecar"
         );
+    }
+
+    fn create_task_input(
+        task_id: TaskId,
+        project: &ProjectId,
+        request_id: &str,
+    ) -> CreateTaskInput {
+        CreateTaskInput {
+            task_id,
+            project_id: project.clone(),
+            workspace: "/fixture/workspace".to_owned(),
+            task: "Implement the fixture change".to_owned(),
+            request_id: request_id.to_owned(),
+            payload_hash: format!("hash-{request_id}"),
+            base_head: Some("1111111111111111111111111111111111111111".to_owned()),
+            allowed_paths: vec!["module.py".to_owned()],
+            test_commands: vec!["pytest -q".to_owned()],
+            snapshot: Some(serde_json::json!({"head": "1111111111111111111111111111111111111111"})),
+        }
+    }
+
+    fn count_rows(storage: &StorageConnection, table: &str) -> i64 {
+        storage
+            .connection()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows")
+    }
+
+    fn is_rfc3339_millis_utc(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        bytes.len() == 29
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes[10] == b'T'
+            && bytes[13] == b':'
+            && bytes[16] == b':'
+            && bytes[19] == b'.'
+            && bytes[23] == b'+'
+            && bytes[26] == b':'
+            && value.ends_with("+00:00")
+            && value
+                .get(20..23)
+                .is_some_and(|millis| millis.chars().all(|c| c.is_ascii_digit()))
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_utc_dates() {
+        assert_eq!(super::civil_from_days(0), (1970, 1, 1));
+        assert_eq!(super::civil_from_days(365), (1971, 1, 1));
+        assert_eq!(super::civil_from_days(10_957), (2000, 1, 1));
+        assert_eq!(super::civil_from_days(19_723), (2024, 1, 1));
+        assert_eq!(super::civil_from_days(-1), (1969, 12, 31));
+    }
+
+    fn assert_create_error_is_safe(error: &CreateTaskError, secret: &str) {
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert!(!display.contains(secret), "Display leaked input: {display}");
+        assert!(!debug.contains(secret), "Debug leaked input: {debug}");
+    }
+
+    #[test]
+    fn create_task_writes_exactly_three_rows_with_python_defaults() {
+        let (_dir, mut storage) = open_query_storage("create-happy");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        let input = create_task_input(task_id, &project, "req-1");
+
+        let task = storage
+            .create_task(input)
+            .expect("create_task must succeed");
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+
+        let round = storage
+            .connection()
+            .query_row(
+                &format!("SELECT {ROUND_ROW_COLUMNS} FROM rounds"),
+                [],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("round query must execute")
+            .expect("round row must map");
+        assert_eq!(round.round_number, 1);
+        assert_eq!(round.kind, RoundKind::Implement);
+        assert_eq!(round.status, RoundStatus::Pending);
+        assert!(!round.attempted);
+        assert_eq!(round.request_id, "req-1");
+        assert_eq!(round.payload_hash, "hash-req-1");
+        assert_eq!(round.outbound_message_id, None);
+        assert_eq!(round.response_message_id, None);
+        assert_eq!(round.response, None);
+        assert_eq!(round.error_code, None);
+        assert_eq!(round.result_json, None);
+        assert_eq!(round.findings, None);
+        assert_eq!(round.session_id, None);
+        assert_eq!(round.worker_started_at, None);
+        assert_eq!(round.worker_deadline_at, None);
+        assert_eq!(round.verifier_state, None);
+        assert_eq!(round.verifier_json, None);
+
+        assert_eq!(task.status, TaskStatus::Implementing);
+        assert_eq!(task.revision_count, 0);
+        assert_eq!(task.session_id, None);
+        assert_eq!(task.close_requested_at, None);
+        assert_eq!(task.close_reason, None);
+        assert_eq!(task.allowed_paths, ["module.py"]);
+        assert_eq!(task.test_commands, ["pytest -q"]);
+        assert_eq!(
+            task.snapshot,
+            Some(serde_json::json!({"head": "1111111111111111111111111111111111111111"}))
+        );
+
+        let (kind, message, round_number, event_created): (String, String, Option<i64>, String) =
+            storage
+                .connection()
+                .query_row(
+                    "SELECT kind, message, round_number, created_at FROM events",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("event row");
+        assert_eq!(kind, "created");
+        assert_eq!(message, "task created (implement)");
+        assert_eq!(round_number, Some(1));
+        assert_eq!(event_created, task.created_at);
+
+        assert_eq!(task.created_at, task.updated_at);
+        assert_eq!(round.created_at, round.updated_at);
+        assert_eq!(round.created_at, task.created_at);
+        assert!(
+            is_rfc3339_millis_utc(&task.created_at),
+            "unexpected timestamp {}",
+            task.created_at
+        );
+    }
+
+    #[test]
+    fn create_task_handles_snapshot_none_object_and_rejects_non_object() {
+        let (_dir, mut storage) = open_query_storage("create-snapshot");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        let project_c = query_project("query-project-c");
+
+        let mut input = create_task_input(query_task_id(1), &project_a, "req-none");
+        input.snapshot = None;
+        storage
+            .create_task(input)
+            .expect("snapshot None must succeed");
+        let raw: Option<String> = storage
+            .connection()
+            .query_row(
+                "SELECT snapshot FROM tasks WHERE task_id = ?1",
+                rusqlite::params![query_task_id(1).to_string()],
+                |row| row.get(0),
+            )
+            .expect("snapshot");
+        assert_eq!(raw, None);
+
+        let mut input = create_task_input(query_task_id(2), &project_b, "req-object");
+        input.snapshot = Some(serde_json::json!({"head": "abc", "nested": {"x": 1}}));
+        storage
+            .create_task(input)
+            .expect("snapshot object must succeed");
+        let raw: Option<String> = storage
+            .connection()
+            .query_row(
+                "SELECT snapshot FROM tasks WHERE task_id = ?1",
+                rusqlite::params![query_task_id(2).to_string()],
+                |row| row.get(0),
+            )
+            .expect("snapshot");
+        let parsed: Value = serde_json::from_str(raw.as_deref().expect("object stored"))
+            .expect("stored snapshot must be valid JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({"head": "abc", "nested": {"x": 1}})
+        );
+
+        for bad in [
+            serde_json::json!([]),
+            serde_json::json!("text"),
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!(null),
+        ] {
+            let mut input = create_task_input(query_task_id(3), &project_c, "req-bad");
+            input.snapshot = Some(bad.clone());
+            let error = storage
+                .create_task(input)
+                .expect_err("non-object snapshot must fail");
+            assert!(
+                matches!(error, CreateTaskError::InvalidInput),
+                "snapshot {bad}: {error:?}"
+            );
+        }
+
+        assert_eq!(count_rows(&storage, "tasks"), 2);
+        assert_eq!(count_rows(&storage, "rounds"), 2);
+        assert_eq!(count_rows(&storage, "events"), 2);
+    }
+
+    #[test]
+    fn create_task_rejects_invalid_required_text_before_writing() {
+        let (_dir, mut storage) = open_query_storage("create-invalid-text");
+        let project = query_project(QUERY_PROJECT_A);
+
+        let mut empty_workspace = create_task_input(query_task_id(1), &project, "req-1");
+        empty_workspace.workspace = String::new();
+        let mut blank_task = create_task_input(query_task_id(1), &project, "req-1");
+        blank_task.task = "   ".to_owned();
+        let mut empty_request = create_task_input(query_task_id(1), &project, "req-1");
+        empty_request.request_id = String::new();
+        let mut empty_hash = create_task_input(query_task_id(1), &project, "req-1");
+        empty_hash.payload_hash = String::new();
+
+        for input in [empty_workspace, blank_task, empty_request, empty_hash] {
+            let error = storage
+                .create_task(input)
+                .expect_err("invalid text must fail");
+            assert!(matches!(error, CreateTaskError::InvalidInput), "{error:?}");
+        }
+
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+        assert_eq!(count_rows(&storage, "rounds"), 0);
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn create_task_duplicate_task_id_is_task_id_conflict() {
+        let (_dir, mut storage) = open_query_storage("create-task-id-conflict");
+        let project = query_project(QUERY_PROJECT_A);
+        storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-1"))
+            .expect("first create must succeed");
+
+        let other = query_project(QUERY_PROJECT_B);
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &other, "req-2"))
+            .expect_err("duplicate task id must fail");
+        assert!(
+            matches!(error, CreateTaskError::TaskIdConflict),
+            "{error:?}"
+        );
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_active_project_is_busy() {
+        let (_dir, mut storage) = open_query_storage("create-project-busy");
+        let project = query_project(QUERY_PROJECT_A);
+        storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-1"))
+            .expect("first create must succeed");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(2), &project, "req-2"))
+            .expect_err("second active task must fail");
+        assert!(matches!(error, CreateTaskError::ProjectBusy), "{error:?}");
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_same_project_request_conflict_rolls_back_new_task() {
+        let (_dir, mut storage) = open_query_storage("create-request-conflict");
+        let project = query_project(QUERY_PROJECT_A);
+        let connection = storage.connection();
+        connection
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+                 test_commands, created_at, updated_at, revision_count) \
+                 VALUES (?1, ?2, '/fixture/workspace', 'accepted', 't', '[]', '[]', ?3, ?3, 0)",
+                rusqlite::params![query_task_id(9).to_string(), project.as_str(), TS_EARLY],
+            )
+            .expect("seed terminal task");
+        connection
+            .execute(
+                "INSERT INTO rounds (task_id, project_id, round_number, request_id, payload_hash, \
+                 kind, status, attempted, created_at, updated_at) \
+                 VALUES (?1, ?2, 1, 'req-dup', 'hash', 'implement', 'complete', 0, ?3, ?3)",
+                rusqlite::params![query_task_id(9).to_string(), project.as_str(), TS_EARLY],
+            )
+            .expect("seed round");
+
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-dup"))
+            .expect_err("request conflict must fail");
+        assert!(
+            matches!(error, CreateTaskError::RequestConflict),
+            "{error:?}"
+        );
+
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 0);
+        let new_task: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE task_id = ?1",
+                rusqlite::params![query_task_id(1).to_string()],
+                |row| row.get(0),
+            )
+            .expect("count new task");
+        assert_eq!(new_task, 0, "the newly inserted task survived the rollback");
+    }
+
+    #[test]
+    fn create_task_same_request_across_projects_succeeds() {
+        let (_dir, mut storage) = open_query_storage("create-request-cross-project");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        storage
+            .create_task(create_task_input(
+                query_task_id(1),
+                &project_a,
+                "req-shared",
+            ))
+            .expect("project a create must succeed");
+        storage
+            .create_task(create_task_input(
+                query_task_id(2),
+                &project_b,
+                "req-shared",
+            ))
+            .expect("project b create must succeed");
+
+        let shared: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM rounds WHERE request_id = 'req-shared'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count shared request");
+        assert_eq!(shared, 2);
+    }
+
+    #[test]
+    fn create_task_forced_post_task_failure_rolls_back_every_row() {
+        let dir = TempDir::new("create-forced-rollback");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        execute(&path, "DROP TABLE events");
+        let mut storage = connect(&path).expect("connect must succeed");
+
+        let project = query_project(QUERY_PROJECT_A);
+        let error = storage
+            .create_task(create_task_input(query_task_id(1), &project, "req-1"))
+            .expect_err("event insert must fail");
+        assert!(matches!(error, CreateTaskError::Database(_)), "{error:?}");
+
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+        assert_eq!(count_rows(&storage, "rounds"), 0);
+    }
+
+    #[test]
+    fn create_task_concurrent_different_ids_same_project_yields_one_success_one_busy() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("create-concurrent");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        // Pre-create the WAL database so the threads contend only on the writer
+        // transaction, not on the journal-mode switch.
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let project = query_project(QUERY_PROJECT_A);
+        let mut handles = Vec::new();
+        for n in 1..=2_u32 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect must succeed");
+                storage.create_task(create_task_input(
+                    query_task_id(n),
+                    &project,
+                    &format!("req-{n}"),
+                ))
+            }));
+        }
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let successes = results.iter().filter(|result| result.is_ok()).count();
+        let busy = results
+            .iter()
+            .filter(|result| matches!(result, Err(CreateTaskError::ProjectBusy)))
+            .count();
+        assert_eq!(successes, 1, "{results:?}");
+        assert_eq!(busy, 1, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn create_task_returns_task_and_persisted_round_row_maps() {
+        let (_dir, mut storage) = open_query_storage("create-mapping");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        let mut input = create_task_input(task_id, &project, "req-map");
+        input.base_head = Some("2222222222222222222222222222222222222222".to_owned());
+        input.snapshot = Some(serde_json::json!({"head": "abc"}));
+
+        let task = storage
+            .create_task(input)
+            .expect("create_task must succeed");
+
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(task.project_id, project);
+        assert_eq!(task.workspace, "/fixture/workspace");
+        assert_eq!(task.status, TaskStatus::Implementing);
+        assert_eq!(task.session_id, None);
+        assert_eq!(task.text, "Implement the fixture change");
+        assert_eq!(task.allowed_paths, ["module.py"]);
+        assert_eq!(task.test_commands, ["pytest -q"]);
+        assert_eq!(
+            task.base_head.as_deref(),
+            Some("2222222222222222222222222222222222222222")
+        );
+        assert_eq!(task.snapshot, Some(serde_json::json!({"head": "abc"})));
+        assert_eq!(task.revision_count, 0);
+        assert_eq!(task.close_requested_at, None);
+        assert_eq!(task.close_reason, None);
+
+        let fetched = storage
+            .get_task(task_id)
+            .expect("get must succeed")
+            .expect("created task must be present");
+        assert_eq!(fetched, task);
+
+        let round = storage
+            .connection()
+            .query_row(
+                &format!("SELECT {ROUND_ROW_COLUMNS} FROM rounds"),
+                [],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("round query must execute")
+            .expect("round row must map");
+        assert_eq!(round.task_id, task_id);
+        assert_eq!(round.project_id, project);
+        assert_eq!(round.round_number, 1);
+        assert_eq!(round.kind, RoundKind::Implement);
+        assert_eq!(round.status, RoundStatus::Pending);
+        assert_eq!(round.created_at, task.created_at);
+        assert_eq!(round.updated_at, task.updated_at);
+    }
+
+    #[test]
+    fn create_task_errors_do_not_leak_input() {
+        const SECRET: &str = "super-secret-token";
+        let (_dir, mut storage) = open_query_storage("create-error-safety");
+        let project = query_project(QUERY_PROJECT_A);
+
+        let mut invalid = create_task_input(query_task_id(1), &project, "req-1");
+        invalid.snapshot = Some(serde_json::json!([SECRET]));
+        let error = storage
+            .create_task(invalid)
+            .expect_err("non-object snapshot must fail");
+        assert!(matches!(error, CreateTaskError::InvalidInput), "{error:?}");
+        assert_create_error_is_safe(&error, SECRET);
+
+        let mut first = create_task_input(query_task_id(2), &project, "req-2");
+        first.workspace = format!("/{SECRET}");
+        first.task = SECRET.to_owned();
+        storage
+            .create_task(first)
+            .expect("first create must succeed");
+        let mut second = create_task_input(query_task_id(3), &project, "req-3");
+        second.request_id = SECRET.to_owned();
+        let error = storage
+            .create_task(second)
+            .expect_err("project busy must fail");
+        assert!(matches!(error, CreateTaskError::ProjectBusy), "{error:?}");
+        assert_create_error_is_safe(&error, SECRET);
+
+        let other = query_project(QUERY_PROJECT_B);
+        let mut duplicate = create_task_input(query_task_id(2), &other, "req-4");
+        duplicate.payload_hash = SECRET.to_owned();
+        let error = storage
+            .create_task(duplicate)
+            .expect_err("duplicate task id must fail");
+        assert!(
+            matches!(error, CreateTaskError::TaskIdConflict),
+            "{error:?}"
+        );
+        assert_create_error_is_safe(&error, SECRET);
     }
 
     struct TempDir {

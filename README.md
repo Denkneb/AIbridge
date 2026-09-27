@@ -57,7 +57,22 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   `updated_at DESC, created_at DESC, task_id DESC` с пагинацией
   `limit > 0`/`offset >= 0`, а типизированный `QueryError` не раскрывает ids,
   project, row data, SQL и пути. Query API ничего не пишет и не меняет schema.
-- Следующий этап — **3.7. Atomic task creation**.
+- Завершён этап **3.7. Atomic task creation**: `bridge-storage` предоставляет
+  типизированный `CreateTaskInput` и `StorageConnection::create_task`, который в
+  одной `BEGIN IMMEDIATE` транзакции атомарно создаёт ровно три строки — task
+  (`implementing`, `revision_count=0`), initial round (`round_number=1`,
+  `implement`, `pending`, `attempted=0`) и event (`created`,
+  `task created (implement)`) — с общим UTC RFC3339 timestamp с миллисекундами,
+  сериализует `allowed_paths`/`test_commands` как JSON-массивы строк, принимает
+  `snapshot` только как `None` или JSON object и возвращает созданный `Task`
+  через существующий mapping. Ошибка round/event после task insert полностью
+  откатывает все три строки; типизированный `CreateTaskError`
+  (`ProjectBusy`/`TaskIdConflict`/`RequestConflict`/`InvalidInput`/
+  `Serialization`/`TaskRow`/`Database`) не раскрывает ids, project, task text,
+  workspace, request, hash, пути, SQL и JSON. Request idempotency/replay (3.8)
+  намеренно не реализована: повтор `request_id` того же project — типизированный
+  конфликт, одинаковый `request_id` разных projects разрешён schema.
+- Следующий этап — **3.8. Request idempotency**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

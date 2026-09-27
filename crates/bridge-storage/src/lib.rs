@@ -64,11 +64,27 @@
 //! requests yield exactly one [`CreateTaskOutcome::Created`] and one
 //! [`CreateTaskOutcome::Replayed`]. Revision rounds, round/verifier updates and
 //! schema migrations remain out of scope.
+//!
+//! Atomic round/task lifecycle transitions (task 3.9a) are provided as methods
+//! on [`StorageConnection`]: [`StorageConnection::create_revision_round`],
+//! [`StorageConnection::bind_round_session`], [`StorageConnection::prepare_round`],
+//! [`StorageConnection::mark_round_sent`],
+//! [`StorageConnection::mark_round_observing`],
+//! [`StorageConnection::mark_worker_started`] and
+//! [`StorageConnection::finish_round`]. Every method runs in one
+//! `BEGIN IMMEDIATE` transaction, validates the round status change against the
+//! local table-driven [`ROUND_TRANSITIONS`] contract and validates every task
+//! status change through [`TaskStatus::require_transition`] before the UPDATE.
+//! Paired round/task writes and their event share one timestamp, so an observer
+//! never sees a partially applied lifecycle step. Verifier persist-once
+//! (task 3.9b), cooperative close, `reopen_failed_round` and schema changes
+//! remain out of scope.
 
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::{Duration, SystemTime};
 
 use bridge_domain::{
     ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerifierState,
@@ -1636,7 +1652,17 @@ fn classify_round_insert_error(error: rusqlite::Error) -> CreateTaskError {
 /// and a `+00:00` offset, matching Python `Storage.utcnow`
 /// (`datetime.now(timezone.utc).isoformat(timespec="milliseconds")`).
 fn utc_now_rfc3339_millis() -> String {
-    let elapsed = std::time::SystemTime::now()
+    format_rfc3339_millis(SystemTime::now())
+}
+
+/// Formats one clock sample as an RFC3339 string with millisecond precision and
+/// a `+00:00` offset.
+///
+/// Taking the [`SystemTime`] as a parameter lets a caller derive several
+/// timestamps (for example a worker start and its deadline) from a single clock
+/// sample.
+fn format_rfc3339_millis(time: SystemTime) -> String {
+    let elapsed = time
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let seconds = elapsed.as_secs();
@@ -2542,11 +2568,13 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, CreateTaskError, CreateTaskInput,
-        CreateTaskOutcome, ForeignKey, Index, InitializeError, InspectError, QueryError,
-        ReplayStateError, RoundRow, RoundRowError, SCHEMA_VERSION, SchemaMismatch,
-        StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6,
-        connect, initialize, inspect, open_read_only, query_user_version, v6_contract,
+        BUSY_TIMEOUT_MS, Column, ConnectError, Contract, CreateRevisionRoundInput, CreateTaskError,
+        CreateTaskInput, CreateTaskOutcome, FinishRoundInput, ForeignKey, Index, InitializeError,
+        InspectError, QueryError, ROUND_TRANSITIONS, ReplayStateError, RoundRef, RoundRow,
+        RoundRowError, RoundUpdateError, SCHEMA_VERSION, SchemaMismatch, StorageConnection,
+        TASK_COLUMNS, Table, Task, TaskRowError, V6_SCHEMA_DDL, apply_schema_v6, connect,
+        initialize, inspect, open_read_only, query_user_version, round_transition_allowed,
+        v6_contract,
     };
     use bridge_domain::{ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, VerifierState};
     use rusqlite::types::Value as SqlValue;
@@ -6058,4 +6086,1887 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }
+
+    fn round_ref(task_id: TaskId, project: &ProjectId, round_number: u32) -> RoundRef {
+        RoundRef {
+            task_id,
+            project_id: project.clone(),
+            round_number,
+        }
+    }
+
+    fn fetch_round(storage: &StorageConnection, task_id: TaskId, round_number: u32) -> RoundRow {
+        storage
+            .connection()
+            .query_row(
+                &format!(
+                    "SELECT {ROUND_ROW_COLUMNS} FROM rounds WHERE task_id = ?1 AND round_number = ?2"
+                ),
+                rusqlite::params![task_id.to_string(), i64::from(round_number)],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .expect("round query must execute")
+            .expect("round row must map")
+    }
+
+    fn fetch_task(storage: &StorageConnection, task_id: TaskId) -> Task {
+        storage
+            .get_task(task_id)
+            .expect("get_task must succeed")
+            .expect("task must be present")
+    }
+
+    fn event_rows(
+        storage: &StorageConnection,
+        task_id: TaskId,
+    ) -> Vec<(Option<i64>, String, String)> {
+        let mut statement = storage
+            .connection()
+            .prepare(
+                "SELECT round_number, kind, message FROM events WHERE task_id = ?1 ORDER BY id",
+            )
+            .expect("prepare events");
+        let rows = statement
+            .query_map(rusqlite::params![task_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query events");
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row.expect("event row"));
+        }
+        events
+    }
+
+    /// Creates a task and drives its initial round to `awaiting_review` so
+    /// revision-round tests start from the only status that may create one.
+    fn setup_awaiting_review(
+        storage: &mut StorageConnection,
+        task_id: TaskId,
+        project: &ProjectId,
+    ) {
+        storage
+            .create_task(create_task_input(
+                task_id,
+                project,
+                &format!("setup-{task_id}"),
+            ))
+            .expect("setup create task");
+        storage
+            .mark_round_observing(round_ref(task_id, project, 1))
+            .expect("setup observing");
+        storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("setup finish");
+    }
+
+    fn assert_round_update_error_is_safe(error: &RoundUpdateError, secret: &str) {
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert!(!display.contains(secret), "Display leaked input: {display}");
+        assert!(!debug.contains(secret), "Debug leaked input: {debug}");
+    }
+
+    #[test]
+    fn round_transition_table_matches_contract_for_paths_used() {
+        assert_eq!(ROUND_TRANSITIONS.len(), 15);
+        let mut seen = Vec::new();
+        for pair in ROUND_TRANSITIONS {
+            assert!(RoundStatus::ALL.contains(&pair.0) && RoundStatus::ALL.contains(&pair.1));
+            assert!(!seen.contains(&pair), "duplicate transition {pair:?}");
+            seen.push(pair);
+        }
+
+        const ALLOWED: [(RoundStatus, RoundStatus); 15] = [
+            (RoundStatus::Pending, RoundStatus::Sent),
+            (RoundStatus::Pending, RoundStatus::Observing),
+            (RoundStatus::Sent, RoundStatus::Observing),
+            (RoundStatus::Observing, RoundStatus::Complete),
+            (RoundStatus::Observing, RoundStatus::Failed),
+            (RoundStatus::Observing, RoundStatus::NeedsUser),
+            (RoundStatus::Observing, RoundStatus::DeliveryUnknown),
+            (RoundStatus::NeedsUser, RoundStatus::Complete),
+            (RoundStatus::NeedsUser, RoundStatus::Failed),
+            (RoundStatus::NeedsUser, RoundStatus::NeedsUser),
+            (RoundStatus::NeedsUser, RoundStatus::DeliveryUnknown),
+            (RoundStatus::DeliveryUnknown, RoundStatus::Complete),
+            (RoundStatus::DeliveryUnknown, RoundStatus::Failed),
+            (RoundStatus::DeliveryUnknown, RoundStatus::NeedsUser),
+            (RoundStatus::DeliveryUnknown, RoundStatus::DeliveryUnknown),
+        ];
+        for from in RoundStatus::ALL {
+            for to in RoundStatus::ALL {
+                assert_eq!(
+                    round_transition_allowed(from, to),
+                    ALLOWED.contains(&(from, to)),
+                    "unexpected decision for {from} -> {to}"
+                );
+            }
+        }
+        assert!(!round_transition_allowed(
+            RoundStatus::Failed,
+            RoundStatus::Observing
+        ));
+        assert!(!round_transition_allowed(
+            RoundStatus::Complete,
+            RoundStatus::Complete
+        ));
+        assert!(!round_transition_allowed(
+            RoundStatus::Pending,
+            RoundStatus::Complete
+        ));
+        assert!(!round_transition_allowed(
+            RoundStatus::Sent,
+            RoundStatus::Complete
+        ));
+    }
+
+    #[test]
+    fn round_lifecycle_full_delivery_flow_is_atomic() {
+        let (_dir, mut storage) = open_query_storage("round-flow");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-flow"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+
+        let started = storage
+            .mark_worker_started(round.clone(), 30.0)
+            .expect("worker started");
+        assert_eq!(started.round.status, RoundStatus::Pending);
+        assert!(started.round.worker_started_at.is_some());
+        assert!(started.round.worker_deadline_at.is_some());
+        assert!(started.round.worker_deadline_at > started.round.worker_started_at);
+        assert_eq!(
+            started.round.updated_at,
+            started.round.worker_started_at.clone().expect("start")
+        );
+
+        let prepared = storage
+            .prepare_round(round.clone(), "msg-1".to_owned())
+            .expect("prepare");
+        assert_eq!(prepared.round.status, RoundStatus::Pending);
+        assert_eq!(prepared.round.outbound_message_id.as_deref(), Some("msg-1"));
+        assert!(!prepared.round.attempted);
+
+        let sent = storage.mark_round_sent(round.clone()).expect("sent");
+        assert_eq!(sent.round.status, RoundStatus::Sent);
+        assert!(sent.round.attempted);
+
+        let observing = storage
+            .mark_round_observing(round.clone())
+            .expect("observing");
+        assert_eq!(observing.round.status, RoundStatus::Observing);
+        assert!(observing.round.attempted, "attempted must be preserved");
+
+        let finished = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: Some("msg-2".to_owned()),
+                response: Some("done".to_owned()),
+                error_code: None,
+                result_json: Some(serde_json::json!({"changed_paths": []})),
+            })
+            .expect("finish");
+        assert_eq!(finished.round.status, RoundStatus::Complete);
+        assert_eq!(finished.round.response_message_id.as_deref(), Some("msg-2"));
+        assert_eq!(finished.round.response.as_deref(), Some("done"));
+        assert_eq!(
+            finished.round.result_json,
+            Some(serde_json::json!({"changed_paths": []}))
+        );
+        assert_eq!(finished.task.status, TaskStatus::AwaitingReview);
+        assert_eq!(finished.round.updated_at, finished.task.updated_at);
+
+        let events = event_rows(&storage, task_id);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].1, "created");
+        assert_eq!(events[1].1, "complete");
+        assert_eq!(events[1].0, Some(1));
+    }
+
+    #[test]
+    fn round_pending_to_observing_without_send_preserves_attempted() {
+        let (_dir, mut storage) = open_query_storage("round-observing");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-obs"))
+            .expect("create");
+        let observing = storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("pending to observing");
+        assert_eq!(observing.round.status, RoundStatus::Observing);
+        assert!(!observing.round.attempted);
+        assert_eq!(observing.round.outbound_message_id, None);
+    }
+
+    #[test]
+    fn create_revision_round_sets_exact_fields_and_clears_session() {
+        let (_dir, mut storage) = open_query_storage("round-revision");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project);
+        storage
+            .bind_round_session(round_ref(task_id, &project, 1), "ses-1".to_owned())
+            .expect("bind");
+
+        let outcome = storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-1".to_owned(),
+                payload_hash: "hash-rev-1".to_owned(),
+                findings: Some("fix it".to_owned()),
+            })
+            .expect("revision");
+
+        assert_eq!(outcome.round.round_number, 2);
+        assert_eq!(outcome.round.kind, RoundKind::Revise);
+        assert_eq!(outcome.round.status, RoundStatus::Pending);
+        assert!(!outcome.round.attempted);
+        assert_eq!(outcome.round.request_id, "rev-1");
+        assert_eq!(outcome.round.payload_hash, "hash-rev-1");
+        assert_eq!(outcome.round.findings.as_deref(), Some("fix it"));
+        assert_eq!(outcome.round.session_id, None);
+        assert_eq!(outcome.round.outbound_message_id, None);
+        assert_eq!(outcome.round.created_at, outcome.round.updated_at);
+
+        assert_eq!(outcome.task.status, TaskStatus::Revising);
+        assert_eq!(outcome.task.session_id, None);
+        assert_eq!(outcome.task.revision_count, 1);
+        assert_eq!(outcome.task.updated_at, outcome.round.updated_at);
+
+        let round_one = fetch_round(&storage, task_id, 1);
+        assert_eq!(round_one.session_id.as_deref(), Some("ses-1"));
+
+        let events = event_rows(&storage, task_id);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2].0, Some(2));
+        assert_eq!(events[2].1, "created");
+        assert_eq!(events[2].2, "round created (revise)");
+    }
+
+    #[test]
+    fn create_revision_round_request_conflict_rolls_back() {
+        let (_dir, mut storage) = open_query_storage("round-request-conflict");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project);
+        storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-1".to_owned(),
+                payload_hash: "h1".to_owned(),
+                findings: None,
+            })
+            .expect("first revision");
+
+        let rounds_before = count_rows(&storage, "rounds");
+        let events_before = count_rows(&storage, "events");
+        let error = storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 3,
+                request_id: "rev-1".to_owned(),
+                payload_hash: "h2".to_owned(),
+                findings: None,
+            })
+            .expect_err("duplicate request must conflict");
+        assert!(
+            matches!(error, RoundUpdateError::RequestConflict),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "rounds"), rounds_before);
+        assert_eq!(count_rows(&storage, "events"), events_before);
+    }
+
+    #[test]
+    fn create_revision_round_rejects_gap_and_duplicate_numbers() {
+        let (_dir, mut storage) = open_query_storage("round-sequential");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project);
+
+        for bad in [3_u32, 1_u32] {
+            let error = storage
+                .create_revision_round(CreateRevisionRoundInput {
+                    task_id,
+                    project_id: project.clone(),
+                    round_number: bad,
+                    request_id: format!("rev-{bad}"),
+                    payload_hash: "h".to_owned(),
+                    findings: None,
+                })
+                .expect_err("non-sequential round must fail");
+            assert!(
+                matches!(error, RoundUpdateError::NonSequentialRound),
+                "{error:?}"
+            );
+        }
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+
+        storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-2".to_owned(),
+                payload_hash: "h2".to_owned(),
+                findings: None,
+            })
+            .expect("sequential revision");
+
+        let error = storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-2b".to_owned(),
+                payload_hash: "h2b".to_owned(),
+                findings: None,
+            })
+            .expect_err("duplicate round must fail");
+        assert!(
+            matches!(error, RoundUpdateError::NonSequentialRound),
+            "{error:?}"
+        );
+        assert_eq!(count_rows(&storage, "rounds"), 2);
+    }
+
+    #[test]
+    fn bind_round_session_updates_both_rows_atomically() {
+        let (_dir, mut storage) = open_query_storage("round-bind");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-bind"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+
+        let first = storage
+            .bind_round_session(round.clone(), "ses-a".to_owned())
+            .expect("bind a");
+        assert_eq!(first.round.session_id.as_deref(), Some("ses-a"));
+        assert_eq!(first.task.session_id.as_deref(), Some("ses-a"));
+        assert_eq!(first.round.updated_at, first.task.updated_at);
+
+        let second = storage
+            .bind_round_session(round.clone(), "ses-b".to_owned())
+            .expect("bind b");
+        assert_eq!(second.round.session_id.as_deref(), Some("ses-b"));
+        assert_eq!(second.task.session_id.as_deref(), Some("ses-b"));
+
+        let before = dump_rows(&storage, "tasks");
+        let error = storage
+            .bind_round_session(round, String::new())
+            .expect_err("empty session must fail");
+        assert!(matches!(error, RoundUpdateError::InvalidInput), "{error:?}");
+        assert_eq!(dump_rows(&storage, "tasks"), before);
+    }
+
+    #[test]
+    fn round_lifecycle_rejects_missing_stale_and_mismatched_refs() {
+        let (_dir, mut storage) = open_query_storage("round-refs");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let project_b = query_project(QUERY_PROJECT_B);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project_a);
+
+        let error = storage
+            .prepare_round(
+                RoundRef {
+                    task_id: query_task_id(9),
+                    project_id: project_a.clone(),
+                    round_number: 1,
+                },
+                "msg".to_owned(),
+            )
+            .expect_err("missing task");
+        assert!(matches!(error, RoundUpdateError::MissingTask), "{error:?}");
+
+        let error = storage
+            .prepare_round(round_ref(task_id, &project_a, 5), "msg".to_owned())
+            .expect_err("missing round");
+        assert!(matches!(error, RoundUpdateError::MissingRound), "{error:?}");
+
+        let error = storage
+            .prepare_round(round_ref(task_id, &project_b, 1), "msg".to_owned())
+            .expect_err("project mismatch");
+        assert!(
+            matches!(error, RoundUpdateError::ProjectMismatch),
+            "{error:?}"
+        );
+
+        storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project_a.clone(),
+                round_number: 2,
+                request_id: "rev-1".to_owned(),
+                payload_hash: "h".to_owned(),
+                findings: None,
+            })
+            .expect("revision");
+
+        let error = storage
+            .bind_round_session(round_ref(task_id, &project_a, 1), "ses".to_owned())
+            .expect_err("stale round");
+        assert!(
+            matches!(error, RoundUpdateError::NotCurrentRound),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn prepare_round_fails_closed_on_repeat_and_stale() {
+        let (_dir, mut storage) = open_query_storage("round-prepare");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-prep"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+
+        storage
+            .prepare_round(round.clone(), "msg-1".to_owned())
+            .expect("first prepare");
+        let before = dump_rows(&storage, "rounds");
+        let error = storage
+            .prepare_round(round.clone(), "msg-2".to_owned())
+            .expect_err("repeat prepare must fail");
+        assert!(
+            matches!(error, RoundUpdateError::AlreadyPrepared),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+
+        storage.mark_round_sent(round.clone()).expect("sent");
+        let error = storage
+            .prepare_round(round, "msg-3".to_owned())
+            .expect_err("stale prepare must fail");
+        assert!(
+            matches!(error, RoundUpdateError::RoundNotPending),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn mark_round_sent_requires_prepared_pending_round() {
+        let (_dir, mut storage) = open_query_storage("round-sent");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-sent"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+
+        let before = dump_rows(&storage, "rounds");
+        let error = storage
+            .mark_round_sent(round.clone())
+            .expect_err("unprepared round must fail");
+        assert!(
+            matches!(error, RoundUpdateError::RoundNotPrepared),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+
+        storage
+            .prepare_round(round.clone(), "msg-1".to_owned())
+            .expect("prepare");
+        let sent = storage.mark_round_sent(round.clone()).expect("sent");
+        assert_eq!(sent.round.status, RoundStatus::Sent);
+        assert!(sent.round.attempted);
+
+        let error = storage
+            .mark_round_sent(round)
+            .expect_err("second send must fail");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidRoundTransition),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn mark_round_observing_only_from_pending_or_sent() {
+        let (_dir, mut storage) = open_query_storage("round-observe-only");
+        let project_a = query_project(QUERY_PROJECT_A);
+        let task_a = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_a, &project_a, "req-obs-a"))
+            .expect("create a");
+        let round_a = round_ref(task_a, &project_a, 1);
+        storage
+            .mark_round_observing(round_a.clone())
+            .expect("pending to observing");
+        let error = storage
+            .mark_round_observing(round_a)
+            .expect_err("observing again must fail");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidRoundTransition),
+            "{error:?}"
+        );
+
+        let project_b = query_project(QUERY_PROJECT_B);
+        let task_b = query_task_id(2);
+        storage
+            .create_task(create_task_input(task_b, &project_b, "req-obs-b"))
+            .expect("create b");
+        let round_b = round_ref(task_b, &project_b, 1);
+        storage
+            .prepare_round(round_b.clone(), "msg".to_owned())
+            .expect("prepare b");
+        storage.mark_round_sent(round_b.clone()).expect("sent b");
+        let observing = storage
+            .mark_round_observing(round_b)
+            .expect("sent to observing");
+        assert_eq!(observing.round.status, RoundStatus::Observing);
+        assert!(observing.round.attempted);
+    }
+
+    #[test]
+    fn mark_worker_started_persists_single_clock_window() {
+        let (_dir, mut storage) = open_query_storage("round-worker");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-worker"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+
+        let outcome = storage
+            .mark_worker_started(round.clone(), 30.0)
+            .expect("started");
+        let start = outcome.round.worker_started_at.clone().expect("start");
+        let deadline = outcome.round.worker_deadline_at.clone().expect("deadline");
+        assert!(is_rfc3339_millis_utc(&start));
+        assert!(is_rfc3339_millis_utc(&deadline));
+        assert!(
+            deadline > start,
+            "deadline {deadline} must be after start {start}"
+        );
+        assert_eq!(outcome.round.updated_at, start);
+
+        for bad in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
+            let before = dump_rows(&storage, "rounds");
+            let error = storage
+                .mark_worker_started(round.clone(), bad)
+                .expect_err("invalid deadline must fail");
+            assert!(
+                matches!(error, RoundUpdateError::InvalidDeadline),
+                "{error:?}"
+            );
+            assert_eq!(dump_rows(&storage, "rounds"), before);
+        }
+
+        storage
+            .mark_round_observing(round.clone())
+            .expect("observing");
+        storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("finish");
+        let error = storage
+            .mark_worker_started(round, 30.0)
+            .expect_err("closed round must fail");
+        assert!(matches!(error, RoundUpdateError::RoundNotOpen), "{error:?}");
+    }
+
+    #[test]
+    fn finish_round_validates_round_and_task_transitions() {
+        let (_dir, mut storage) = open_query_storage("round-finish-transitions");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-fin"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        storage
+            .mark_round_observing(round.clone())
+            .expect("observing");
+
+        let rounds_before = dump_rows(&storage, "rounds");
+        let tasks_before = dump_rows(&storage, "tasks");
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Sent,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect_err("forbidden round transition");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidRoundTransition),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), rounds_before);
+        assert_eq!(dump_rows(&storage, "tasks"), tasks_before);
+
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::Accepted,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect_err("forbidden task transition");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidTaskTransition),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), rounds_before);
+        assert_eq!(dump_rows(&storage, "tasks"), tasks_before);
+
+        let finished = storage
+            .finish_round(FinishRoundInput {
+                round,
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("valid finish");
+        assert_eq!(finished.round.status, RoundStatus::Complete);
+        assert_eq!(finished.task.status, TaskStatus::AwaitingReview);
+    }
+
+    #[test]
+    fn finish_round_result_json_shape_and_column_preservation() {
+        let (_dir, mut storage) = open_query_storage("round-finish-json");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-json"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        storage
+            .mark_round_observing(round.clone())
+            .expect("observing");
+
+        let before = dump_rows(&storage, "rounds");
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: Some(serde_json::json!([1, 2, 3])),
+            })
+            .expect_err("array result must fail");
+        assert!(matches!(error, RoundUpdateError::InvalidJson), "{error:?}");
+        assert_eq!(dump_rows(&storage, "rounds"), before);
+
+        let finished = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: Some("msg-2".to_owned()),
+                response: Some("answer".to_owned()),
+                error_code: Some("code".to_owned()),
+                result_json: Some(serde_json::json!({"changed_paths": ["a"]})),
+            })
+            .expect("valid finish");
+        assert_eq!(
+            finished.round.result_json,
+            Some(serde_json::json!({"changed_paths": ["a"]}))
+        );
+        assert_eq!(finished.round.error_code.as_deref(), Some("code"));
+        assert_eq!(finished.round.response.as_deref(), Some("answer"));
+
+        let project_b = query_project(QUERY_PROJECT_B);
+        let task_b = query_task_id(2);
+        storage
+            .create_task(create_task_input(task_b, &project_b, "req-json-b"))
+            .expect("create b");
+        storage
+            .connection()
+            .execute(
+                "UPDATE rounds SET status = 'observing', error_code = 'pre', \
+                 result_json = '{\"x\":1}' WHERE task_id = ?1 AND round_number = 1",
+                rusqlite::params![task_b.to_string()],
+            )
+            .expect("seed observing round");
+        let finished_b = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_b, &project_b, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: Some(Value::Null),
+            })
+            .expect("finish b");
+        assert_eq!(
+            finished_b.round.result_json, None,
+            "supplied null must clear"
+        );
+        assert_eq!(
+            finished_b.round.error_code.as_deref(),
+            Some("pre"),
+            "omitted error_code must be preserved"
+        );
+    }
+
+    #[test]
+    fn finish_round_allows_blocking_status_self_transitions() {
+        let (_dir, mut storage) = open_query_storage("round-self");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-self"))
+            .expect("create");
+        let round = round_ref(task_id, &project, 1);
+        storage
+            .mark_round_observing(round.clone())
+            .expect("observing");
+
+        let first = storage
+            .finish_round(FinishRoundInput {
+                round: round.clone(),
+                round_status: RoundStatus::NeedsUser,
+                task_status: TaskStatus::NeedsUser,
+                response_message_id: None,
+                response: None,
+                error_code: Some("blocked".to_owned()),
+                result_json: None,
+            })
+            .expect("needs_user");
+        assert_eq!(first.round.status, RoundStatus::NeedsUser);
+        assert_eq!(first.task.status, TaskStatus::NeedsUser);
+
+        let second = storage
+            .finish_round(FinishRoundInput {
+                round,
+                round_status: RoundStatus::NeedsUser,
+                task_status: TaskStatus::NeedsUser,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("needs_user self transition");
+        assert_eq!(second.round.status, RoundStatus::NeedsUser);
+        assert_eq!(second.task.status, TaskStatus::NeedsUser);
+    }
+
+    #[test]
+    fn finish_round_is_all_or_nothing_on_event_failure() {
+        let dir = TempDir::new("round-finish-rollback");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let mut storage = connect(&path).expect("connect");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-rb"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Observing
+        );
+        assert_eq!(
+            fetch_task(&storage, task_id).status,
+            TaskStatus::Implementing
+        );
+    }
+
+    #[test]
+    fn create_revision_round_is_all_or_nothing_on_event_failure() {
+        let dir = TempDir::new("round-revision-rollback");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let mut storage = connect(&path).expect("connect");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project);
+        let tasks_before = dump_rows(&storage, "tasks");
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-rb".to_owned(),
+                payload_hash: "h".to_owned(),
+                findings: None,
+            })
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(dump_rows(&storage, "tasks"), tasks_before);
+    }
+
+    #[test]
+    fn round_update_errors_do_not_leak_input() {
+        const SECRET: &str = "round-secret-token";
+        let (_dir, mut storage) = open_query_storage("round-error-safety");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-safe"))
+            .expect("create");
+
+        let secret_project = query_project(SECRET);
+        let error = storage
+            .prepare_round(round_ref(task_id, &secret_project, 1), SECRET.to_owned())
+            .expect_err("project mismatch");
+        assert!(
+            matches!(error, RoundUpdateError::ProjectMismatch),
+            "{error:?}"
+        );
+        assert_round_update_error_is_safe(&error, SECRET);
+
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: Some(SECRET.to_owned()),
+                response: Some(SECRET.to_owned()),
+                error_code: Some(SECRET.to_owned()),
+                result_json: Some(serde_json::json!([SECRET])),
+            })
+            .expect_err("invalid json");
+        assert!(matches!(error, RoundUpdateError::InvalidJson), "{error:?}");
+        assert_round_update_error_is_safe(&error, SECRET);
+    }
+
+    #[test]
+    fn concurrent_revision_round_creation_yields_one_winner() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("round-concurrent-revision");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            setup_awaiting_review(&mut storage, task_id, &project);
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for n in 1..=2_u32 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.create_revision_round(CreateRevisionRoundInput {
+                    task_id,
+                    project_id: project,
+                    round_number: 2,
+                    request_id: format!("rev-{n}"),
+                    payload_hash: format!("hash-{n}"),
+                    findings: None,
+                })
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let winners = results.iter().filter(|result| result.is_ok()).count();
+        assert_eq!(winners, 1, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(count_rows(&storage, "rounds"), 2);
+        let task = fetch_task(&storage, task_id);
+        assert_eq!(task.status, TaskStatus::Revising);
+        assert_eq!(task.revision_count, 1);
+        assert_eq!(count_rows(&storage, "events"), 3);
+    }
+
+    #[test]
+    fn concurrent_finish_round_yields_one_winner() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("round-concurrent-finish");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-cf"))
+                .expect("create");
+            storage
+                .mark_round_observing(round_ref(task_id, &project, 1))
+                .expect("observing");
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            let project = project.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.finish_round(FinishRoundInput {
+                    round: RoundRef {
+                        task_id,
+                        project_id: project,
+                        round_number: 1,
+                    },
+                    round_status: RoundStatus::Complete,
+                    task_status: TaskStatus::AwaitingReview,
+                    response_message_id: None,
+                    response: None,
+                    error_code: None,
+                    result_json: None,
+                })
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let winners = results.iter().filter(|result| result.is_ok()).count();
+        let losers = results
+            .iter()
+            .filter(|result| matches!(result, Err(RoundUpdateError::InvalidRoundTransition)))
+            .count();
+        assert_eq!(winners, 1, "{results:?}");
+        assert_eq!(losers, 1, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Complete
+        );
+        assert_eq!(
+            fetch_task(&storage, task_id).status,
+            TaskStatus::AwaitingReview
+        );
+        assert_eq!(count_rows(&storage, "events"), 2);
+    }
+
+    #[test]
+    fn round_lifecycle_does_not_touch_committed_fixtures() {
+        let fixtures = fixture_dir();
+        let before: Vec<Vec<u8>> = FIXTURES
+            .iter()
+            .map(|name| std::fs::read(fixtures.join(name)).expect("read fixture"))
+            .collect();
+
+        let (_dir, mut storage) = open_query_storage("round-fixture-safety");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-fx"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+        storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("finish");
+
+        let after: Vec<Vec<u8>> = FIXTURES
+            .iter()
+            .map(|name| std::fs::read(fixtures.join(name)).expect("read fixture"))
+            .collect();
+        assert_eq!(before, after);
+        for name in FIXTURES {
+            assert!(!sidecar(&fixtures.join(name), "-wal").exists());
+            assert!(!sidecar(&fixtures.join(name), "-shm").exists());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic round/task lifecycle transitions (task 3.9a).
+//
+// The public API and its supporting types live together here; every method
+// shares the local table-driven [`ROUND_TRANSITIONS`] validation and the
+// [`TaskStatus::require_transition`] check for task status changes.
+// ---------------------------------------------------------------------------
+
+impl StorageConnection {
+    /// Atomically creates the next sequential revision round of an existing
+    /// task and moves the task to `revising`.
+    ///
+    /// The whole operation runs inside one `BEGIN IMMEDIATE` transaction. The
+    /// task must exist and belong to `input.project_id`; the round number must
+    /// be exactly one greater than the current maximum round number (so no
+    /// duplicate or gap can be created); the request id must not already be
+    /// used in the project; and the task status transition to
+    /// [`TaskStatus::Revising`] must be allowed by
+    /// [`TaskStatus::require_transition`]. The new round is always a
+    /// [`RoundKind::Revise`] `pending` round with `attempted = 0`.
+    ///
+    /// On success the transaction writes the round, the `round created (revise)`
+    /// event and the task update (`session_id = NULL`, `status = revising`,
+    /// `revision_count + 1`) with one shared timestamp, and returns the persisted
+    /// [`RoundRow`] and [`Task`] read back through the production mapping. A
+    /// request that already exists is never replayed: it is a
+    /// [`RoundUpdateError::RequestConflict`]. Every failure rolls the whole
+    /// transaction back.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, request id, payload hash, findings, session or message ids,
+    /// SQL, JSON or paths.
+    pub fn create_revision_round(
+        &mut self,
+        input: CreateRevisionRoundInput,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        if input.request_id.is_empty() || input.payload_hash.is_empty() || input.round_number == 0 {
+            return Err(RoundUpdateError::InvalidInput);
+        }
+
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let task = load_task_for_update(&transaction, input.task_id)?;
+        if task.project_id != input.project_id {
+            return Err(RoundUpdateError::ProjectMismatch);
+        }
+
+        let existing: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM rounds WHERE project_id = ?1 AND request_id = ?2",
+                params![input.project_id.as_str(), input.request_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(RoundUpdateError::Database)?;
+        if existing.is_some() {
+            return Err(RoundUpdateError::RequestConflict);
+        }
+
+        let expected = current_round_number(&transaction, input.task_id)?
+            .checked_add(1)
+            .ok_or(RoundUpdateError::InvalidPersistedState)?;
+        if input.round_number != expected {
+            return Err(RoundUpdateError::NonSequentialRound);
+        }
+
+        task.status
+            .require_transition(TaskStatus::Revising)
+            .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;
+
+        let revision_count = task
+            .revision_count
+            .checked_add(1)
+            .ok_or(RoundUpdateError::InvalidPersistedState)?;
+
+        transaction
+            .execute(
+                &format!(
+                    "INSERT INTO rounds ({ROUND_COLUMNS}) VALUES \
+                     (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+                ),
+                params![
+                    input.task_id.to_string(),
+                    input.project_id.as_str(),
+                    i64::from(input.round_number),
+                    input.request_id,
+                    input.payload_hash,
+                    RoundKind::Revise.as_str(),
+                    RoundStatus::Pending.as_str(),
+                    Null,
+                    0_i64,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    input.findings,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    Null,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(classify_revision_round_insert_error)?;
+
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    input.task_id.to_string(),
+                    i64::from(input.round_number),
+                    "created",
+                    format!("round created ({})", RoundKind::Revise.as_str()),
+                    now,
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        transaction
+            .execute(
+                "UPDATE tasks SET session_id = NULL, status = ?1, revision_count = ?2, \
+                 updated_at = ?3 WHERE task_id = ?4",
+                params![
+                    TaskStatus::Revising.as_str(),
+                    revision_count,
+                    now,
+                    input.task_id.to_string(),
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, input.task_id, input.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Atomically binds `session_id` to a round and makes it the task's current
+    /// session.
+    ///
+    /// The round must exist, belong to `round.project_id`, and be the current
+    /// (highest-numbered) round of the task. The `rounds.session_id` and
+    /// `tasks.session_id` columns are updated with one shared timestamp, so the
+    /// task pointer can never disagree with the round that owns the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, session or message ids, SQL, JSON or paths.
+    pub fn bind_round_session(
+        &mut self,
+        round: RoundRef,
+        session_id: String,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        if session_id.is_empty() {
+            return Err(RoundUpdateError::InvalidInput);
+        }
+
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        validate_current_round(&transaction, &round)?;
+
+        transaction
+            .execute(
+                "UPDATE rounds SET session_id = ?1, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    &session_id,
+                    now,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+        transaction
+            .execute(
+                "UPDATE tasks SET session_id = ?1, updated_at = ?2 WHERE task_id = ?3",
+                params![&session_id, now, round.task_id.to_string()],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Persists the allocated outbound message id of a pending, unattempted
+    /// round without claiming a delivery attempt.
+    ///
+    /// The round must be the current round and `pending` with `attempted = 0`.
+    /// A round that is not pending, is already prepared, or already attempted
+    /// fails closed instead of overwriting the persisted id, so a stale or
+    /// repeated prepare can never repoint a delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, message ids, SQL, JSON or paths.
+    pub fn prepare_round(
+        &mut self,
+        round: RoundRef,
+        outbound_message_id: String,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        if outbound_message_id.is_empty() {
+            return Err(RoundUpdateError::InvalidInput);
+        }
+
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (_task, row) = validate_current_round(&transaction, &round)?;
+        if row.status != RoundStatus::Pending || row.attempted {
+            return Err(RoundUpdateError::RoundNotPending);
+        }
+        if row.outbound_message_id.is_some() {
+            return Err(RoundUpdateError::AlreadyPrepared);
+        }
+
+        transaction
+            .execute(
+                "UPDATE rounds SET outbound_message_id = ?1, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    outbound_message_id,
+                    now,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Records that the prompt delivery attempt of a prepared round has started.
+    ///
+    /// Only a `pending` round with a persisted outbound message id and
+    /// `attempted = 0` may move to `sent`; the transition is checked against
+    /// [`ROUND_TRANSITIONS`]. `attempted` becomes `1` so a `sent` round is never
+    /// resent even if a later status change moves it to a blocking status.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, message ids, SQL, JSON or paths.
+    pub fn mark_round_sent(
+        &mut self,
+        round: RoundRef,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (_task, row) = validate_current_round(&transaction, &round)?;
+        require_round_transition(row.status, RoundStatus::Sent)?;
+        if row.outbound_message_id.is_none() {
+            return Err(RoundUpdateError::RoundNotPrepared);
+        }
+        if row.attempted {
+            return Err(RoundUpdateError::InvalidRoundTransition);
+        }
+
+        transaction
+            .execute(
+                "UPDATE rounds SET status = ?1, attempted = 1, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    RoundStatus::Sent.as_str(),
+                    now,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Moves a `pending` or `sent` round to `observing`, preserving `attempted`.
+    ///
+    /// The transition is checked against [`ROUND_TRANSITIONS`]: only
+    /// `pending -> observing` and `sent -> observing` are allowed. The
+    /// `attempted` flag is never modified here, so a prepared-but-unsent round
+    /// and a sent round stay distinguishable after the move.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, message ids, SQL, JSON or paths.
+    pub fn mark_round_observing(
+        &mut self,
+        round: RoundRef,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (_task, row) = validate_current_round(&transaction, &round)?;
+        require_round_transition(row.status, RoundStatus::Observing)?;
+
+        transaction
+            .execute(
+                "UPDATE rounds SET status = ?1, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    RoundStatus::Observing.as_str(),
+                    now,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Atomically persists the observation window of an existing open round.
+    ///
+    /// `deadline_seconds` must be finite and positive. One clock sample is taken
+    /// and used for `worker_started_at`, `worker_deadline_at` and `updated_at`,
+    /// so the deadline is strictly later than the start at millisecond
+    /// precision. The round must be the current round and open.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, timestamps, SQL, JSON or paths.
+    pub fn mark_worker_started(
+        &mut self,
+        round: RoundRef,
+        deadline_seconds: f64,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        if !deadline_seconds.is_finite() || deadline_seconds <= 0.0 {
+            return Err(RoundUpdateError::InvalidDeadline);
+        }
+        let started = SystemTime::now();
+        let deadline = started
+            .checked_add(Duration::from_secs_f64(deadline_seconds))
+            .ok_or(RoundUpdateError::InvalidDeadline)?;
+        let started_at = format_rfc3339_millis(started);
+        let deadline_at = format_rfc3339_millis(deadline);
+        if deadline_at <= started_at {
+            return Err(RoundUpdateError::InvalidDeadline);
+        }
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (_task, row) = validate_current_round(&transaction, &round)?;
+        if !row.status.is_open() {
+            return Err(RoundUpdateError::RoundNotOpen);
+        }
+
+        transaction
+            .execute(
+                "UPDATE rounds SET worker_started_at = ?1, worker_deadline_at = ?2, \
+                 updated_at = ?1 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    started_at,
+                    deadline_at,
+                    round.task_id.to_string(),
+                    i64::from(round.round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, round.task_id, round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+
+    /// Finishes a round and its task atomically, recording exactly one event.
+    ///
+    /// Inside one `BEGIN IMMEDIATE` transaction the current task and round are
+    /// read, the round status change is validated against [`ROUND_TRANSITIONS`]
+    /// and the task status change is validated through
+    /// [`TaskStatus::require_transition`] (a no-op change of an already equal
+    /// status is allowed). The allowed `response_message_id`, `response`,
+    /// `error_code` and `result_json` columns are updated only when supplied;
+    /// `result_json` must be a JSON object or `null`. The round status, task
+    /// status and one event share a single timestamp, so round completion and
+    /// the task update can never be observed separately. Cooperative close is
+    /// deliberately not implemented here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, response, findings, session or message ids, SQL, JSON or
+    /// paths.
+    pub fn finish_round(
+        &mut self,
+        input: FinishRoundInput,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        let result_column = match &input.result_json {
+            None => None,
+            Some(value) if value.is_null() => Some(SqlValue::Null),
+            Some(value) if value.is_object() => Some(SqlValue::Text(
+                serde_json::to_string(value).map_err(|_| RoundUpdateError::InvalidJson)?,
+            )),
+            Some(_) => return Err(RoundUpdateError::InvalidJson),
+        };
+
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let (task, row) = validate_current_round(&transaction, &input.round)?;
+        require_round_transition(row.status, input.round_status)?;
+        if input.task_status != task.status {
+            task.status
+                .require_transition(input.task_status)
+                .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;
+        }
+
+        let mut sets: Vec<&str> = vec!["status = ?", "updated_at = ?"];
+        let mut values: Vec<SqlValue> = vec![
+            SqlValue::Text(input.round_status.as_str().to_owned()),
+            SqlValue::Text(now.clone()),
+        ];
+        if let Some(value) = &input.response_message_id {
+            sets.push("response_message_id = ?");
+            values.push(SqlValue::Text(value.clone()));
+        }
+        if let Some(value) = &input.response {
+            sets.push("response = ?");
+            values.push(SqlValue::Text(value.clone()));
+        }
+        if let Some(value) = &input.error_code {
+            sets.push("error_code = ?");
+            values.push(SqlValue::Text(value.clone()));
+        }
+        if let Some(value) = result_column {
+            sets.push("result_json = ?");
+            values.push(value);
+        }
+        values.push(SqlValue::Text(input.round.task_id.to_string()));
+        values.push(SqlValue::Integer(i64::from(input.round.round_number)));
+
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE rounds SET {} WHERE task_id = ? AND round_number = ?",
+                    sets.join(", ")
+                ),
+                params_from_iter(values),
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        transaction
+            .execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
+                params![
+                    input.task_status.as_str(),
+                    now,
+                    input.round.task_id.to_string()
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    input.round.task_id.to_string(),
+                    i64::from(input.round.round_number),
+                    input.round_status.as_str(),
+                    format!("round finished: {}", input.round_status.as_str()),
+                    now,
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome =
+            read_round_update_outcome(&transaction, input.round.task_id, input.round.round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(outcome)
+    }
+}
+
+/// A typed reference to one existing round.
+///
+/// The project id is part of the reference so every lifecycle method can reject
+/// a task/round that belongs to another project without a second caller lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundRef {
+    /// Owning task.
+    pub task_id: TaskId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// One-based round number within the task.
+    pub round_number: u32,
+}
+
+/// Input for [`StorageConnection::create_revision_round`].
+///
+/// The round kind is intentionally not a field: revision rounds are always
+/// [`RoundKind::Revise`]. `round_number` must be exactly the next sequential
+/// number for the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRevisionRoundInput {
+    /// Task that owns the new round.
+    pub task_id: TaskId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Proposed one-based round number; must be `current_max + 1`.
+    pub round_number: u32,
+    /// Idempotency key for the new round.
+    pub request_id: String,
+    /// Hash of the revision request payload.
+    pub payload_hash: String,
+    /// Revision findings text, preserved verbatim when present.
+    pub findings: Option<String>,
+}
+
+/// Input for [`StorageConnection::finish_round`].
+///
+/// `result_json` must be `None`, a JSON object or JSON `null`; any other shape
+/// is rejected before the transaction starts. Supplied optional columns are
+/// written, omitted ones are left untouched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinishRoundInput {
+    /// Round to finish.
+    pub round: RoundRef,
+    /// Target round status; must be reachable through [`ROUND_TRANSITIONS`].
+    pub round_status: RoundStatus,
+    /// Target task status; must be reachable through
+    /// [`TaskStatus::require_transition`] unless it equals the current status.
+    pub task_status: TaskStatus,
+    /// Response OpenCode message id, written only when supplied.
+    pub response_message_id: Option<String>,
+    /// Assistant response text, written only when supplied.
+    pub response: Option<String>,
+    /// Machine-readable failure code, written only when supplied.
+    pub error_code: Option<String>,
+    /// Change-collection result, written only when supplied.
+    pub result_json: Option<serde_json::Value>,
+}
+
+/// The persisted result of one atomic round/task lifecycle transition.
+///
+/// Both rows are read back inside the same transaction through the production
+/// [`RoundRow::from_row`]/[`Task::from_row`] mapping, so the value is the exact
+/// committed state and is sufficient for later worker integration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoundUpdateOutcome {
+    /// The persisted round after the transition.
+    pub round: RoundRow,
+    /// The persisted task after the transition.
+    pub task: Task,
+}
+
+/// The single, table-driven source of truth for allowed [`RoundStatus`]
+/// transitions used by this task.
+///
+/// Each entry is an allowed `(from, to)` pair transcribed from
+/// `domain.round_transitions` for the paths implemented in task 3.9a. The
+/// `failed -> observing` recovery path (`reopen_failed_round`) and cooperative
+/// close are deliberately absent.
+pub const ROUND_TRANSITIONS: [(RoundStatus, RoundStatus); 15] = [
+    (RoundStatus::Pending, RoundStatus::Sent),
+    (RoundStatus::Pending, RoundStatus::Observing),
+    (RoundStatus::Sent, RoundStatus::Observing),
+    (RoundStatus::Observing, RoundStatus::Complete),
+    (RoundStatus::Observing, RoundStatus::Failed),
+    (RoundStatus::Observing, RoundStatus::NeedsUser),
+    (RoundStatus::Observing, RoundStatus::DeliveryUnknown),
+    (RoundStatus::NeedsUser, RoundStatus::Complete),
+    (RoundStatus::NeedsUser, RoundStatus::Failed),
+    (RoundStatus::NeedsUser, RoundStatus::NeedsUser),
+    (RoundStatus::NeedsUser, RoundStatus::DeliveryUnknown),
+    (RoundStatus::DeliveryUnknown, RoundStatus::Complete),
+    (RoundStatus::DeliveryUnknown, RoundStatus::Failed),
+    (RoundStatus::DeliveryUnknown, RoundStatus::NeedsUser),
+    (RoundStatus::DeliveryUnknown, RoundStatus::DeliveryUnknown),
+];
+
+/// Whether moving from `from` to `to` is an allowed round transition.
+///
+/// The answer is derived solely from [`ROUND_TRANSITIONS`].
+#[must_use]
+pub fn round_transition_allowed(from: RoundStatus, to: RoundStatus) -> bool {
+    ROUND_TRANSITIONS
+        .iter()
+        .any(|(allowed_from, allowed_to)| *allowed_from == from && *allowed_to == to)
+}
+
+/// A typed, safe error raised while applying an atomic round/task transition.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains ids, project, request id, payload hash, findings,
+/// response, session or message ids, SQL, JSON or paths. The underlying
+/// row-mapping or SQLite error, when present, is reachable only through
+/// [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RoundUpdateError {
+    /// The referenced task does not exist.
+    MissingTask,
+    /// The referenced round does not exist.
+    MissingRound,
+    /// The task or round belongs to a different project.
+    ProjectMismatch,
+    /// The round is not the current (highest-numbered) round of the task.
+    NotCurrentRound,
+    /// The requested round number is not the next sequential number.
+    NonSequentialRound,
+    /// The request id is already used in this project.
+    RequestConflict,
+    /// The round status transition is not allowed by [`ROUND_TRANSITIONS`].
+    InvalidRoundTransition,
+    /// The task status transition is not allowed by
+    /// [`TaskStatus::require_transition`].
+    InvalidTaskTransition,
+    /// The round is not `pending` (or is already attempted).
+    RoundNotPending,
+    /// The round has no prepared outbound message id.
+    RoundNotPrepared,
+    /// The round already has an outbound message id.
+    AlreadyPrepared,
+    /// The round is not open.
+    RoundNotOpen,
+    /// The input is invalid (for example empty required text or a zero round).
+    InvalidInput,
+    /// A supplied `result_json` is neither a JSON object nor JSON `null`.
+    InvalidJson,
+    /// The worker deadline input is not finite, positive or strictly later.
+    InvalidDeadline,
+    /// The persisted state is internally inconsistent.
+    InvalidPersistedState,
+    /// A `tasks` row could not be mapped.
+    TaskRow(TaskRowError),
+    /// A `rounds` row could not be mapped.
+    RoundRow(RoundRowError),
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for RoundUpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingTask => f.write_str("task does not exist"),
+            Self::MissingRound => f.write_str("round does not exist"),
+            Self::ProjectMismatch => f.write_str("task or round belongs to a different project"),
+            Self::NotCurrentRound => f.write_str("round is not the current round"),
+            Self::NonSequentialRound => {
+                f.write_str("round number is not the next sequential round")
+            }
+            Self::RequestConflict => f.write_str("request id is already used in this project"),
+            Self::InvalidRoundTransition => f.write_str("round status transition is not allowed"),
+            Self::InvalidTaskTransition => f.write_str("task status transition is not allowed"),
+            Self::RoundNotPending => f.write_str("round is not pending"),
+            Self::RoundNotPrepared => f.write_str("round has no prepared outbound message"),
+            Self::AlreadyPrepared => f.write_str("round already has an outbound message"),
+            Self::RoundNotOpen => f.write_str("round is not open"),
+            Self::InvalidInput => f.write_str("round update input is invalid"),
+            Self::InvalidJson => f.write_str("round result json is invalid"),
+            Self::InvalidDeadline => f.write_str("worker deadline is invalid"),
+            Self::InvalidPersistedState => f.write_str("persisted round state is invalid"),
+            Self::TaskRow(_) => f.write_str("task row could not be mapped"),
+            Self::RoundRow(_) => f.write_str("round row could not be mapped"),
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for RoundUpdateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TaskRow(error) => Some(error),
+            Self::RoundRow(error) => Some(error),
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Loads one `tasks` row inside a transaction, mapping it through
+/// [`Task::from_row`].
+fn load_task_for_update(
+    connection: &Connection,
+    task_id: TaskId,
+) -> Result<Task, RoundUpdateError> {
+    connection
+        .query_row(
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            params![task_id.to_string()],
+            |row| Ok(Task::from_row(row)),
+        )
+        .optional()
+        .map_err(RoundUpdateError::Database)?
+        .ok_or(RoundUpdateError::MissingTask)?
+        .map_err(RoundUpdateError::TaskRow)
+}
+
+/// Loads one `rounds` row inside a transaction, mapping it through
+/// [`RoundRow::from_row`].
+fn load_round_for_update(
+    connection: &Connection,
+    task_id: TaskId,
+    round_number: u32,
+) -> Result<RoundRow, RoundUpdateError> {
+    connection
+        .query_row(
+            &format!("SELECT {ROUND_COLUMNS} FROM rounds WHERE task_id = ?1 AND round_number = ?2"),
+            params![task_id.to_string(), i64::from(round_number)],
+            |row| Ok(RoundRow::from_row(row)),
+        )
+        .optional()
+        .map_err(RoundUpdateError::Database)?
+        .ok_or(RoundUpdateError::MissingRound)?
+        .map_err(RoundUpdateError::RoundRow)
+}
+
+/// Returns the highest round number of `task_id`, or [`RoundUpdateError::MissingRound`]
+/// when the task has no rounds.
+fn current_round_number(connection: &Connection, task_id: TaskId) -> Result<u32, RoundUpdateError> {
+    let max: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(round_number) FROM rounds WHERE task_id = ?1",
+            params![task_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(RoundUpdateError::Database)?;
+    let max = max.ok_or(RoundUpdateError::MissingRound)?;
+    u32::try_from(max)
+        .ok()
+        .filter(|value| *value >= 1)
+        .ok_or(RoundUpdateError::InvalidPersistedState)
+}
+
+/// Validates that `round` exists, belongs to its declared task and project and
+/// is the current round of the task, returning the mapped task and round.
+fn validate_current_round(
+    connection: &Connection,
+    round: &RoundRef,
+) -> Result<(Task, RoundRow), RoundUpdateError> {
+    let task = load_task_for_update(connection, round.task_id)?;
+    if task.project_id != round.project_id {
+        return Err(RoundUpdateError::ProjectMismatch);
+    }
+    let row = load_round_for_update(connection, round.task_id, round.round_number)?;
+    if row.project_id != round.project_id || row.task_id != round.task_id {
+        return Err(RoundUpdateError::ProjectMismatch);
+    }
+    if current_round_number(connection, round.task_id)? != round.round_number {
+        return Err(RoundUpdateError::NotCurrentRound);
+    }
+    Ok((task, row))
+}
+
+/// Reads the persisted round and task of a completed transition.
+fn read_round_update_outcome(
+    connection: &Connection,
+    task_id: TaskId,
+    round_number: u32,
+) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+    let round = load_round_for_update(connection, task_id, round_number)?;
+    let task = load_task_for_update(connection, task_id)?;
+    Ok(RoundUpdateOutcome { round, task })
+}
+
+/// Requires that `from -> to` is an allowed round transition.
+fn require_round_transition(from: RoundStatus, to: RoundStatus) -> Result<(), RoundUpdateError> {
+    if round_transition_allowed(from, to) {
+        Ok(())
+    } else {
+        Err(RoundUpdateError::InvalidRoundTransition)
+    }
+}
+
+/// Classifies a failed revision `rounds` insert as the project-scoped request
+/// conflict or a non-sequential round, falling back to
+/// [`RoundUpdateError::Database`].
+fn classify_revision_round_insert_error(error: rusqlite::Error) -> RoundUpdateError {
+    if let rusqlite::Error::SqliteFailure(inner, message) = &error {
+        if let Some(message) = message {
+            if message.contains("rounds.request_id") || message.contains("rounds.project_id") {
+                return RoundUpdateError::RequestConflict;
+            }
+            if message.contains("rounds.task_id") {
+                return RoundUpdateError::NonSequentialRound;
+            }
+        }
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY {
+            return RoundUpdateError::NonSequentialRound;
+        }
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
+            return RoundUpdateError::RequestConflict;
+        }
+    }
+    RoundUpdateError::Database(error)
 }

@@ -85,7 +85,32 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   Конкурентные одинаковые запросы дают ровно один `Created` и остальные
   `Replayed`, конкурентные разные hash — один `Created` и `RequestConflict`, без
   частичных строк; одинаковый `request_id` разных projects независим.
-- Следующий этап — **3.9. Atomic round/verifier updates**.
+- Завершён этап **3.9a. Atomic round/task lifecycle updates**:
+  `bridge-storage` предоставляет типизированные lifecycle-API на
+  `StorageConnection` (`create_revision_round`, `bind_round_session`,
+  `prepare_round`, `mark_round_sent`, `mark_round_observing`,
+  `mark_worker_started`, `finish_round`). Каждый вызов выполняется в одной
+  `BEGIN IMMEDIATE` транзакции, проверяет смену round-статуса по локальной
+  таблице `ROUND_TRANSITIONS` (transcribed из `domain.round_transitions` для
+  путей `pending->{sent,observing}`, `sent->observing` и
+  `observing/needs_user/delivery_unknown->{complete,failed,needs_user,delivery_unknown}`)
+  и проверяет каждую смену task-статуса через `TaskStatus::require_transition`
+  до UPDATE. `create_revision_round` фиксирует `revise`-round, требует
+  последовательный номер, очищает `tasks.session_id`, переводит task в
+  `revising` и увеличивает `revision_count` ровно один раз, не выполняя replay
+  request; `bind_round_session` пишет `rounds.session_id` и `tasks.session_id`
+  одним timestamp; `prepare_round`/`mark_round_sent`/`mark_round_observing`
+  сохраняют семантику `attempted`; `mark_worker_started` пишет start/deadline от
+  одного clock sample; `finish_round` атомарно обновляет round/task и пишет
+  ровно одно событие. Paired-записи и событие используют один timestamp, а
+  ошибки (`MissingTask`/`MissingRound`/`ProjectMismatch`/`NotCurrentRound`/
+  `NonSequentialRound`/`RequestConflict`/`InvalidRoundTransition`/
+  `InvalidTaskTransition`/`InvalidJson`/`InvalidDeadline`/`InvalidInput` и др.)
+  безопасны и не раскрывают ids, session/message ids, SQL, JSON и пути. Verifier
+  persist-once, cooperative close, `reopen_failed_round` и schema/fixtures
+  изменения не входят.
+- Следующий этап — **3.9b. Verifier persist-once** (весь поток 3.9 ещё не
+  завершён).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

@@ -1,10 +1,10 @@
 # agent-bridge (Rust)
 
 Rust-переписывание `agent-bridge`: Cargo workspace с доменной моделью
-(`bridge-domain`), загрузчиком конфигурации (`bridge-config`) и CLI
-(`agent-bridge-cli`). Цель — сохранить контракты CLI, MCP и SQLite, перейти к
-единому Rust-бинарнику и добавить GUI на GPUI. Миграция идёт поэтапно, без
-одномоментной замены Python.
+(`bridge-domain`), загрузчиком конфигурации (`bridge-config`), read-only
+инспекцией SQLite (`bridge-storage`) и CLI (`agent-bridge-cli`). Цель —
+сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
+добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
 
 ## Статус миграции
 
@@ -13,7 +13,12 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   workspace/endpoints/token files, max rounds/model/optional paths,
   auto-approve permissions, trusted external directories, credentials reader,
   project env reader).
-- Следующий этап — **3.1. Read-only schema inspection**.
+- Завершён этап **3.1. Read-only schema inspection**: crate `bridge-storage`
+  открывает существующую БД строго read-only (`mode=ro&immutable=1`),
+  проверяет согласованную пару `PRAGMA user_version=6` и
+  `meta.schema_version='6'` и сверяет tables/columns/indexes/foreign keys с
+  schema v6, не создавая, не мигрируя и не изменяя БД.
+- Следующий этап — **3.2. WAL, foreign keys и busy timeout**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

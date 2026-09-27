@@ -56,9 +56,18 @@
 //! file that is not a symlink, must be owned by the current user and must not
 //! grant group/other access; its bytes must be UTF-8 and hold exactly one
 //! non-empty line (one trailing newline is removed). The project env reader
-//! (task 2.9) remains deliberately out of scope. The raw per-project table is
-//! preserved on [`ProjectEntry::values`] so that the later task can inspect
-//! every key and value without re-parsing.
+//! (task 2.9) reads the resolved `opencode_env_file` through
+//! [`ProjectEntry::read_opencode_env`] (or [`ProjectEnvFile::read`]), returning
+//! a redacting [`ProjectEnv`]. It mirrors the reference implementation
+//! (`src/agent_bridge/project_env.py`): the file is opened exactly once without
+//! following a final-component symlink, the same descriptor is validated
+//! (regular file, current-user owner, mode exactly `0600`) and read, the bytes
+//! must be UTF-8 and the content is a flat `NAME=value` mapping with comments,
+//! blank lines, first-`=` splitting, no expansion or shell interpretation and
+//! fail-closed rejection of NUL bytes, invalid names, duplicate names and
+//! reserved bridge service names. The raw per-project table is preserved on
+//! [`ProjectEntry::values`] so that a later task can inspect every key and value
+//! without re-parsing.
 //!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
@@ -111,6 +120,17 @@ const PASSWORD_FILE_KEY: &str = "password_file";
 
 /// The optional per-project key that names the MCP bearer-token file.
 const MCP_TOKEN_FILE_KEY: &str = "mcp_token_file";
+
+/// The bridge service variables an env file must never define.
+///
+/// The parser rejects these fail-closed; the reference overlay additionally
+/// restores them from the inherited environment. A project env file can
+/// therefore never shadow the bridge's own service credentials.
+const PROTECTED_ENV_NAMES: [&str; 3] = [
+    "OPENCODE_SERVER_PASSWORD",
+    "OPENCODE_SERVER_USERNAME",
+    "AGENT_BRIDGE_MCP_TOKEN",
+];
 
 /// The only host accepted in configured endpoints.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
@@ -315,18 +335,143 @@ impl fmt::Display for Secret {
     }
 }
 
+/// An optional, resolved `opencode_env_file` location.
+///
+/// The path is stored exactly as the loader resolved it: an absolute configured
+/// path is preserved verbatim and a relative one is joined onto the directory
+/// that contains `projects.toml`. The file itself is not required to exist until
+/// it is read. The [`Debug`](fmt::Debug) representation never renders the path,
+/// because an env file location can itself be sensitive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProjectEnvFile {
+    path: PathBuf,
+}
+
+impl ProjectEnvFile {
+    /// Wraps an already resolved env-file path.
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Returns the resolved path.
+    ///
+    /// A relative configured path has already been joined onto the directory
+    /// that contains `projects.toml`.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Reads and validates the env file, returning its redacting mapping.
+    ///
+    /// The file is opened exactly once with a fail-closed, no-symlink open; the
+    /// same descriptor is validated and then read, so the checks always describe
+    /// the inode that was actually read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe [`DomainError`] when the file is missing, is a symlink, is
+    /// not a regular file, is not owned by the current user, does not have mode
+    /// exactly `0600`, is not valid UTF-8, or holds a malformed, unsafe or
+    /// duplicate env line. The error never renders the path, a variable name or
+    /// a variable value.
+    pub fn read(&self) -> Result<ProjectEnv> {
+        read_project_env(&self.path)
+    }
+}
+
+impl fmt::Debug for ProjectEnvFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ProjectEnvFile([redacted])")
+    }
+}
+
+/// A validated per-project OpenCode environment mapping.
+///
+/// The mapping holds the `NAME=value` pairs of one `opencode_env_file`, with
+/// names in deterministic (lexicographic) order. Values are provider API keys,
+/// so neither [`Debug`](fmt::Debug) nor [`Display`](fmt::Display) renders them;
+/// a caller must request a value explicitly through [`ProjectEnv::get`] or
+/// [`ProjectEnv::iter`]. Names are not secret and can be enumerated safely
+/// through [`ProjectEnv::names`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProjectEnv {
+    variables: BTreeMap<String, String>,
+}
+
+impl ProjectEnv {
+    /// Wraps an already validated variable mapping.
+    fn new(variables: BTreeMap<String, String>) -> Self {
+        Self { variables }
+    }
+
+    /// Returns `true` when no variable is defined.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.variables.is_empty()
+    }
+
+    /// Returns the number of defined variables.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.variables.len()
+    }
+
+    /// Returns the value of `name`, if defined.
+    ///
+    /// This is the explicit accessor for a value that may be a secret.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.variables.get(name).map(String::as_str)
+    }
+
+    /// Returns `true` when `name` is defined.
+    #[must_use]
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.variables.contains_key(name)
+    }
+
+    /// Iterates over the defined variable names in deterministic order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.variables.keys().map(String::as_str)
+    }
+
+    /// Iterates over the `(name, value)` pairs in deterministic order.
+    ///
+    /// The values may be secrets and are exposed only through this explicit
+    /// iterator.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.variables
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+}
+
+impl fmt::Debug for ProjectEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProjectEnv")
+            .field("variables", &self.variables.len())
+            .finish()
+    }
+}
+
+impl fmt::Display for ProjectEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
 /// A validated project entry.
 ///
 /// The entry carries the typed, validated [`ProjectId`], the canonical,
 /// absolute workspace [`Path`], the typed [`Endpoint`]/[`McpEndpoint`] values,
 /// the positive `max_rounds`, the optional [`OpenCodeModel`], the optional
-/// resolved `opencode_env_file` [`Path`], the resolved optional
-/// [`CredentialPath`] password/token locations, the deduplicated
-/// `auto_approve_permissions` list and the deduplicated, canonical
-/// `auto_approve_external_directories` list, so consumers never have to repeat
-/// the task 2.2–2.8 validation or re-parse raw values. The raw TOML table is
-/// preserved verbatim for the later validation group (2.9), which inspects
-/// every key and value.
+/// resolved [`ProjectEnvFile`], the resolved optional [`CredentialPath`]
+/// password/token locations, the deduplicated `auto_approve_permissions` list
+/// and the deduplicated, canonical `auto_approve_external_directories` list, so
+/// consumers never have to repeat the task 2.2–2.9 validation or re-parse raw
+/// values. The raw TOML table is preserved verbatim for any later validation
+/// group, which inspects every key and value.
 #[derive(Clone)]
 pub struct ProjectEntry {
     id: ProjectId,
@@ -335,7 +480,7 @@ pub struct ProjectEntry {
     mcp_endpoint: Option<McpEndpoint>,
     max_rounds: u64,
     opencode_model: Option<OpenCodeModel>,
-    opencode_env_file: Option<PathBuf>,
+    opencode_env_file: Option<ProjectEnvFile>,
     password_file: Option<CredentialPath>,
     mcp_token_file: Option<CredentialPath>,
     auto_approve_permissions: Vec<String>,
@@ -380,13 +525,16 @@ impl ProjectEntry {
         self.opencode_model.as_ref()
     }
 
-    /// Returns the optional resolved `opencode_env_file` path.
+    /// Returns the optional resolved `opencode_env_file`.
     ///
     /// A relative configured path is resolved against the directory that
-    /// contains `projects.toml`; an absolute path is preserved verbatim.
+    /// contains `projects.toml`; an absolute path is preserved verbatim. The
+    /// [`ProjectEnvFile`] keeps the path redacted in its [`Debug`](fmt::Debug)
+    /// output; the path itself is available explicitly through
+    /// [`ProjectEnvFile::as_path`].
     #[must_use]
-    pub fn opencode_env_file(&self) -> Option<&Path> {
-        self.opencode_env_file.as_deref()
+    pub fn opencode_env_file(&self) -> Option<&ProjectEnvFile> {
+        self.opencode_env_file.as_ref()
     }
 
     /// Returns the resolved `password_file` path, if configured.
@@ -432,6 +580,20 @@ impl ProjectEntry {
     /// Returns any error of [`CredentialPath::read`] when the key is present.
     pub fn read_mcp_token(&self) -> Result<Option<Secret>> {
         match &self.mcp_token_file {
+            Some(path) => path.read().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Reads and validates the optional project OpenCode env file.
+    ///
+    /// Returns `Ok(None)` when `opencode_env_file` is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`ProjectEnvFile::read`] when the key is present.
+    pub fn read_opencode_env(&self) -> Result<Option<ProjectEnv>> {
+        match &self.opencode_env_file {
             Some(path) => path.read().map(Some),
             None => Ok(None),
         }
@@ -704,7 +866,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 mcp_endpoint,
                 max_rounds,
                 opencode_model,
-                opencode_env_file,
+                opencode_env_file: opencode_env_file.map(ProjectEnvFile::new),
                 password_file: password.map(CredentialPath::new),
                 mcp_token_file: token.map(CredentialPath::new),
                 auto_approve_permissions,
@@ -1706,12 +1868,230 @@ fn decode_credential(data: &[u8]) -> Result<String> {
     Ok(value.to_owned())
 }
 
+/// Opens an env file without ever following a final-component symlink.
+///
+/// The open is fail-closed: a symlink at the env path is refused by the kernel
+/// instead of being resolved, so a swap between validation and reading cannot
+/// redirect the read. The returned descriptor is validated and read exactly
+/// once; the path is never reopened.
+#[cfg(unix)]
+fn open_project_env(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+        .map_err(|source| project_env_open_error(path, source))
+}
+
+#[cfg(not(unix))]
+fn open_project_env(path: &Path) -> Result<std::fs::File> {
+    std::fs::File::open(path).map_err(|source| project_env_open_error(path, source))
+}
+
+/// Maps an env-file open failure to a safe, typed [`DomainError`].
+///
+/// The message never renders the path; the underlying [`std::io::Error`] is
+/// retained only as the error source. A refused symlink (`ELOOP`, or a plain
+/// symlink on a platform without `O_NOFOLLOW`) is reported as the symlink
+/// violation, and a directory that the kernel refused to open is reported as a
+/// non-regular file, both matching the reference reader's fail-closed branches.
+fn project_env_open_error(path: &Path, source: std::io::Error) -> DomainError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            DomainError::not_found("project env file not found").with_source(source)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            DomainError::permission_denied("project env file could not be read")
+                .with_source(source)
+        }
+        _ => match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                DomainError::invalid_input("project env file must not be a symlink")
+                    .with_source(source)
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                DomainError::invalid_input("project env path is not a regular file")
+                    .with_source(source)
+            }
+            _ => DomainError::internal("project env file could not be read").with_source(source),
+        },
+    }
+}
+
+/// Validates the metadata of the already-opened env descriptor.
+///
+/// The checks mirror `project_env._validate_fd` on the inode that was actually
+/// opened: a regular file owned by the current user with mode exactly `0600`
+/// (special permission bits included). The message never renders the path.
+#[cfg(unix)]
+fn validate_project_env_metadata(metadata: &std::fs::Metadata) -> Result<()> {
+    validate_project_env_metadata_owned_by(metadata, current_effective_uid()?)
+}
+
+/// The owner-parameterized core of [`validate_project_env_metadata`].
+///
+/// Splitting the expected owner out keeps the ownership branch directly
+/// testable without needing a second local user.
+#[cfg(unix)]
+fn validate_project_env_metadata_owned_by(
+    metadata: &std::fs::Metadata,
+    expected_uid: u32,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !metadata.is_file() {
+        return Err(DomainError::invalid_input(
+            "project env path is not a regular file",
+        ));
+    }
+    if metadata.uid() != expected_uid {
+        return Err(DomainError::invalid_input(
+            "project env file must be owned by the current user",
+        ));
+    }
+    if (metadata.mode() & 0o7777) != 0o600 {
+        return Err(DomainError::invalid_input(
+            "project env file permissions must be exactly 600",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_project_env_metadata(metadata: &std::fs::Metadata) -> Result<()> {
+    if !metadata.is_file() {
+        return Err(DomainError::invalid_input(
+            "project env path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+/// Reads and validates an env file, returning its redacting mapping.
+///
+/// The file is opened once without following a symlink, the descriptor is
+/// validated, and the same descriptor is read, so a path swap cannot make the
+/// validation describe a different inode than the one read. The bytes must be
+/// valid UTF-8; the content is parsed by [`parse_project_env`]. Errors never
+/// render the path, a variable name or a variable value.
+fn read_project_env(path: &Path) -> Result<ProjectEnv> {
+    let mut file = open_project_env(path)?;
+    let metadata = file.metadata().map_err(project_env_read_error)?;
+    validate_project_env_metadata(&metadata)?;
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut data).map_err(project_env_read_error)?;
+    let text = std::str::from_utf8(&data).map_err(|source| {
+        DomainError::invalid_input("project env file is not valid UTF-8").with_source(source)
+    })?;
+    parse_project_env(text)
+}
+
+/// Maps an env-file read failure to a safe, typed [`DomainError`].
+fn project_env_read_error(source: std::io::Error) -> DomainError {
+    DomainError::internal("project env file could not be read").with_source(source)
+}
+
+/// Returns `true` when `name` is a valid environment variable name.
+///
+/// Mirrors the reference `^[A-Za-z_][A-Za-z0-9_]*$` pattern: an ASCII letter or
+/// underscore followed by ASCII letters, digits or underscores.
+fn is_valid_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(b'A'..=b'Z' | b'a'..=b'z' | b'_') => {}
+        _ => return false,
+    }
+    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// Splits `text` into lines with the reference reader's semantics.
+///
+/// Python's `str.splitlines()` breaks on `\n`, `\r`, `\r\n`, `\v`, `\f`,
+/// `\x1c`–`\x1e`, `\x85`, `\u2028` and `\u2029`, and never yields a trailing
+/// empty element after a final line break. Reproducing it exactly keeps the
+/// Rust parser byte-for-byte compatible with the reference on unusual input.
+fn split_env_lines(text: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        let boundary = match ch {
+            '\n' | '\u{000b}' | '\u{000c}' | '\u{001c}' | '\u{001d}' | '\u{001e}'
+            | '\u{0085}' | '\u{2028}' | '\u{2029}' => true,
+            '\r' => {
+                if let Some((_, '\n')) = chars.peek() {
+                    chars.next();
+                }
+                true
+            }
+            _ => false,
+        };
+        if boundary {
+            lines.push(&text[start..index]);
+            start = chars.peek().map_or(text.len(), |(next, _)| *next);
+        }
+    }
+    if start < text.len() {
+        lines.push(&text[start..]);
+    }
+    lines
+}
+
+/// Parses env text into a validated, redacting [`ProjectEnv`].
+///
+/// The parser mirrors `project_env._parse`: blank lines and `#` comments are
+/// skipped; each remaining line must contain `=`; the split is on the first `=`
+/// only and the value is kept verbatim (no quoting, expansion or shell
+/// interpretation); the name must be a valid environment variable name; NUL
+/// bytes, reserved bridge service names and duplicate names are rejected
+/// fail-closed. Every error message is static and never contains a variable
+/// name or value.
+fn parse_project_env(text: &str) -> Result<ProjectEnv> {
+    let mut variables: BTreeMap<String, String> = BTreeMap::new();
+    for line in split_env_lines(text) {
+        let stripped = line.trim();
+        if stripped.is_empty() || stripped.starts_with('#') {
+            continue;
+        }
+        if line.contains('\0') {
+            return Err(DomainError::invalid_input(
+                "project env file line contains a NUL byte",
+            ));
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(DomainError::invalid_input(
+                "project env file line must be NAME=value",
+            ));
+        };
+        if !is_valid_env_name(name) {
+            return Err(DomainError::invalid_input(
+                "project env file line has an invalid variable name",
+            ));
+        }
+        if PROTECTED_ENV_NAMES.contains(&name) {
+            return Err(DomainError::invalid_input(
+                "project env file must not define a reserved agent-bridge service variable",
+            ));
+        }
+        if variables.contains_key(name) {
+            return Err(DomainError::invalid_input(
+                "project env file defines the same variable name twice",
+            ));
+        }
+        variables.insert(name.to_owned(), value.to_owned());
+    }
+    Ok(ProjectEnv::new(variables))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config,
         MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY,
-        PROJECTS_TABLE, WORKSPACE_KEY, load_config, parse_projects,
+        PROTECTED_ENV_NAMES, PROJECTS_TABLE, ProjectEnv, WORKSPACE_KEY, load_config,
+        parse_project_env, parse_projects, split_env_lines,
     };
     use bridge_domain::{DomainError, ErrorKind, ProjectId};
     use std::error::Error;
@@ -3561,10 +3941,16 @@ mod tests {
         let entry = config.project("proj").expect("project must exist");
 
         assert_eq!(
-            entry.opencode_env_file(),
+            entry.opencode_env_file().map(|file| file.as_path()),
             Some(dir.path().join("secrets/proj.env").as_path())
         );
-        assert!(entry.opencode_env_file().expect("path").is_absolute());
+        assert!(
+            entry
+                .opencode_env_file()
+                .expect("path")
+                .as_path()
+                .is_absolute()
+        );
     }
 
     // Corpus case `valid-opencode-env-file-absolute`.
@@ -3590,7 +3976,10 @@ mod tests {
         let config = load_config(&config_path).expect("absolute env file must load");
         let entry = config.project("proj").expect("project must exist");
 
-        assert_eq!(entry.opencode_env_file(), Some(env_file.as_path()));
+        assert_eq!(
+            entry.opencode_env_file().map(|file| file.as_path()),
+            Some(env_file.as_path())
+        );
     }
 
     // Corpus case `invalid-opencode-env-file-non-string`.
@@ -4563,6 +4952,355 @@ mod tests {
         let error = entry
             .read_password()
             .expect_err("multiline must be rejected");
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(SECRET),
+            "error leaked secret: {rendered}"
+        );
+        assert!(
+            !rendered.contains(path_text),
+            "error leaked path: {rendered}"
+        );
+    }
+
+    // Task 2.9: the optional `opencode_env_file` is read through the typed
+    // `ProjectEnvFile`/`ProjectEnv` API, mirroring
+    // `src/agent_bridge/project_env.py`.
+
+    /// Loads a one-project config whose absolute `opencode_env_file` is
+    /// `env_path`.
+    fn load_env_config(dir: &TempDir, env_path: &Path) -> Config {
+        let workspace = dir.mkdir("ws");
+        let extra = format!(
+            "opencode_env_file = \"{}\"\n",
+            env_path.to_str().expect("utf-8 path")
+        );
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml_with(
+                "proj",
+                workspace.to_str().expect("utf-8 path"),
+                "http://127.0.0.1:4101",
+                &extra,
+            ),
+        );
+        load_config(&config_path).expect("config must load")
+    }
+
+    /// Writes an env file with an explicit Unix mode and reads it through the
+    /// typed API.
+    fn read_env(content: &[u8], mode: u32) -> bridge_domain::Result<ProjectEnv> {
+        let dir = TempDir::new("env-read");
+        let env_path = write_credential(&dir, "proj.env", content, mode);
+        let config = load_env_config(&dir, &env_path);
+        let entry = config.project("proj").expect("project must exist");
+        let env = entry.read_opencode_env()?;
+        env.ok_or_else(|| DomainError::not_found("test env must be present"))
+    }
+
+    // Corpus case `valid-env-file-parse`.
+    #[test]
+    fn parses_valid_opencode_env_file() {
+        let content = b"# provider keys\n\nANTHROPIC_API_KEY=placeholder-key\n   \nOPENAI_API_KEY=placeholder=with=equals\nEMPTY=\nQUOTED=\"literal\"\n";
+        let env = read_env(content, 0o600).expect("valid env must parse");
+        assert_eq!(env.len(), 4);
+        assert!(!env.is_empty());
+        assert_eq!(env.get("ANTHROPIC_API_KEY"), Some("placeholder-key"));
+        assert_eq!(env.get("OPENAI_API_KEY"), Some("placeholder=with=equals"));
+        assert_eq!(env.get("EMPTY"), Some(""));
+        assert_eq!(env.get("QUOTED"), Some("\"literal\""));
+        assert!(env.contains_key("EMPTY"));
+        assert!(!env.contains_key("MISSING"));
+    }
+
+    #[test]
+    fn opencode_env_splits_on_first_equals_and_keeps_value_verbatim() {
+        let env = read_env(b"FOO=  spaced  value  \n", 0o600).expect("must parse");
+        assert_eq!(env.get("FOO"), Some("  spaced  value  "));
+    }
+
+    #[test]
+    fn opencode_env_values_are_literal_without_expansion() {
+        let env = read_env(b"A=$HOME\nB=$(id)\nC=`id`\nD=\"quoted\"\nE='single'\n", 0o600)
+            .expect("must parse");
+        assert_eq!(env.get("A"), Some("$HOME"));
+        assert_eq!(env.get("B"), Some("$(id)"));
+        assert_eq!(env.get("C"), Some("`id`"));
+        assert_eq!(env.get("D"), Some("\"quoted\""));
+        assert_eq!(env.get("E"), Some("'single'"));
+    }
+
+    #[test]
+    fn opencode_env_handles_crlf_lines() {
+        let env = read_env(b"A=1\r\nB=2\r\n", 0o600).expect("must parse");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("A"), Some("1"));
+        assert_eq!(env.get("B"), Some("2"));
+    }
+
+    #[test]
+    fn opencode_env_comment_lines_may_contain_arbitrary_bytes() {
+        let env = parse_project_env("# comment\0 ignored\nA=1\n")
+            .expect("a comment line must be skipped before the NUL check");
+        assert_eq!(env.get("A"), Some("1"));
+    }
+
+    #[test]
+    fn split_env_lines_matches_python_boundaries() {
+        assert_eq!(split_env_lines("a\nb"), ["a", "b"]);
+        assert_eq!(split_env_lines("a\nb\n"), ["a", "b"]);
+        assert_eq!(split_env_lines("a\r\nb"), ["a", "b"]);
+        assert_eq!(split_env_lines("\n"), [""]);
+        assert!(split_env_lines("").is_empty());
+        assert_eq!(split_env_lines("a\u{2028}b"), ["a", "b"]);
+        assert_eq!(split_env_lines("a\u{000b}b"), ["a", "b"]);
+    }
+
+    // Corpus case `invalid-env-duplicate-variable-name`.
+    #[test]
+    fn rejects_duplicate_opencode_env_names() {
+        let error = read_env(b"A=one\nA=two\n", 0o600).expect_err("duplicate must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project env file defines the same variable name twice"
+        );
+    }
+
+    // Corpus case `invalid-env-invalid-variable-name`.
+    #[test]
+    fn rejects_invalid_opencode_env_names() {
+        for line in [
+            "BAD-NAME=value\n",
+            "1BAD=x\n",
+            "A-B=x\n",
+            "A B=x\n",
+            "A.B=x\n",
+            "export FOO=x\n",
+            " =x\n",
+            "=x\n",
+        ] {
+            let error = read_env(line.as_bytes(), 0o600).expect_err("invalid name must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "line: {line:?}");
+            assert_eq!(
+                error.to_string(),
+                "project env file line has an invalid variable name",
+                "line: {line:?}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-env-line-missing-equals`.
+    #[test]
+    fn rejects_opencode_env_line_without_equals() {
+        let error = read_env(b"JUST_A_NAME\n", 0o600).expect_err("must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project env file line must be NAME=value"
+        );
+    }
+
+    // Corpus case `invalid-env-nul-byte`.
+    #[test]
+    fn rejects_opencode_env_nul_byte() {
+        for content in [
+            b"NAME\0=value\n".as_slice(),
+            b"SECRET_NAME=secret\0tail\n",
+            b"SECRET\0NAME=secret\n",
+            b"NAMED\0=\0value\n",
+        ] {
+            let error = read_env(content, 0o600).expect_err("NUL must be rejected");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "content: {content:?}");
+            assert_eq!(
+                error.to_string(),
+                "project env file line contains a NUL byte",
+                "content: {content:?}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-env-protected-service-name`.
+    #[test]
+    fn rejects_protected_opencode_env_names() {
+        for name in PROTECTED_ENV_NAMES {
+            let content = format!("{name}=value\n");
+            let error =
+                read_env(content.as_bytes(), 0o600).expect_err("protected name must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "name: {name}");
+            assert_eq!(
+                error.to_string(),
+                "project env file must not define a reserved agent-bridge service variable",
+                "name: {name}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-env-file-missing`.
+    #[test]
+    fn missing_opencode_env_file_is_not_found() {
+        let dir = TempDir::new("env-missing");
+        let env_path = dir.path().join("missing.env");
+        let config = load_env_config(&dir, &env_path);
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_opencode_env()
+            .expect_err("missing file must be rejected");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "project env file not found");
+    }
+
+    // Corpus case `invalid-env-file-symlink`.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_opencode_env_file_is_rejected() {
+        let dir = TempDir::new("env-symlink");
+        let real = write_credential(&dir, "real.env", b"A=1\n", 0o600);
+        let link = dir.path().join("proj.env");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink must be creatable");
+        let config = load_env_config(&dir, &link);
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_opencode_env()
+            .expect_err("symlink must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project env file must not be a symlink");
+    }
+
+    // Corpus case `invalid-env-file-not-regular`.
+    #[test]
+    fn directory_opencode_env_path_is_not_regular() {
+        let dir = TempDir::new("env-dir");
+        let env_path = dir.mkdir("proj.env");
+        let config = load_env_config(&dir, &env_path);
+        let entry = config.project("proj").expect("project must exist");
+
+        let error = entry
+            .read_opencode_env()
+            .expect_err("directory must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project env path is not a regular file");
+    }
+
+    // Corpus case `invalid-env-file-mode-not-0600`.
+    #[cfg(unix)]
+    #[test]
+    fn opencode_env_mode_must_be_exactly_0600() {
+        for mode in [0o644, 0o666, 0o640, 0o400, 0o777, 0o604] {
+            let error = read_env(b"A=1\n", mode).expect_err("wrong mode must be rejected");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "mode: {mode:o}");
+            assert_eq!(
+                error.to_string(),
+                "project env file permissions must be exactly 600",
+                "mode: {mode:o}"
+            );
+        }
+    }
+
+    // Corpus case `invalid-env-file-foreign-owner`: the ownership branch is
+    // exercised against a deliberately wrong expected uid, because a normal test
+    // process cannot create a file owned by another user.
+    #[cfg(unix)]
+    #[test]
+    fn foreign_owner_opencode_env_is_rejected() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = TempDir::new("env-owner");
+        let env_path = write_credential(&dir, "proj.env", b"A=1\n", 0o600);
+        let metadata = std::fs::metadata(&env_path).expect("metadata must read");
+        let error = super::validate_project_env_metadata_owned_by(
+            &metadata,
+            metadata.uid().wrapping_add(1),
+        )
+        .expect_err("foreign owner must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "project env file must be owned by the current user"
+        );
+    }
+
+    // Corpus case `invalid-env-file-not-utf8`.
+    #[test]
+    fn invalid_utf8_opencode_env_is_rejected() {
+        let error = read_env(&[0xff, 0xfe, b'=', b'1', b'\n'], 0o600)
+            .expect_err("invalid UTF-8 must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "project env file is not valid UTF-8");
+    }
+
+    #[test]
+    fn absent_opencode_env_file_reads_as_none() {
+        let dir = TempDir::new("env-absent");
+        let workspace = dir.mkdir("ws");
+        let config_path = dir.write(
+            "projects.toml",
+            &project_toml("proj", workspace.to_str().expect("utf-8 path")),
+        );
+        let config = load_config(&config_path).expect("config must load");
+        let entry = config.project("proj").expect("project must exist");
+
+        assert!(entry.opencode_env_file().is_none());
+        assert!(
+            entry
+                .read_opencode_env()
+                .expect("absent env must read as none")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn opencode_env_values_paths_and_errors_are_redacted() {
+        const SECRET: &str = "super-secret-env-value";
+
+        let dir = TempDir::new("env-redact");
+        let env_path = write_credential(
+            &dir,
+            "proj.env",
+            format!("ANTHROPIC_API_KEY={SECRET}\n").as_bytes(),
+            0o600,
+        );
+        let config = load_env_config(&dir, &env_path);
+        let entry = config.project("proj").expect("project must exist");
+
+        let env = entry
+            .read_opencode_env()
+            .expect("read must succeed")
+            .expect("env must be present");
+        let env_debug = format!("{env:?}");
+        let env_display = env.to_string();
+        assert!(
+            !env_debug.contains(SECRET),
+            "ProjectEnv Debug leaked secret: {env_debug}"
+        );
+        assert!(
+            !env_display.contains(SECRET),
+            "ProjectEnv Display leaked secret: {env_display}"
+        );
+        assert!(
+            !env_debug.contains("ANTHROPIC_API_KEY"),
+            "ProjectEnv Debug leaked a variable name: {env_debug}"
+        );
+
+        let env_file = entry.opencode_env_file().expect("env file path");
+        let path_text = env_path.to_str().expect("utf-8 path");
+        let path_debug = format!("{env_file:?}");
+        assert!(
+            !path_debug.contains(path_text),
+            "ProjectEnvFile Debug leaked path: {path_debug}"
+        );
+
+        write_credential(
+            &dir,
+            "proj.env",
+            format!("ANTHROPIC_API_KEY={SECRET}\nANTHROPIC_API_KEY=dup\n").as_bytes(),
+            0o600,
+        );
+        let error = entry
+            .read_opencode_env()
+            .expect_err("duplicate must be rejected");
         let rendered = format!("{error} {error:?}");
         assert!(
             !rendered.contains(SECRET),

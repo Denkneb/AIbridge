@@ -8,11 +8,12 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
 
 ## Статус миграции
 
-- Завершены этапы конфигурации **2.1–2.6** (базовый TOML loader, project ID и
+- Завершены этапы конфигурации **2.1–2.9** (базовый TOML loader, project ID и
   workspace validation, endpoint/port validation, уникальность
   workspace/endpoints/token files, max rounds/model/optional paths,
-  auto-approve permissions).
-- Следующий этап — **2.7. Trusted external directories**.
+  auto-approve permissions, trusted external directories, credentials reader,
+  project env reader).
+- Следующий этап — **3.1. Read-only schema inspection**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

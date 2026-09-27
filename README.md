@@ -23,7 +23,13 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
   parent directory, применяет и проверяет `PRAGMA journal_mode=WAL`,
   `PRAGMA foreign_keys=ON` и `PRAGMA busy_timeout=30000` (fail closed) и
   закрывается RAII, не создавая schema и не меняя `PRAGMA user_version`.
-- Следующий этап — **3.3. Task row mapping**.
+- Завершён этап **3.3. Task row mapping**: `bridge-storage` преобразует строку
+  schema v6 таблицы `tasks` в типизированную модель `Task` (`TaskId`,
+  `ProjectId`, `TaskStatus`, JSON-поля `allowed_paths`, `test_commands`,
+  `snapshot`) и fail closed отвергает неизвестный статус, невалидный task
+  UUID, повреждённый JSON, несоответствие SQLite-типа и отрицательный
+  `revision_count`, не добавляя query/list/write API.
+- Следующий этап — **3.4. Round row mapping**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

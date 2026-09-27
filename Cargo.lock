@@ -37,6 +37,7 @@ dependencies = [
 name = "bridge-storage"
 version = "0.1.0"
 dependencies = [
+ "bridge-domain",
  "rusqlite",
  "serde_json",
 ]

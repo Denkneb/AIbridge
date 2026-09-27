@@ -23,14 +23,21 @@
 //! The crate also provides a runtime read-write connection ([`connect`]) that
 //! applies and verifies `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON` and
 //! `PRAGMA busy_timeout=30000`, mirroring Python `Storage.connect`, without
-//! creating or migrating any schema. Row mapping, initialization/migrations and
-//! all write/query APIs remain out of scope (tasks 3.3+).
+//! creating or migrating any schema.
+//!
+//! Task row mapping (task 3.3) is provided by [`Task::from_row`], which turns a
+//! schema v6 `tasks` row into a fully typed [`Task`] and fails closed on
+//! corrupted persisted data. Initialization/migrations and all write/query
+//! APIs remain out of scope (tasks 3.5+); there is no list/get/pagination API
+//! here.
 
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
+use std::str::FromStr;
 
-use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
+use bridge_domain::{ProjectId, TaskId, TaskStatus};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, params};
 
 /// The only supported `PRAGMA user_version` / `meta.schema_version`.
 pub const SCHEMA_VERSION: i64 = 6;
@@ -983,13 +990,236 @@ fn configure(connection: &Connection) -> Result<(), ConnectError> {
     Ok(())
 }
 
+/// A fully typed view of one schema v6 `tasks` row.
+///
+/// All fifteen columns are represented. Domain-typed columns use [`TaskId`],
+/// [`ProjectId`] and [`TaskStatus`]; `allowed_paths` and `test_commands` are
+/// decoded JSON arrays of strings; `snapshot` is an optional decoded JSON
+/// object (a stored JSON `null` maps to `None`). Opaque identifiers and
+/// timestamps stay as the exact stored strings.
+///
+/// # Mapping contract
+///
+/// [`Task::from_row`] is the only constructor. It fails closed on an unknown
+/// status, an invalid task or project id, malformed or wrong-shaped JSON, a
+/// SQLite type mismatch and a negative `revision_count`. The synthetic
+/// `task-<n>` identifiers used by the committed SQLite fixtures are not valid
+/// UUIDs and are therefore rejected by design; the fixtures themselves are
+/// never changed or weakened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Task {
+    /// Primary key (`task_id`), parsed as a UUID.
+    pub task_id: TaskId,
+    /// Owning project (`project_id`).
+    pub project_id: ProjectId,
+    /// Workspace path (`workspace`).
+    pub workspace: String,
+    /// Lifecycle status (`status`).
+    pub status: TaskStatus,
+    /// Bound OpenCode session, when resolved (`session_id`).
+    pub session_id: Option<String>,
+    /// Task text (`task`).
+    pub text: String,
+    /// Allowed workspace-relative paths (`allowed_paths`, JSON array of
+    /// strings).
+    pub allowed_paths: Vec<String>,
+    /// Verification commands (`test_commands`, JSON array of strings).
+    pub test_commands: Vec<String>,
+    /// Creation timestamp (`created_at`).
+    pub created_at: String,
+    /// Last update timestamp (`updated_at`).
+    pub updated_at: String,
+    /// Base Git head, when captured (`base_head`).
+    pub base_head: Option<String>,
+    /// Decoded workspace snapshot (`snapshot`), when present: a JSON object or
+    /// `None` for SQL `NULL` or a stored JSON `null`.
+    pub snapshot: Option<serde_json::Value>,
+    /// Number of revision rounds (`revision_count`), never negative.
+    pub revision_count: i64,
+    /// Time a cooperative close was requested (`close_requested_at`).
+    pub close_requested_at: Option<String>,
+    /// Reason for a cooperative close (`close_reason`).
+    pub close_reason: Option<String>,
+}
+
+impl Task {
+    /// Maps one `tasks` row into a [`Task`].
+    ///
+    /// The row must expose the fifteen schema v6 `tasks` columns by name; a
+    /// missing column is reported as [`TaskRowError::MissingColumn`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category for every kind of corrupted persisted data
+    /// (see [`TaskRowError`]). No error message contains row data, task text,
+    /// workspace, paths, identifiers or JSON payloads.
+    pub fn from_row(row: &Row<'_>) -> Result<Self, TaskRowError> {
+        let task_id = TaskId::from_str(&read_typed::<String>(row, "task_id")?)
+            .map_err(|_| TaskRowError::InvalidTaskId)?;
+        let project_id = ProjectId::from_str(&read_typed::<String>(row, "project_id")?)
+            .map_err(|_| TaskRowError::InvalidProjectId)?;
+        let workspace = read_typed::<String>(row, "workspace")?;
+        let status = TaskStatus::from_str(&read_typed::<String>(row, "status")?)
+            .map_err(|_| TaskRowError::UnknownStatus)?;
+        let session_id = read_typed::<Option<String>>(row, "session_id")?;
+        let text = read_typed::<String>(row, "task")?;
+        let allowed_paths = read_string_array(row, "allowed_paths")?;
+        let test_commands = read_string_array(row, "test_commands")?;
+        let created_at = read_typed::<String>(row, "created_at")?;
+        let updated_at = read_typed::<String>(row, "updated_at")?;
+        let base_head = read_typed::<Option<String>>(row, "base_head")?;
+        let snapshot = read_snapshot(row)?;
+        let revision_count = read_typed::<i64>(row, "revision_count")?;
+        if revision_count < 0 {
+            return Err(TaskRowError::NegativeRevisionCount);
+        }
+        let close_requested_at = read_typed::<Option<String>>(row, "close_requested_at")?;
+        let close_reason = read_typed::<Option<String>>(row, "close_reason")?;
+
+        Ok(Self {
+            task_id,
+            project_id,
+            workspace,
+            status,
+            session_id,
+            text,
+            allowed_paths,
+            test_commands,
+            created_at,
+            updated_at,
+            base_head,
+            snapshot,
+            revision_count,
+            close_requested_at,
+            close_reason,
+        })
+    }
+}
+
+/// A typed, safe error raised while mapping a `tasks` row.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that names only the schema column at fault. It never contains row
+/// data: task text, workspace, paths, identifiers, JSON payloads or timestamps
+/// are never rendered. The underlying SQLite error, when present, is reachable
+/// only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum TaskRowError {
+    /// A required column is absent from the mapped row.
+    MissingColumn { column: &'static str },
+    /// A column holds a SQLite type that does not match the schema v6 contract.
+    ColumnType { column: &'static str },
+    /// `task_id` is not a valid UUID.
+    InvalidTaskId,
+    /// `project_id` is not a valid project id.
+    InvalidProjectId,
+    /// `status` is not a known task status.
+    UnknownStatus,
+    /// A JSON column is not valid JSON.
+    MalformedJson { column: &'static str },
+    /// A JSON column does not have the contract shape.
+    WrongJsonShape { column: &'static str },
+    /// `revision_count` is negative.
+    NegativeRevisionCount,
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for TaskRowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingColumn { column } => {
+                write!(f, "task row is missing column {column}")
+            }
+            Self::ColumnType { column } => {
+                write!(f, "task row column {column} has an unexpected SQLite type")
+            }
+            Self::InvalidTaskId => f.write_str("task row has an invalid task id"),
+            Self::InvalidProjectId => f.write_str("task row has an invalid project id"),
+            Self::UnknownStatus => f.write_str("task row has an unknown status"),
+            Self::MalformedJson { column } => {
+                write!(f, "task row column {column} is not valid JSON")
+            }
+            Self::WrongJsonShape { column } => {
+                write!(f, "task row column {column} has an unexpected JSON shape")
+            }
+            Self::NegativeRevisionCount => f.write_str("task revision count is negative"),
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for TaskRowError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+fn read_typed<T: rusqlite::types::FromSql>(
+    row: &Row<'_>,
+    column: &'static str,
+) -> Result<T, TaskRowError> {
+    row.get::<_, T>(column)
+        .map_err(|error| classify_row_error(error, column))
+}
+
+fn classify_row_error(error: rusqlite::Error, column: &'static str) -> TaskRowError {
+    match error {
+        rusqlite::Error::InvalidColumnName(_) | rusqlite::Error::InvalidColumnIndex(_) => {
+            TaskRowError::MissingColumn { column }
+        }
+        rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
+            TaskRowError::ColumnType { column }
+        }
+        other => TaskRowError::Database(other),
+    }
+}
+
+fn read_string_array(row: &Row<'_>, column: &'static str) -> Result<Vec<String>, TaskRowError> {
+    let raw = read_typed::<String>(row, column)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| TaskRowError::MalformedJson { column })?;
+    let items = value
+        .as_array()
+        .ok_or(TaskRowError::WrongJsonShape { column })?;
+    let mut decoded = Vec::with_capacity(items.len());
+    for item in items {
+        let item = item
+            .as_str()
+            .ok_or(TaskRowError::WrongJsonShape { column })?;
+        decoded.push(item.to_owned());
+    }
+    Ok(decoded)
+}
+
+fn read_snapshot(row: &Row<'_>) -> Result<Option<serde_json::Value>, TaskRowError> {
+    let Some(raw) = read_typed::<Option<String>>(row, "snapshot")? else {
+        return Ok(None);
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| TaskRowError::MalformedJson { column: "snapshot" })?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    if !value.is_object() {
+        return Err(TaskRowError::WrongJsonShape { column: "snapshot" });
+    }
+    Ok(Some(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BUSY_TIMEOUT_MS, Column, ConnectError, Contract, ForeignKey, Index, InspectError,
-        SCHEMA_VERSION, SchemaMismatch, Table, connect, inspect, v6_contract,
+        SCHEMA_VERSION, SchemaMismatch, Table, Task, TaskRowError, connect, inspect, v6_contract,
     };
+    use bridge_domain::TaskStatus;
     use rusqlite::Connection;
+    use rusqlite::types::Value as SqlValue;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1717,6 +1947,332 @@ CREATE INDEX ix_events_task ON events(task_id, id);
         let mut name = path.as_os_str().to_owned();
         name.push(suffix);
         PathBuf::from(name)
+    }
+
+    const VALID_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+    const TASK_ROW_SELECT: &str = "SELECT ?1 AS task_id, ?2 AS project_id, ?3 AS workspace, \
+         ?4 AS status, ?5 AS session_id, ?6 AS task, ?7 AS allowed_paths, \
+         ?8 AS test_commands, ?9 AS created_at, ?10 AS updated_at, ?11 AS base_head, \
+         ?12 AS snapshot, ?13 AS revision_count, ?14 AS close_requested_at, \
+         ?15 AS close_reason";
+
+    const TASK_ROW_COLUMNS: &str = "task_id, project_id, workspace, status, session_id, task, \
+         allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
+         revision_count, close_requested_at, close_reason";
+
+    /// A valid row with every column present, using a UUID `task_id` (the
+    /// committed fixtures use synthetic `task-<n>` ids and are not mapped here).
+    fn valid_task_values() -> Vec<SqlValue> {
+        vec![
+            SqlValue::Text(VALID_TASK_ID.to_owned()),
+            SqlValue::Text("proj".to_owned()),
+            SqlValue::Text("/fixture/workspace".to_owned()),
+            SqlValue::Text("implementing".to_owned()),
+            SqlValue::Text("ses-1".to_owned()),
+            SqlValue::Text("Implement the fixture change".to_owned()),
+            SqlValue::Text("[\"module.py\"]".to_owned()),
+            SqlValue::Text("[\"pytest -q\"]".to_owned()),
+            SqlValue::Text("2026-01-01T00:00:00.000+00:00".to_owned()),
+            SqlValue::Text("2026-01-01T00:00:01.000+00:00".to_owned()),
+            SqlValue::Text("1111111111111111111111111111111111111111".to_owned()),
+            SqlValue::Text("{\"head\":\"abc\"}".to_owned()),
+            SqlValue::Integer(2),
+            SqlValue::Text("2026-01-01T00:00:02.000+00:00".to_owned()),
+            SqlValue::Text("user asked to stop".to_owned()),
+        ]
+    }
+
+    /// Maps a synthetic `SELECT` of the fifteen `tasks` columns through
+    /// [`Task::from_row`], exercising a real [`rusqlite::Row`].
+    fn map_task_values(values: &[SqlValue]) -> Result<Task, TaskRowError> {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .query_row(
+                TASK_ROW_SELECT,
+                rusqlite::params_from_iter(values.iter().cloned()),
+                |row| Ok(Task::from_row(row)),
+            )
+            .expect("row query must execute")
+    }
+
+    fn assert_error_is_safe(error: &TaskRowError, secret: &str) {
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert!(
+            !display.contains(secret),
+            "Display leaked row data: {display}"
+        );
+        assert!(!debug.contains(secret), "Debug leaked row data: {debug}");
+    }
+
+    #[test]
+    fn task_row_maps_all_fifteen_columns() {
+        let task = map_task_values(&valid_task_values()).expect("valid row must map");
+
+        assert_eq!(task.task_id.to_string(), VALID_TASK_ID);
+        assert_eq!(task.project_id.as_str(), "proj");
+        assert_eq!(task.workspace, "/fixture/workspace");
+        assert_eq!(task.status, TaskStatus::Implementing);
+        assert_eq!(task.session_id.as_deref(), Some("ses-1"));
+        assert_eq!(task.text, "Implement the fixture change");
+        assert_eq!(task.allowed_paths, ["module.py"]);
+        assert_eq!(task.test_commands, ["pytest -q"]);
+        assert_eq!(task.created_at, "2026-01-01T00:00:00.000+00:00");
+        assert_eq!(task.updated_at, "2026-01-01T00:00:01.000+00:00");
+        assert_eq!(
+            task.base_head.as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(task.snapshot, Some(serde_json::json!({"head": "abc"})));
+        assert_eq!(task.revision_count, 2);
+        assert_eq!(
+            task.close_requested_at.as_deref(),
+            Some("2026-01-01T00:00:02.000+00:00")
+        );
+        assert_eq!(task.close_reason.as_deref(), Some("user asked to stop"));
+    }
+
+    #[test]
+    fn task_row_maps_row_from_schema_v6_table() {
+        let dir = TempDir::new("task-row-schema");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+
+        let connection = Connection::open(&path).expect("open database");
+        connection
+            .execute(
+                "INSERT INTO tasks (task_id, project_id, workspace, status, session_id, task, \
+                 allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
+                 revision_count, close_requested_at, close_reason) \
+                 VALUES (?1, 'proj', '/fixture/workspace', 'implementing', 'ses-1', \
+                 'Implement the fixture change', '[\"module.py\"]', '[\"pytest -q\"]', \
+                 '2026-01-01T00:00:00.000+00:00', '2026-01-01T00:00:01.000+00:00', \
+                 '1111111111111111111111111111111111111111', '{\"head\":\"abc\"}', 0, NULL, NULL)",
+                rusqlite::params![VALID_TASK_ID],
+            )
+            .expect("insert task row");
+
+        let task = connection
+            .query_row(
+                &format!("SELECT {TASK_ROW_COLUMNS} FROM tasks"),
+                [],
+                |row| Ok(Task::from_row(row)),
+            )
+            .expect("row query must execute")
+            .expect("valid persisted row must map");
+
+        assert_eq!(task.task_id.to_string(), VALID_TASK_ID);
+        assert_eq!(task.status, TaskStatus::Implementing);
+        assert_eq!(task.allowed_paths, ["module.py"]);
+        assert_eq!(task.revision_count, 0);
+        assert_eq!(task.snapshot, Some(serde_json::json!({"head": "abc"})));
+    }
+
+    #[test]
+    fn task_row_preserves_nullable_columns() {
+        let mut values = valid_task_values();
+        values[4] = SqlValue::Null;
+        values[10] = SqlValue::Null;
+        values[11] = SqlValue::Null;
+        values[13] = SqlValue::Null;
+        values[14] = SqlValue::Null;
+
+        let task = map_task_values(&values).expect("nullable row must map");
+        assert_eq!(task.session_id, None);
+        assert_eq!(task.base_head, None);
+        assert_eq!(task.snapshot, None);
+        assert_eq!(task.close_requested_at, None);
+        assert_eq!(task.close_reason, None);
+    }
+
+    #[test]
+    fn task_row_maps_every_status() {
+        for status in TaskStatus::ALL {
+            let mut values = valid_task_values();
+            values[3] = SqlValue::Text(status.as_str().to_owned());
+            let task = map_task_values(&values).expect("known status must map");
+            assert_eq!(task.status, status);
+        }
+    }
+
+    #[test]
+    fn task_row_classifies_active_and_terminal_statuses() {
+        let active = [
+            TaskStatus::Implementing,
+            TaskStatus::AwaitingReview,
+            TaskStatus::Revising,
+            TaskStatus::NeedsUser,
+            TaskStatus::Failed,
+            TaskStatus::DeliveryUnknown,
+        ];
+        for status in active {
+            let mut values = valid_task_values();
+            values[3] = SqlValue::Text(status.as_str().to_owned());
+            let task = map_task_values(&values).expect("active status must map");
+            assert!(task.status.is_active(), "{status} must be active");
+            assert!(!task.status.is_terminal(), "{status} must not be terminal");
+        }
+
+        for status in [TaskStatus::Accepted, TaskStatus::Closed] {
+            let mut values = valid_task_values();
+            values[3] = SqlValue::Text(status.as_str().to_owned());
+            let task = map_task_values(&values).expect("terminal status must map");
+            assert!(task.status.is_terminal(), "{status} must be terminal");
+            assert!(!task.status.is_active(), "{status} must not be active");
+        }
+    }
+
+    #[test]
+    fn task_row_rejects_unknown_status() {
+        let mut values = valid_task_values();
+        values[3] = SqlValue::Text("bogus".to_owned());
+        let error = map_task_values(&values).expect_err("unknown status must fail");
+        assert!(matches!(error, TaskRowError::UnknownStatus), "{error:?}");
+    }
+
+    #[test]
+    fn task_row_rejects_invalid_task_uuid() {
+        let mut values = valid_task_values();
+        values[0] = SqlValue::Text("task-1".to_owned());
+        let error = map_task_values(&values).expect_err("synthetic task id must fail");
+        assert!(matches!(error, TaskRowError::InvalidTaskId), "{error:?}");
+    }
+
+    #[test]
+    fn task_row_rejects_empty_project_id() {
+        let mut values = valid_task_values();
+        values[1] = SqlValue::Text(String::new());
+        let error = map_task_values(&values).expect_err("empty project id must fail");
+        assert!(matches!(error, TaskRowError::InvalidProjectId), "{error:?}");
+    }
+
+    #[test]
+    fn task_row_rejects_malformed_json_columns() {
+        let cases: [(usize, &str); 3] =
+            [(6, "allowed_paths"), (7, "test_commands"), (11, "snapshot")];
+        for (index, column) in cases {
+            let mut values = valid_task_values();
+            values[index] = SqlValue::Text("{not json".to_owned());
+            let error = map_task_values(&values).expect_err("malformed JSON must fail");
+            match error {
+                TaskRowError::MalformedJson { column: actual } => assert_eq!(actual, column),
+                other => panic!("{column}: expected malformed JSON, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_row_rejects_wrong_shaped_json_arrays() {
+        let cases: [(usize, &str, &str); 4] = [
+            (6, "allowed_paths", "{\"module.py\": true}"),
+            (6, "allowed_paths", "[\"module.py\", 3]"),
+            (7, "test_commands", "\"pytest -q\""),
+            (7, "test_commands", "[[\"pytest\"]]"),
+        ];
+        for (index, column, raw) in cases {
+            let mut values = valid_task_values();
+            values[index] = SqlValue::Text(raw.to_owned());
+            let error = map_task_values(&values).expect_err("wrong shape must fail");
+            match error {
+                TaskRowError::WrongJsonShape { column: actual } => assert_eq!(actual, column),
+                other => panic!("{column}: expected wrong shape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_row_rejects_wrong_shaped_snapshot_json() {
+        let cases: [&str; 4] = ["[]", "\"text\"", "1", "true"];
+        for raw in cases {
+            let mut values = valid_task_values();
+            values[11] = SqlValue::Text(raw.to_owned());
+            let error = map_task_values(&values).expect_err("wrong snapshot shape must fail");
+            match error {
+                TaskRowError::WrongJsonShape { column } => assert_eq!(column, "snapshot"),
+                other => panic!("snapshot {raw}: expected wrong shape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_row_maps_json_null_snapshot_to_none() {
+        let mut values = valid_task_values();
+        values[11] = SqlValue::Text("null".to_owned());
+        let task = map_task_values(&values).expect("JSON null snapshot must map");
+        assert_eq!(task.snapshot, None);
+    }
+
+    #[test]
+    fn task_row_rejects_sqlite_type_mismatches() {
+        let cases: [(usize, &str, SqlValue); 4] = [
+            (2, "workspace", SqlValue::Integer(7)),
+            (5, "task", SqlValue::Null),
+            (6, "allowed_paths", SqlValue::Null),
+            (12, "revision_count", SqlValue::Text("7".to_owned())),
+        ];
+        for (index, column, replacement) in cases {
+            let mut values = valid_task_values();
+            values[index] = replacement;
+            let error = map_task_values(&values).expect_err("type mismatch must fail");
+            match error {
+                TaskRowError::ColumnType { column: actual } => assert_eq!(actual, column),
+                other => panic!("{column}: expected column type error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_row_rejects_negative_revision_count() {
+        let mut values = valid_task_values();
+        values[12] = SqlValue::Integer(-1);
+        let error = map_task_values(&values).expect_err("negative revision count must fail");
+        assert!(
+            matches!(error, TaskRowError::NegativeRevisionCount),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn task_row_rejects_missing_column() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        let result = connection
+            .query_row(
+                "SELECT ?1 AS task_id",
+                rusqlite::params![VALID_TASK_ID],
+                |row| Ok(Task::from_row(row)),
+            )
+            .expect("row query must execute");
+        let error = result.expect_err("missing column must fail");
+        match error {
+            TaskRowError::MissingColumn { column } => assert_eq!(column, "project_id"),
+            other => panic!("expected missing column, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_row_errors_do_not_leak_row_data() {
+        const SECRET: &str = "super-secret-token";
+
+        let mut values = valid_task_values();
+        values[0] = SqlValue::Text(SECRET.to_owned());
+        let error = map_task_values(&values).expect_err("invalid uuid must fail");
+        assert_error_is_safe(&error, SECRET);
+
+        let mut values = valid_task_values();
+        values[3] = SqlValue::Text(SECRET.to_owned());
+        let error = map_task_values(&values).expect_err("unknown status must fail");
+        assert_error_is_safe(&error, SECRET);
+
+        let mut values = valid_task_values();
+        values[6] = SqlValue::Text(SECRET.to_owned());
+        let error = map_task_values(&values).expect_err("malformed JSON must fail");
+        assert_error_is_safe(&error, SECRET);
+
+        let mut values = valid_task_values();
+        values[7] = SqlValue::Text(format!("{{\"secret\": \"{SECRET}\"}}"));
+        let error = map_task_values(&values).expect_err("wrong shape must fail");
+        assert_error_is_safe(&error, SECRET);
     }
 
     struct TempDir {

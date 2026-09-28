@@ -134,9 +134,50 @@ Data model и serde compatibility без runtime logic.
   (Python-семантика reuse) и fail-closed `VerifierResultConflict` для
   отличающегося результата. Проверяются task/round, project membership,
   current round и пара `verifier_state`/`verifier_json`; events не пишутся.
-- **Остаётся (следующий незавершённый шаг потока 3):** cooperative close и
-  `reopen_failed_round`, затем задачи **3.10** (storage isolation/импорт копии)
-  и **3.11** (ownership/format marker).
+- **3.9c. reopen_failed_round — завершено.** Типизированный
+  `StorageConnection::reopen_failed_round` и `ReopenFailedRoundOutcome`
+  (`Reopened`/`NotEligible`). В одной `BEGIN IMMEDIATE` транзакции читаются task
+  и его current round, обе строки маппятся через production-контракт, и
+  восстановление выполняется только при `task.status=failed`, отсутствии
+  `close_requested_at`, `round.status=failed` с
+  `error_code=RECOVERABLE_FAILED_ERROR_CODE` (`assistant_error`) и
+  согласованности round с task. Round атомарно переводится `failed->observing`,
+  `error_code` очищается, task возвращается в `implementing` (implement) или
+  `revising` (revise), и пишется ровно одно событие `reopened`
+  (`failed assistant_error reopened for recovery`) с общим timestamp.
+  Неизвестная/неподходящая задача и повторный вызов дают `NotEligible` без
+  записей (Python no-op); другие error_code, pending cooperative close,
+  не-current/несогласованный round и повреждённые строки не восстанавливаются,
+  а некорректный persisted state отвергается fail closed без частичных записей.
+- **3.9d. Cooperative close — завершено.** Типизированные
+  `StorageConnection::request_task_close` (`RequestTaskCloseOutcome`:
+  `Requested`/`AlreadyRequested`/`UnknownTask`/`Terminal`) и
+  `StorageConnection::complete_requested_close`
+  (`CompleteRequestedCloseOutcome`: `Closed`/`NoCloseRequest`/`Terminal`/
+  `UnknownTask`), а `finish_round` учитывает pending close. В одной
+  `BEGIN IMMEDIATE` транзакции `request_task_close` по Python-семантике даёт
+  `UnknownTask` для отсутствующей задачи, `Terminal(status)` для
+  `accepted`/`closed`, при первом запросе сохраняет `close_requested_at`,
+  `close_reason` (до 300 Unicode-символов, как Python `reason[:300]`),
+  `updated_at` и ровно одно событие `close_requested` (`round_number=NULL`,
+  `task close requested`) с единым timestamp, а повтор возвращает
+  `AlreadyRequested` без изменения timestamp/reason и без нового события.
+  `complete_requested_close` переводит nonterminal-задачу с запросом в `closed`
+  и пишет ровно одно событие `closed` (`round_number=NULL`,
+  `task closed: <reason>`; пустой/отсутствующий reason использует точный
+  fallback `requested while worker was running`), а unknown/terminal/без-запроса
+  и повтор — типизированный no-op без записей. `finish_round` всегда пишет
+  запрошенные round fields/status, но при pending close применяет фактический
+  переход task в `closed` (валидируется через `TaskStatus::require_transition`)
+  и пишет событие `closed` вместо round-finished, поэтому caller-supplied
+  `task_status` не обходит pending close. Paired-записи и события атомарны и
+  используют один timestamp, event failure откатывает всю транзакцию, а ошибки
+  не раскрывают ids, reason, response, SQL, JSON и пути. Pending close
+  по-прежнему запрещает `reopen_failed_round`. Schema/version/fixtures не
+  менялись.
+- **Этап 3.9 завершён.** Следующий незавершённый шаг потока 3 — задача **3.10**
+  (storage isolation и односторонний импорт копии), затем **3.11**
+  (ownership/format marker).
 
 ### 3.10. Storage isolation и односторонний импорт копии
 

@@ -86,8 +86,34 @@
 //! [`RoundRow::from_row`]) and never overwrite a persisted `done` result: an
 //! identical completed result is replayed without any write, a different one is
 //! a fail-closed conflict, and a stale `begin` cannot undo a finished run.
-//! Cooperative close, `reopen_failed_round` and schema changes remain out of
-//! scope.
+//!
+//! Reopen of a recoverable failed round (task 3.9c) is provided by
+//! [`StorageConnection::reopen_failed_round`]. In one `BEGIN IMMEDIATE`
+//! transaction it reopens the current round only when the task is `failed`, no
+//! cooperative close is pending and the current round is `failed` with
+//! [`RECOVERABLE_FAILED_ERROR_CODE`], flipping the round to `observing`,
+//! clearing `error_code`, restoring the task to `implementing`/`revising` and
+//! writing exactly one `reopened` event with one shared timestamp. The
+//! `failed -> observing` recovery transition is validated locally inside this
+//! method and is deliberately absent from [`ROUND_TRANSITIONS`], so the generic
+//! lifecycle methods can never perform it. Non-eligible and repeated calls are a
+//! typed no-op; corrupted rows fail closed.
+//!
+//! Cooperative close (task 3.9d) is provided by
+//! [`StorageConnection::request_task_close`] and
+//! [`StorageConnection::complete_requested_close`], and is also honoured inside
+//! [`StorageConnection::finish_round`]. `request_task_close` persists a pending
+//! `close_requested_at`/`close_reason` (truncated to 300 Unicode scalar values
+//! like Python `reason[:300]`) with exactly one `close_requested` event
+//! (`round_number = NULL`) and is idempotent on repeat. `complete_requested_close`
+//! atomically moves a non-terminal task with a pending request to `closed` with
+//! exactly one `closed` event. `finish_round` always writes the requested round
+//! fields/status but, when a close is pending, applies the *effective*
+//! `closed` task transition (validated through [`TaskStatus::require_transition`])
+//! and writes the `closed` event instead of the round-finished event, so a
+//! caller-supplied `task_status` can never bypass a pending close. All paired
+//! writes and events share one timestamp and every failure rolls the whole
+//! transaction back. Schema changes remain out of scope.
 
 use std::error::Error;
 use std::fmt;
@@ -2577,13 +2603,16 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUSY_TIMEOUT_MS, Column, CompleteVerifierInput, ConnectError, Contract,
+        BUSY_TIMEOUT_MS, CLOSE_REASON_FALLBACK, CLOSE_REASON_MAX_CHARS, Column,
+        CompleteRequestedCloseOutcome, CompleteVerifierInput, ConnectError, Contract,
         CreateRevisionRoundInput, CreateTaskError, CreateTaskInput, CreateTaskOutcome,
         FinishRoundInput, ForeignKey, Index, InitializeError, InspectError, QueryError,
-        ROUND_TRANSITIONS, ReplayStateError, RoundRef, RoundRow, RoundRowError, RoundUpdateError,
-        SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table, Task, TaskRowError,
-        V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect, initialize, inspect,
-        open_read_only, query_user_version, round_transition_allowed, v6_contract,
+        RECOVERABLE_FAILED_ERROR_CODE, ROUND_TRANSITIONS, ReopenFailedRoundOutcome,
+        ReplayStateError, RequestTaskCloseOutcome, RoundRef, RoundRow, RoundRowError,
+        RoundUpdateError, SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table,
+        Task, TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect,
+        initialize, inspect, open_read_only, query_user_version, round_transition_allowed,
+        v6_contract,
     };
     use bridge_domain::{
         ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerificationCommand,
@@ -6184,6 +6213,31 @@ mod tests {
             .expect("setup finish");
     }
 
+    /// Drives the current round of an existing task to `failed` with `error_code`
+    /// so reopen tests start from a known eligible or non-eligible state.
+    fn fail_current_round(
+        storage: &mut StorageConnection,
+        task_id: TaskId,
+        project: &ProjectId,
+        round_number: u32,
+        error_code: &str,
+    ) {
+        storage
+            .mark_round_observing(round_ref(task_id, project, round_number))
+            .expect("setup observing");
+        storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, project, round_number),
+                round_status: RoundStatus::Failed,
+                task_status: TaskStatus::Failed,
+                response_message_id: None,
+                response: Some("boom".to_owned()),
+                error_code: Some(error_code.to_owned()),
+                result_json: None,
+            })
+            .expect("setup fail");
+    }
+
     fn assert_round_update_error_is_safe(error: &RoundUpdateError, secret: &str) {
         let display = error.to_string();
         let debug = format!("{error:?}");
@@ -6227,6 +6281,7 @@ mod tests {
                 );
             }
         }
+        // The recovery transition must not leak into the shared table.
         assert!(!round_transition_allowed(
             RoundStatus::Failed,
             RoundStatus::Observing
@@ -6897,6 +6952,61 @@ mod tests {
             .expect("needs_user self transition");
         assert_eq!(second.round.status, RoundStatus::NeedsUser);
         assert_eq!(second.task.status, TaskStatus::NeedsUser);
+    }
+
+    #[test]
+    fn finish_round_cannot_reopen_a_failed_round() {
+        // Regression for the 3.9c review: `failed -> observing` must be
+        // reachable only through `reopen_failed_round` after its eligibility
+        // guards, never through the generic `finish_round` path. Even a
+        // recoverable `assistant_error` (and a task with a pending close) must
+        // be rejected by `finish_round` with no partial write.
+        for (label, error_code, close_requested) in [
+            ("nonrecoverable", "workspace_mismatch", false),
+            ("assistant_error", RECOVERABLE_FAILED_ERROR_CODE, false),
+            ("pending_close", RECOVERABLE_FAILED_ERROR_CODE, true),
+        ] {
+            let (dir, mut storage) = open_query_storage("round-finish-reopen-guard");
+            let path = dir.join("state.sqlite");
+            let project = query_project(QUERY_PROJECT_A);
+            let task_id = query_task_id(1);
+            storage
+                .create_task(create_task_input(task_id, &project, "req-fin-reopen"))
+                .expect("create");
+            fail_current_round(&mut storage, task_id, &project, 1, error_code);
+            if close_requested {
+                execute(
+                    &path,
+                    &format!(
+                        "UPDATE tasks SET close_requested_at = '2026-01-01T00:00:00.000+00:00', \
+                         close_reason = 'stuck' WHERE task_id = '{task_id}'"
+                    ),
+                );
+            }
+
+            let rounds_before = dump_rows(&storage, "rounds");
+            let tasks_before = dump_rows(&storage, "tasks");
+            let events_before = event_rows(&storage, task_id);
+
+            let error = storage
+                .finish_round(FinishRoundInput {
+                    round: round_ref(task_id, &project, 1),
+                    round_status: RoundStatus::Observing,
+                    task_status: TaskStatus::Implementing,
+                    response_message_id: None,
+                    response: None,
+                    error_code: None,
+                    result_json: None,
+                })
+                .expect_err("finish_round must not reopen a failed round");
+            assert!(
+                matches!(error, RoundUpdateError::InvalidRoundTransition),
+                "{label}: {error:?}"
+            );
+            assert_eq!(dump_rows(&storage, "rounds"), rounds_before, "{label}");
+            assert_eq!(dump_rows(&storage, "tasks"), tasks_before, "{label}");
+            assert_eq!(event_rows(&storage, task_id), events_before, "{label}");
+        }
     }
 
     #[test]
@@ -7654,6 +7764,1092 @@ mod tests {
         assert_eq!(winners, 1, "{results:?}");
         assert_eq!(replays, 1, "{results:?}");
     }
+
+    #[test]
+    fn reopen_failed_implement_round_restores_implementing() {
+        let (_dir, mut storage) = open_query_storage("reopen-implement");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-reopen"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+
+        let outcome = storage
+            .reopen_failed_round(task_id)
+            .expect("reopen must succeed");
+        let reopened = outcome.reopened().expect("must be reopened");
+        assert_eq!(reopened.round.round_number, 1);
+        assert_eq!(reopened.round.status, RoundStatus::Observing);
+        assert_eq!(reopened.round.error_code, None);
+        assert_eq!(reopened.task.status, TaskStatus::Implementing);
+        assert_eq!(reopened.round.updated_at, reopened.task.updated_at);
+
+        let events = event_rows(&storage, task_id);
+        let reopened_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.1 == "reopened")
+            .collect();
+        assert_eq!(reopened_events.len(), 1);
+        assert_eq!(reopened_events[0].0, Some(1));
+        assert_eq!(
+            reopened_events[0].2,
+            "failed assistant_error reopened for recovery"
+        );
+
+        // Idempotent: a repeated call after the transition is a typed no-op.
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("repeat"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(
+            fetch_task(&storage, task_id).status,
+            TaskStatus::Implementing
+        );
+        assert_eq!(event_rows(&storage, task_id).len(), events.len());
+    }
+
+    #[test]
+    fn reopen_failed_revision_round_restores_revising() {
+        let (_dir, mut storage) = open_query_storage("reopen-revision");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        setup_awaiting_review(&mut storage, task_id, &project);
+        storage
+            .create_revision_round(CreateRevisionRoundInput {
+                task_id,
+                project_id: project.clone(),
+                round_number: 2,
+                request_id: "rev-reopen".to_owned(),
+                payload_hash: "hash-reopen".to_owned(),
+                findings: Some("fix it".to_owned()),
+            })
+            .expect("revision");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            2,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+
+        let outcome = storage
+            .reopen_failed_round(task_id)
+            .expect("reopen must succeed");
+        let reopened = outcome.reopened().expect("must be reopened");
+        assert_eq!(reopened.round.round_number, 2);
+        assert_eq!(reopened.round.status, RoundStatus::Observing);
+        assert_eq!(reopened.round.error_code, None);
+        assert_eq!(reopened.task.status, TaskStatus::Revising);
+        // The previous round keeps its recorded status.
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Complete
+        );
+    }
+
+    #[test]
+    fn reopen_rejects_nonrecoverable_error_codes() {
+        for error_code in [
+            "workspace_mismatch",
+            "session_not_found",
+            "session_directory_mismatch",
+            "worker_error",
+        ] {
+            let (_dir, mut storage) = open_query_storage("reopen-nonrecoverable");
+            let project = query_project(QUERY_PROJECT_A);
+            let task_id = query_task_id(1);
+            storage
+                .create_task(create_task_input(task_id, &project, "req-nonrec"))
+                .expect("create");
+            fail_current_round(&mut storage, task_id, &project, 1, error_code);
+
+            assert_eq!(
+                storage.reopen_failed_round(task_id).expect("reopen"),
+                ReopenFailedRoundOutcome::NotEligible,
+                "{error_code}"
+            );
+            let round = fetch_round(&storage, task_id, 1);
+            assert_eq!(round.status, RoundStatus::Failed);
+            assert_eq!(round.error_code.as_deref(), Some(error_code));
+            assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+            assert!(
+                event_rows(&storage, task_id)
+                    .iter()
+                    .all(|event| event.1 != "reopened"),
+                "{error_code}"
+            );
+        }
+    }
+
+    #[test]
+    fn reopen_requires_failed_task_and_failed_current_round() {
+        let (dir, mut storage) = open_query_storage("reopen-requires");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-requires"))
+            .expect("create");
+
+        // A task not in `failed` is never reopened.
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        // The task still says failed but the current round is no longer a failed
+        // assistant error.
+        execute(
+            &path,
+            &format!(
+                "UPDATE rounds SET status = 'needs_user' \
+                 WHERE task_id = '{task_id}' AND round_number = 1"
+            ),
+        );
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+        assert!(
+            event_rows(&storage, task_id)
+                .iter()
+                .all(|event| event.1 != "reopened")
+        );
+    }
+
+    #[test]
+    fn reopen_unknown_task_is_not_eligible() {
+        let (_dir, mut storage) = open_query_storage("reopen-unknown");
+        assert_eq!(
+            storage
+                .reopen_failed_round(query_task_id(9))
+                .expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(count_rows(&storage, "events"), 0);
+    }
+
+    #[test]
+    fn reopen_refuses_when_close_requested() {
+        let (dir, mut storage) = open_query_storage("reopen-close");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-close"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        execute(
+            &path,
+            &format!(
+                "UPDATE tasks SET close_requested_at = '2026-01-01T00:00:00.000+00:00', \
+                 close_reason = 'stuck' WHERE task_id = '{task_id}'"
+            ),
+        );
+
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Failed
+        );
+        assert!(
+            event_rows(&storage, task_id)
+                .iter()
+                .all(|event| event.1 != "reopened")
+        );
+    }
+
+    #[test]
+    fn reopen_does_not_reopen_a_non_current_failed_round() {
+        let (dir, mut storage) = open_query_storage("reopen-noncurrent");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-noncurrent"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        // A later round is now the current one, so the earlier failed round is
+        // no longer eligible.
+        seed_round_raw(
+            &path,
+            &task_id.to_string(),
+            project.as_str(),
+            2,
+            "extra-req",
+            "extra-hash",
+            "revise",
+        );
+
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Failed
+        );
+        assert_eq!(
+            fetch_round(&storage, task_id, 2).status,
+            RoundStatus::Pending
+        );
+        assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+    }
+
+    #[test]
+    fn reopen_rejects_inconsistent_task_round_pair_fail_closed() {
+        let (dir, mut storage) = open_query_storage("reopen-inconsistent");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-inconsistent"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        execute(
+            &path,
+            &format!(
+                "UPDATE rounds SET project_id = 'other-project' \
+                 WHERE task_id = '{task_id}' AND round_number = 1"
+            ),
+        );
+
+        let error = storage
+            .reopen_failed_round(task_id)
+            .expect_err("inconsistent pair must fail closed");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidPersistedState),
+            "{error:?}"
+        );
+        assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Failed
+        );
+        assert!(
+            event_rows(&storage, task_id)
+                .iter()
+                .all(|event| event.1 != "reopened")
+        );
+    }
+
+    #[test]
+    fn reopen_is_all_or_nothing_on_event_failure() {
+        let (dir, mut storage) = open_query_storage("reopen-rollback");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-rb-reopen"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        let task_before = fetch_task(&storage, task_id);
+        let round_before = fetch_round(&storage, task_id, 1);
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .reopen_failed_round(task_id)
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+        assert_eq!(fetch_task(&storage, task_id), task_before);
+        assert_eq!(fetch_round(&storage, task_id, 1), round_before);
+    }
+
+    #[test]
+    fn reopen_errors_do_not_leak_input() {
+        const SECRET: &str = "reopen-secret-token";
+        let (dir, mut storage) = open_query_storage("reopen-error-safety");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-safe-reopen"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+
+        execute(
+            &path,
+            &format!(
+                "UPDATE rounds SET kind = '{SECRET}' \
+                 WHERE task_id = '{task_id}' AND round_number = 1"
+            ),
+        );
+        let error = storage
+            .reopen_failed_round(task_id)
+            .expect_err("corrupt kind must fail closed");
+        assert!(matches!(error, RoundUpdateError::RoundRow(_)), "{error:?}");
+        assert_round_update_error_is_safe(&error, SECRET);
+
+        execute(
+            &path,
+            &format!(
+                "UPDATE rounds SET kind = 'implement', status = '{SECRET}' \
+                 WHERE task_id = '{task_id}' AND round_number = 1"
+            ),
+        );
+        let error = storage
+            .reopen_failed_round(task_id)
+            .expect_err("corrupt status must fail closed");
+        assert!(matches!(error, RoundUpdateError::RoundRow(_)), "{error:?}");
+        assert_round_update_error_is_safe(&error, SECRET);
+    }
+
+    #[test]
+    fn concurrent_reopen_failed_round_yields_one_winner() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("reopen-concurrent");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-conc-reopen"))
+                .expect("create");
+            fail_current_round(
+                &mut storage,
+                task_id,
+                &project,
+                1,
+                RECOVERABLE_FAILED_ERROR_CODE,
+            );
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.reopen_failed_round(task_id)
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let winners = results
+            .iter()
+            .filter(|result| matches!(result, Ok(ReopenFailedRoundOutcome::Reopened(_))))
+            .count();
+        let noops = results
+            .iter()
+            .filter(|result| matches!(result, Ok(ReopenFailedRoundOutcome::NotEligible)))
+            .count();
+        assert_eq!(winners, 1, "{results:?}");
+        assert_eq!(noops, 3, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        assert_eq!(
+            fetch_task(&storage, task_id).status,
+            TaskStatus::Implementing
+        );
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Observing
+        );
+        assert_eq!(count_rows(&storage, "events"), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Cooperative close (task 3.9d).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn request_task_close_persists_request_and_single_event() {
+        let (_dir, mut storage) = open_query_storage("close-request-happy");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-close-happy"))
+            .expect("create");
+        let events_before = event_rows(&storage, task_id);
+
+        let outcome = storage
+            .request_task_close(task_id, "manual recovery")
+            .expect("request close must succeed");
+        let task = match &outcome {
+            RequestTaskCloseOutcome::Requested(task) => task,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert!(outcome.is_close_requested());
+        assert_eq!(task.status, TaskStatus::Implementing);
+        assert_eq!(task.close_reason.as_deref(), Some("manual recovery"));
+        let requested_at = task
+            .close_requested_at
+            .clone()
+            .expect("close_requested_at must be set");
+        assert!(is_rfc3339_millis_utc(&requested_at));
+        assert_eq!(task.updated_at, requested_at);
+
+        let events = event_rows(&storage, task_id);
+        assert_eq!(events.len(), events_before.len() + 1);
+        let new_event = events.last().expect("new event");
+        assert_eq!(new_event.0, None);
+        assert_eq!(new_event.1, "close_requested");
+        assert_eq!(new_event.2, "task close requested");
+
+        let created_at: String = storage
+            .connection()
+            .query_row(
+                "SELECT created_at FROM events WHERE task_id = ?1 AND kind = 'close_requested'",
+                rusqlite::params![task_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("event created_at");
+        assert_eq!(created_at, requested_at);
+    }
+
+    #[test]
+    fn request_task_close_repeat_is_idempotent() {
+        let (_dir, mut storage) = open_query_storage("close-request-repeat");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-close-repeat"))
+            .expect("create");
+        storage
+            .request_task_close(task_id, "first reason")
+            .expect("first request");
+        let task_before = fetch_task(&storage, task_id);
+        let events_before = event_rows(&storage, task_id);
+
+        let outcome = storage
+            .request_task_close(task_id, "second reason")
+            .expect("repeat must succeed");
+        let task = match &outcome {
+            RequestTaskCloseOutcome::AlreadyRequested(task) => task,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(task.close_reason.as_deref(), Some("first reason"));
+        assert_eq!(task.close_requested_at, task_before.close_requested_at);
+        assert_eq!(task.updated_at, task_before.updated_at);
+        assert_eq!(fetch_task(&storage, task_id), task_before);
+        assert_eq!(event_rows(&storage, task_id), events_before);
+    }
+
+    #[test]
+    fn request_task_close_unknown_and_terminal_are_typed_noops() {
+        let (_dir, mut storage) = open_query_storage("close-request-noop");
+        assert_eq!(
+            storage
+                .request_task_close(query_task_id(9), "x")
+                .expect("unknown task"),
+            RequestTaskCloseOutcome::UnknownTask
+        );
+        assert_eq!(count_rows(&storage, "events"), 0);
+
+        let project = query_project(QUERY_PROJECT_A);
+        for (index, status) in [TaskStatus::Accepted, TaskStatus::Closed]
+            .into_iter()
+            .enumerate()
+        {
+            let task_id = query_task_id(2 + u32::try_from(index).expect("index"));
+            insert_query_task(&storage, task_id, &project, status, TS_EARLY, TS_MID);
+            let events_before = event_rows(&storage, task_id);
+
+            assert_eq!(
+                storage
+                    .request_task_close(task_id, "x")
+                    .expect("terminal task"),
+                RequestTaskCloseOutcome::Terminal(status)
+            );
+            let task = fetch_task(&storage, task_id);
+            assert_eq!(task.close_requested_at, None, "{status}");
+            assert_eq!(task.close_reason, None, "{status}");
+            assert_eq!(event_rows(&storage, task_id), events_before, "{status}");
+        }
+    }
+
+    #[test]
+    fn request_task_close_truncates_reason_unicode_safe() {
+        let (_dir, mut storage) = open_query_storage("close-request-unicode");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-unicode"))
+            .expect("create");
+
+        let emoji = "\u{1F600}";
+        let reason = emoji.repeat(CLOSE_REASON_MAX_CHARS + 50);
+        let outcome = storage
+            .request_task_close(task_id, &reason)
+            .expect("request close");
+        let task = outcome.task().expect("requested task");
+        let stored = task.close_reason.as_deref().expect("stored reason");
+        assert_eq!(stored.chars().count(), CLOSE_REASON_MAX_CHARS);
+        assert_eq!(stored, emoji.repeat(CLOSE_REASON_MAX_CHARS));
+        assert_eq!(
+            stored.len(),
+            CLOSE_REASON_MAX_CHARS * emoji.len(),
+            "truncation must count Unicode scalar values, not bytes"
+        );
+
+        let ascii_id = query_task_id(2);
+        let project_b = query_project(QUERY_PROJECT_B);
+        storage
+            .create_task(create_task_input(ascii_id, &project_b, "req-ascii"))
+            .expect("create ascii");
+        let ascii = "a".repeat(CLOSE_REASON_MAX_CHARS + 1);
+        let outcome = storage
+            .request_task_close(ascii_id, &ascii)
+            .expect("request ascii close");
+        assert_eq!(
+            outcome.task().expect("task").close_reason.as_deref(),
+            Some("a".repeat(CLOSE_REASON_MAX_CHARS).as_str())
+        );
+    }
+
+    #[test]
+    fn complete_requested_close_closes_with_reason_and_fallback() {
+        let (dir, mut storage) = open_query_storage("close-complete-happy");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-complete"))
+            .expect("create");
+        storage
+            .request_task_close(task_id, "manual recovery")
+            .expect("request");
+
+        let outcome = storage
+            .complete_requested_close(task_id)
+            .expect("complete must succeed");
+        let task = match &outcome {
+            CompleteRequestedCloseOutcome::Closed(task) => task,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert_eq!(task.close_reason.as_deref(), Some("manual recovery"));
+
+        let events = event_rows(&storage, task_id);
+        let closed_events: Vec<_> = events.iter().filter(|event| event.1 == "closed").collect();
+        assert_eq!(closed_events.len(), 1);
+        assert_eq!(closed_events[0].0, None);
+        assert_eq!(closed_events[0].2, "task closed: manual recovery");
+
+        let created_at: String = storage
+            .connection()
+            .query_row(
+                "SELECT created_at FROM events WHERE task_id = ?1 AND kind = 'closed'",
+                rusqlite::params![task_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("closed event created_at");
+        assert_eq!(created_at, task.updated_at);
+
+        // An empty persisted reason uses the exact fallback.
+        let empty_id = query_task_id(2);
+        let project_b = query_project(QUERY_PROJECT_B);
+        storage
+            .create_task(create_task_input(empty_id, &project_b, "req-empty"))
+            .expect("create empty");
+        storage
+            .request_task_close(empty_id, "")
+            .expect("request empty");
+        let outcome = storage
+            .complete_requested_close(empty_id)
+            .expect("complete empty");
+        assert!(matches!(outcome, CompleteRequestedCloseOutcome::Closed(_)));
+        let events = event_rows(&storage, empty_id);
+        let closed: Vec<_> = events.iter().filter(|event| event.1 == "closed").collect();
+        assert_eq!(closed[0].2, format!("task closed: {CLOSE_REASON_FALLBACK}"));
+
+        // A missing persisted reason (NULL) also uses the fallback.
+        let null_id = query_task_id(3);
+        let project_c = query_project("query-project-c");
+        storage
+            .create_task(create_task_input(null_id, &project_c, "req-null"))
+            .expect("create null");
+        execute(
+            &path,
+            &format!(
+                "UPDATE tasks SET close_requested_at = '2026-01-01T00:00:00.000+00:00' \
+                 WHERE task_id = '{null_id}'"
+            ),
+        );
+        let outcome = storage
+            .complete_requested_close(null_id)
+            .expect("complete null");
+        assert!(matches!(outcome, CompleteRequestedCloseOutcome::Closed(_)));
+        let events = event_rows(&storage, null_id);
+        let closed: Vec<_> = events.iter().filter(|event| event.1 == "closed").collect();
+        assert_eq!(closed[0].2, format!("task closed: {CLOSE_REASON_FALLBACK}"));
+    }
+
+    #[test]
+    fn complete_requested_close_noop_cases_write_nothing() {
+        let (_dir, mut storage) = open_query_storage("close-complete-noop");
+        assert_eq!(
+            storage
+                .complete_requested_close(query_task_id(9))
+                .expect("unknown task"),
+            CompleteRequestedCloseOutcome::UnknownTask
+        );
+
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-noop"))
+            .expect("create");
+        let before = fetch_task(&storage, task_id);
+        assert_eq!(
+            storage
+                .complete_requested_close(task_id)
+                .expect("no request"),
+            CompleteRequestedCloseOutcome::NoCloseRequest
+        );
+        assert_eq!(fetch_task(&storage, task_id), before);
+        assert_eq!(count_rows(&storage, "events"), 1);
+
+        let terminal_id = query_task_id(2);
+        insert_query_task(
+            &storage,
+            terminal_id,
+            &project,
+            TaskStatus::Accepted,
+            TS_EARLY,
+            TS_MID,
+        );
+        assert_eq!(
+            storage
+                .complete_requested_close(terminal_id)
+                .expect("terminal task"),
+            CompleteRequestedCloseOutcome::Terminal(TaskStatus::Accepted)
+        );
+
+        storage
+            .request_task_close(task_id, "r")
+            .expect("request close");
+        assert!(matches!(
+            storage
+                .complete_requested_close(task_id)
+                .expect("first close"),
+            CompleteRequestedCloseOutcome::Closed(_)
+        ));
+        let events_after_first = event_rows(&storage, task_id);
+        assert_eq!(
+            storage
+                .complete_requested_close(task_id)
+                .expect("repeat close"),
+            CompleteRequestedCloseOutcome::Terminal(TaskStatus::Closed)
+        );
+        assert_eq!(event_rows(&storage, task_id), events_after_first);
+    }
+
+    #[test]
+    fn finish_round_honours_pending_close_and_ignores_caller_task_status() {
+        let (_dir, mut storage) = open_query_storage("close-finish-round");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-finish-close"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+        storage
+            .request_task_close(task_id, "stuck")
+            .expect("request close");
+        let events_before = event_rows(&storage, task_id);
+
+        let outcome = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: Some("msg-close".to_owned()),
+                response: Some("answer".to_owned()),
+                error_code: None,
+                result_json: None,
+            })
+            .expect("finish must succeed");
+
+        // The requested round fields/status are always written.
+        assert_eq!(outcome.round.status, RoundStatus::Complete);
+        assert_eq!(outcome.round.response.as_deref(), Some("answer"));
+        // The caller-supplied task status is overridden by the pending close.
+        assert_eq!(outcome.task.status, TaskStatus::Closed);
+        assert_eq!(outcome.round.updated_at, outcome.task.updated_at);
+
+        let events = event_rows(&storage, task_id);
+        assert_eq!(events.len(), events_before.len() + 1);
+        let new_event = events.last().expect("new event");
+        assert_eq!(new_event.0, None);
+        assert_eq!(new_event.1, "closed");
+        assert_eq!(new_event.2, "task closed: stuck");
+        assert!(
+            events.iter().all(|event| event.1 != "complete"),
+            "no round-finished event may be written for a pending close"
+        );
+    }
+
+    #[test]
+    fn finish_round_pending_close_validates_effective_transition() {
+        let (dir, mut storage) = open_query_storage("close-finish-transition");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-transition"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+        // A stale pending close on a terminal task must not be applied as an
+        // illegal `accepted -> closed` transition.
+        execute(
+            &path,
+            &format!(
+                "UPDATE tasks SET status = 'accepted', \
+                 close_requested_at = '2026-01-01T00:00:00.000+00:00', close_reason = 'stale' \
+                 WHERE task_id = '{task_id}'"
+            ),
+        );
+        let rounds_before = dump_rows(&storage, "rounds");
+        let tasks_before = dump_rows(&storage, "tasks");
+        let events_before = event_rows(&storage, task_id);
+
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::Closed,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect_err("accepted -> closed must be rejected");
+        assert!(
+            matches!(error, RoundUpdateError::InvalidTaskTransition),
+            "{error:?}"
+        );
+        assert_eq!(dump_rows(&storage, "rounds"), rounds_before);
+        assert_eq!(dump_rows(&storage, "tasks"), tasks_before);
+        assert_eq!(event_rows(&storage, task_id), events_before);
+    }
+
+    #[test]
+    fn finish_round_without_close_keeps_round_finished_semantics() {
+        let (_dir, mut storage) = open_query_storage("close-finish-none");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-finish-none"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+
+        let outcome = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect("finish");
+        assert_eq!(outcome.round.status, RoundStatus::Complete);
+        assert_eq!(outcome.task.status, TaskStatus::AwaitingReview);
+
+        let events = event_rows(&storage, task_id);
+        let finished: Vec<_> = events
+            .iter()
+            .filter(|event| event.1 == "complete")
+            .collect();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].0, Some(1));
+        assert_eq!(finished[0].2, "round finished: complete");
+        assert!(events.iter().all(|event| event.1 != "closed"));
+    }
+
+    #[test]
+    fn concurrent_request_task_close_yields_one_writer() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("close-request-concurrent");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-cc"))
+                .expect("create");
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.request_task_close(task_id, "concurrent")
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let requested = results
+            .iter()
+            .filter(|result| matches!(result, Ok(RequestTaskCloseOutcome::Requested(_))))
+            .count();
+        let already = results
+            .iter()
+            .filter(|result| matches!(result, Ok(RequestTaskCloseOutcome::AlreadyRequested(_))))
+            .count();
+        assert_eq!(requested, 1, "{results:?}");
+        assert_eq!(already, 3, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        let close_events = event_rows(&storage, task_id)
+            .into_iter()
+            .filter(|event| event.1 == "close_requested")
+            .count();
+        assert_eq!(close_events, 1);
+    }
+
+    #[test]
+    fn concurrent_complete_requested_close_yields_one_closer() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("close-complete-concurrent");
+        let path = dir.join("state.sqlite");
+        create_v6(&path);
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        {
+            let mut storage = connect(&path).expect("connect");
+            storage
+                .create_task(create_task_input(task_id, &project, "req-cc2"))
+                .expect("create");
+            storage
+                .request_task_close(task_id, "concurrent")
+                .expect("request");
+        }
+        drop(connect(&path).expect("pre-create WAL database"));
+
+        let path = Arc::new(path);
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut storage = connect(path.as_path()).expect("connect");
+                storage.complete_requested_close(task_id)
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread must not panic"))
+            .collect();
+        let closed = results
+            .iter()
+            .filter(|result| matches!(result, Ok(CompleteRequestedCloseOutcome::Closed(_))))
+            .count();
+        let terminal = results
+            .iter()
+            .filter(|result| matches!(result, Ok(CompleteRequestedCloseOutcome::Terminal(_))))
+            .count();
+        assert_eq!(closed, 1, "{results:?}");
+        assert_eq!(terminal, 3, "{results:?}");
+
+        let storage = connect(path.as_path()).expect("connect verify");
+        let closed_events = event_rows(&storage, task_id)
+            .into_iter()
+            .filter(|event| event.1 == "closed")
+            .count();
+        assert_eq!(closed_events, 1);
+    }
+
+    #[test]
+    fn request_task_close_rolls_back_on_event_failure_and_errors_are_safe() {
+        const SECRET: &str = "close-request-secret-token";
+        let (dir, mut storage) = open_query_storage("close-request-rollback");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-rb-close"))
+            .expect("create");
+        let before = fetch_task(&storage, task_id);
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .request_task_close(task_id, SECRET)
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+        assert_round_update_error_is_safe(&error, SECRET);
+        assert_eq!(fetch_task(&storage, task_id), before);
+    }
+
+    #[test]
+    fn complete_requested_close_rolls_back_on_event_failure_and_errors_are_safe() {
+        const SECRET: &str = "close-complete-secret-token";
+        let (dir, mut storage) = open_query_storage("close-complete-rollback");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-rb-complete"))
+            .expect("create");
+        storage
+            .request_task_close(task_id, SECRET)
+            .expect("request close");
+        let before = fetch_task(&storage, task_id);
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .complete_requested_close(task_id)
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+        assert_round_update_error_is_safe(&error, SECRET);
+        let after = fetch_task(&storage, task_id);
+        assert_eq!(after.status, TaskStatus::Implementing);
+        assert_eq!(after.close_requested_at, before.close_requested_at);
+        assert_eq!(after.close_reason.as_deref(), Some(SECRET));
+    }
+
+    #[test]
+    fn finish_round_pending_close_rolls_back_on_event_failure() {
+        let (dir, mut storage) = open_query_storage("close-finish-rollback");
+        let path = dir.join("state.sqlite");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-rb-finish"))
+            .expect("create");
+        storage
+            .mark_round_observing(round_ref(task_id, &project, 1))
+            .expect("observing");
+        storage
+            .request_task_close(task_id, "stuck")
+            .expect("request close");
+        let task_before = fetch_task(&storage, task_id);
+        let round_before = fetch_round(&storage, task_id, 1);
+        execute(&path, "DROP TABLE events");
+
+        let error = storage
+            .finish_round(FinishRoundInput {
+                round: round_ref(task_id, &project, 1),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: None,
+                error_code: None,
+                result_json: None,
+            })
+            .expect_err("event insert must fail");
+        assert!(matches!(error, RoundUpdateError::Database(_)), "{error:?}");
+        assert_eq!(fetch_task(&storage, task_id), task_before);
+        assert_eq!(fetch_round(&storage, task_id, 1), round_before);
+    }
+
+    #[test]
+    fn request_task_close_blocks_reopen_failed_round() {
+        let (_dir, mut storage) = open_query_storage("close-blocks-reopen");
+        let project = query_project(QUERY_PROJECT_A);
+        let task_id = query_task_id(1);
+        storage
+            .create_task(create_task_input(task_id, &project, "req-close-block"))
+            .expect("create");
+        fail_current_round(
+            &mut storage,
+            task_id,
+            &project,
+            1,
+            RECOVERABLE_FAILED_ERROR_CODE,
+        );
+        assert!(matches!(
+            storage
+                .request_task_close(task_id, "stuck")
+                .expect("request close"),
+            RequestTaskCloseOutcome::Requested(_)
+        ));
+
+        assert_eq!(
+            storage.reopen_failed_round(task_id).expect("reopen"),
+            ReopenFailedRoundOutcome::NotEligible
+        );
+        assert_eq!(fetch_task(&storage, task_id).status, TaskStatus::Failed);
+        assert_eq!(
+            fetch_round(&storage, task_id, 1).status,
+            RoundStatus::Failed
+        );
+        assert!(
+            event_rows(&storage, task_id)
+                .iter()
+                .all(|event| event.1 != "reopened")
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8058,14 +9254,22 @@ impl StorageConnection {
     ///
     /// Inside one `BEGIN IMMEDIATE` transaction the current task and round are
     /// read, the round status change is validated against [`ROUND_TRANSITIONS`]
-    /// and the task status change is validated through
+    /// and the *actually applied* task status change is validated through
     /// [`TaskStatus::require_transition`] (a no-op change of an already equal
     /// status is allowed). The allowed `response_message_id`, `response`,
     /// `error_code` and `result_json` columns are updated only when supplied;
     /// `result_json` must be a JSON object or `null`. The round status, task
     /// status and one event share a single timestamp, so round completion and
-    /// the task update can never be observed separately. Cooperative close is
-    /// deliberately not implemented here.
+    /// the task update can never be observed separately.
+    ///
+    /// A pending cooperative close (task 3.9d) takes precedence over the
+    /// caller-supplied `task_status`: the requested round fields/status are
+    /// always written, but the task is moved to `closed` (validated as the
+    /// effective transition) and exactly one `closed` event
+    /// (`round_number = NULL`, message `task closed: <reason>`, using the exact
+    /// fallback when the persisted reason is absent or empty) is written instead
+    /// of the round-finished event. A caller-supplied `task_status` can therefore
+    /// never bypass a pending close.
     ///
     /// # Errors
     ///
@@ -8093,9 +9297,15 @@ impl StorageConnection {
 
         let (task, row) = validate_current_round(&transaction, &input.round)?;
         require_round_transition(row.status, input.round_status)?;
-        if input.task_status != task.status {
+        let close_pending = task.close_requested_at.is_some();
+        let effective_task_status = if close_pending {
+            TaskStatus::Closed
+        } else {
+            input.task_status
+        };
+        if effective_task_status != task.status {
             task.status
-                .require_transition(input.task_status)
+                .require_transition(effective_task_status)
                 .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;
         }
 
@@ -8133,30 +9343,51 @@ impl StorageConnection {
             )
             .map_err(RoundUpdateError::Database)?;
 
-        transaction
-            .execute(
-                "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
-                params![
-                    input.task_status.as_str(),
-                    now,
-                    input.round.task_id.to_string()
-                ],
-            )
-            .map_err(RoundUpdateError::Database)?;
+        if close_pending {
+            transaction
+                .execute(
+                    "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
+                    params![
+                        TaskStatus::Closed.as_str(),
+                        now,
+                        input.round.task_id.to_string()
+                    ],
+                )
+                .map_err(RoundUpdateError::Database)?;
+            let message = close_event_message(task.close_reason.as_deref());
+            transaction
+                .execute(
+                    "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                     VALUES (?1, NULL, 'closed', ?2, ?3)",
+                    params![input.round.task_id.to_string(), message, now],
+                )
+                .map_err(RoundUpdateError::Database)?;
+        } else {
+            transaction
+                .execute(
+                    "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
+                    params![
+                        input.task_status.as_str(),
+                        now,
+                        input.round.task_id.to_string()
+                    ],
+                )
+                .map_err(RoundUpdateError::Database)?;
 
-        transaction
-            .execute(
-                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    input.round.task_id.to_string(),
-                    i64::from(input.round.round_number),
-                    input.round_status.as_str(),
-                    format!("round finished: {}", input.round_status.as_str()),
-                    now,
-                ],
-            )
-            .map_err(RoundUpdateError::Database)?;
+            transaction
+                .execute(
+                    "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        input.round.task_id.to_string(),
+                        i64::from(input.round.round_number),
+                        input.round_status.as_str(),
+                        format!("round finished: {}", input.round_status.as_str()),
+                        now,
+                    ],
+                )
+                .map_err(RoundUpdateError::Database)?;
+        }
 
         let outcome =
             read_round_update_outcome(&transaction, input.round.task_id, input.round.round_number)?;
@@ -8293,6 +9524,322 @@ impl StorageConnection {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reopen failed round (task 3.9c).
+//
+// Recovery of an OpenCode assistant error runs in one `BEGIN IMMEDIATE`
+// transaction: the task and its current round are read, eligibility is checked
+// against the exact recoverable code and the round/task flip plus the single
+// `reopened` event share one timestamp. Every non-eligible state is a typed
+// no-op that writes nothing; corrupted rows fail closed.
+// ---------------------------------------------------------------------------
+
+impl StorageConnection {
+    /// Atomically reopens the current failed `assistant_error` round.
+    ///
+    /// Only an OpenCode assistant error is recoverable: the user may resolve or
+    /// continue the errored turn in the project TUI, after which the same bound
+    /// session has a later result. Every infrastructure or invariant failure
+    /// (`workspace_mismatch`, `session_not_found`, `session_directory_mismatch`,
+    /// generic worker errors) stays terminal.
+    ///
+    /// Inside one `BEGIN IMMEDIATE` transaction the task is read and its current
+    /// (highest-numbered) round is mapped through [`RoundRow::from_row`]. The
+    /// round is reopened only when the task is `failed`, no cooperative close is
+    /// pending, the current round is `failed` with
+    /// [`RECOVERABLE_FAILED_ERROR_CODE`] and the round is consistent with its
+    /// task. The round moves to `observing`, its `error_code` is cleared, the
+    /// task is restored to its correct in-flight status (`implementing` for an
+    /// implement round, `revising` for a revision round) and exactly one
+    /// `reopened` event is written; all writes share one timestamp.
+    ///
+    /// A missing task, a task that is not an eligible recoverable failure and a
+    /// repeated call after an already-applied transition are
+    /// [`ReopenFailedRoundOutcome::NotEligible`] and write nothing, matching the
+    /// reference implementation's `None`. A corrupted task/round row or an
+    /// inconsistent task/round pair fails closed without any partial write.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]). No error message
+    /// contains ids, project, response, findings, session or message ids, SQL,
+    /// JSON or paths.
+    pub fn reopen_failed_round(
+        &mut self,
+        task_id: TaskId,
+    ) -> Result<ReopenFailedRoundOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let task = transaction
+            .query_row(
+                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+                params![task_id.to_string()],
+                |row| Ok(Task::from_row(row)),
+            )
+            .optional()
+            .map_err(RoundUpdateError::Database)?;
+        let Some(task) = task else {
+            return Ok(ReopenFailedRoundOutcome::NotEligible);
+        };
+        let task = task.map_err(RoundUpdateError::TaskRow)?;
+        if task.status != TaskStatus::Failed || task.close_requested_at.is_some() {
+            return Ok(ReopenFailedRoundOutcome::NotEligible);
+        }
+
+        let max: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(round_number) FROM rounds WHERE task_id = ?1",
+                params![task_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(RoundUpdateError::Database)?;
+        let Some(max) = max else {
+            return Ok(ReopenFailedRoundOutcome::NotEligible);
+        };
+        let round_number = u32::try_from(max)
+            .ok()
+            .filter(|value| *value >= 1)
+            .ok_or(RoundUpdateError::InvalidPersistedState)?;
+
+        let row = transaction
+            .query_row(
+                &format!(
+                    "SELECT {ROUND_COLUMNS} FROM rounds WHERE task_id = ?1 AND round_number = ?2"
+                ),
+                params![task_id.to_string(), i64::from(round_number)],
+                |row| Ok(RoundRow::from_row(row)),
+            )
+            .optional()
+            .map_err(RoundUpdateError::Database)?;
+        let Some(row) = row else {
+            return Ok(ReopenFailedRoundOutcome::NotEligible);
+        };
+        let row = row.map_err(RoundUpdateError::RoundRow)?;
+        if row.task_id != task.task_id || row.project_id != task.project_id {
+            return Err(RoundUpdateError::InvalidPersistedState);
+        }
+        if row.status != RoundStatus::Failed
+            || row.error_code.as_deref() != Some(RECOVERABLE_FAILED_ERROR_CODE)
+        {
+            return Ok(ReopenFailedRoundOutcome::NotEligible);
+        }
+
+        let task_status = match row.kind {
+            RoundKind::Implement => TaskStatus::Implementing,
+            RoundKind::Revise => TaskStatus::Revising,
+            _ => return Err(RoundUpdateError::InvalidPersistedState),
+        };
+        // The `failed -> observing` recovery path is intentionally absent from
+        // the shared [`ROUND_TRANSITIONS`] table so that the generic lifecycle
+        // methods (notably [`StorageConnection::finish_round`]) can never
+        // perform it. It is validated locally here, after the eligibility
+        // guards above have established the exact recoverable state.
+        if row.status != RoundStatus::Failed {
+            return Err(RoundUpdateError::InvalidPersistedState);
+        }
+        task.status
+            .require_transition(task_status)
+            .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;
+
+        transaction
+            .execute(
+                "UPDATE rounds SET status = ?1, error_code = NULL, updated_at = ?2 \
+                 WHERE task_id = ?3 AND round_number = ?4",
+                params![
+                    RoundStatus::Observing.as_str(),
+                    now,
+                    task_id.to_string(),
+                    i64::from(round_number)
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+        transaction
+            .execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
+                params![task_status.as_str(), now, task_id.to_string()],
+            )
+            .map_err(RoundUpdateError::Database)?;
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    task_id.to_string(),
+                    i64::from(round_number),
+                    "reopened",
+                    "failed assistant_error reopened for recovery",
+                    now,
+                ],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let outcome = read_round_update_outcome(&transaction, task_id, round_number)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(ReopenFailedRoundOutcome::Reopened(Box::new(outcome)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cooperative close (task 3.9d).
+//
+// Both methods and the pending-close branch of `finish_round` run in one
+// `BEGIN IMMEDIATE` transaction, read the task through the production
+// [`Task::from_row`] contract, persist at most one event and share one
+// timestamp. The reason is truncated to 300 Unicode scalar values exactly like
+// the Python `reason[:300]` slice.
+// ---------------------------------------------------------------------------
+
+impl StorageConnection {
+    /// Atomically persists a cooperative close request for a running worker.
+    ///
+    /// Inside one `BEGIN IMMEDIATE` transaction the task is read through
+    /// [`Task::from_row`]. The result mirrors Python `Storage.request_task_close`:
+    ///
+    /// * a missing task is [`RequestTaskCloseOutcome::UnknownTask`];
+    /// * an already terminal task is
+    ///   [`RequestTaskCloseOutcome::Terminal`] carrying its status;
+    /// * a task without a pending request is
+    ///   [`RequestTaskCloseOutcome::Requested`]: `close_requested_at`,
+    ///   `close_reason` (truncated to 300 Unicode scalar values like Python
+    ///   `reason[:300]`), `updated_at` and exactly one `close_requested` event
+    ///   (`round_number = NULL`, message `task close requested`) are written with
+    ///   one shared timestamp;
+    /// * a task that already has a pending request is
+    ///   [`RequestTaskCloseOutcome::AlreadyRequested`]: nothing is written, so
+    ///   the original timestamp and reason are preserved and no event is
+    ///   duplicated.
+    ///
+    /// The read and the write share one writer transaction, so concurrent
+    /// identical requests yield exactly one [`RequestTaskCloseOutcome::Requested`]
+    /// and one [`RequestTaskCloseOutcome::AlreadyRequested`], and exactly one
+    /// event.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]) for an unexpected
+    /// SQLite failure or a corrupted `tasks` row. No error message contains ids,
+    /// reason, SQL, JSON or paths.
+    pub fn request_task_close(
+        &mut self,
+        task_id: TaskId,
+        reason: &str,
+    ) -> Result<RequestTaskCloseOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let task = load_optional_task_for_update(&transaction, task_id)?;
+        let Some(task) = task else {
+            return Ok(RequestTaskCloseOutcome::UnknownTask);
+        };
+        if task.status.is_terminal() {
+            return Ok(RequestTaskCloseOutcome::Terminal(task.status));
+        }
+        if task.close_requested_at.is_some() {
+            return Ok(RequestTaskCloseOutcome::AlreadyRequested(task));
+        }
+
+        let stored_reason = truncate_close_reason(reason);
+        transaction
+            .execute(
+                "UPDATE tasks SET close_requested_at = ?1, close_reason = ?2, updated_at = ?1 \
+                 WHERE task_id = ?3",
+                params![now, stored_reason, task_id.to_string()],
+            )
+            .map_err(RoundUpdateError::Database)?;
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, NULL, 'close_requested', 'task close requested', ?2)",
+                params![task_id.to_string(), now],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let persisted = load_task_for_update(&transaction, task_id)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(RequestTaskCloseOutcome::Requested(persisted))
+    }
+
+    /// Atomically closes a task once its worker observes a pending close request.
+    ///
+    /// Inside one `BEGIN IMMEDIATE` transaction the task is read through
+    /// [`Task::from_row`]. The result mirrors Python
+    /// `Storage.complete_requested_close`:
+    ///
+    /// * a missing task is [`CompleteRequestedCloseOutcome::UnknownTask`];
+    /// * an already terminal task is [`CompleteRequestedCloseOutcome::Terminal`]
+    ///   carrying its status;
+    /// * a non-terminal task without a pending request is
+    ///   [`CompleteRequestedCloseOutcome::NoCloseRequest`] and nothing is
+    ///   written;
+    /// * a non-terminal task with a pending request is
+    ///   [`CompleteRequestedCloseOutcome::Closed`]: the task moves to `closed`
+    ///   and exactly one `closed` event (`round_number = NULL`) is written with
+    ///   the message `task closed: <reason>` where `<reason>` is the persisted
+    ///   `close_reason` (truncated to 300 Unicode scalar values) or the exact
+    ///   fallback `requested while worker was running` when it is absent or
+    ///   empty. The actually applied transition is validated through
+    ///   [`TaskStatus::require_transition`].
+    ///
+    /// A repeat after the task is `closed` returns
+    /// [`CompleteRequestedCloseOutcome::Terminal`] and writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RoundUpdateError`]) for an unexpected
+    /// SQLite failure or a corrupted `tasks` row. No error message contains ids,
+    /// reason, response, SQL, JSON or paths.
+    pub fn complete_requested_close(
+        &mut self,
+        task_id: TaskId,
+    ) -> Result<CompleteRequestedCloseOutcome, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+
+        let task = load_optional_task_for_update(&transaction, task_id)?;
+        let Some(task) = task else {
+            return Ok(CompleteRequestedCloseOutcome::UnknownTask);
+        };
+        if task.status.is_terminal() {
+            return Ok(CompleteRequestedCloseOutcome::Terminal(task.status));
+        }
+        if task.close_requested_at.is_none() {
+            return Ok(CompleteRequestedCloseOutcome::NoCloseRequest);
+        }
+        task.status
+            .require_transition(TaskStatus::Closed)
+            .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;
+
+        transaction
+            .execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE task_id = ?3",
+                params![TaskStatus::Closed.as_str(), now, task_id.to_string()],
+            )
+            .map_err(RoundUpdateError::Database)?;
+        let message = close_event_message(task.close_reason.as_deref());
+        transaction
+            .execute(
+                "INSERT INTO events (task_id, round_number, kind, message, created_at) \
+                 VALUES (?1, NULL, 'closed', ?2, ?3)",
+                params![task_id.to_string(), message, now],
+            )
+            .map_err(RoundUpdateError::Database)?;
+
+        let persisted = load_task_for_update(&transaction, task_id)?;
+        transaction.commit().map_err(RoundUpdateError::Database)?;
+        Ok(CompleteRequestedCloseOutcome::Closed(Box::new(persisted)))
+    }
+}
+
 /// A typed reference to one existing round.
 ///
 /// The project id is part of the reference so every lifecycle method can reject
@@ -8365,13 +9912,24 @@ pub struct RoundUpdateOutcome {
     pub task: Task,
 }
 
+/// The only recoverable round failure code.
+///
+/// This is the exact Python `RECOVERABLE_FAILED_ERROR_CODE` spelling. A failed
+/// round carrying any other `error_code` (for example `workspace_mismatch`,
+/// `session_not_found` or `session_directory_mismatch`) stays terminal and is
+/// never reopened by [`StorageConnection::reopen_failed_round`].
+pub const RECOVERABLE_FAILED_ERROR_CODE: &str = "assistant_error";
+
 /// The single, table-driven source of truth for allowed [`RoundStatus`]
-/// transitions used by this task.
+/// transitions used by this crate.
 ///
 /// Each entry is an allowed `(from, to)` pair transcribed from
-/// `domain.round_transitions` for the paths implemented in task 3.9a. The
-/// `failed -> observing` recovery path (`reopen_failed_round`) and cooperative
-/// close are deliberately absent.
+/// `domain.round_transitions`. The `failed -> observing` recovery path is
+/// deliberately absent: it is validated locally inside
+/// [`StorageConnection::reopen_failed_round`] after its eligibility guards so
+/// that the generic lifecycle methods (notably
+/// [`StorageConnection::finish_round`]) can never perform it. Cooperative close
+/// is also deliberately absent.
 pub const ROUND_TRANSITIONS: [(RoundStatus, RoundStatus); 15] = [
     (RoundStatus::Pending, RoundStatus::Sent),
     (RoundStatus::Pending, RoundStatus::Observing),
@@ -8547,6 +10105,132 @@ impl VerifierUpdateOutcome {
     }
 }
 
+/// The outcome of [`StorageConnection::reopen_failed_round`] (task 3.9c).
+///
+/// [`ReopenFailedRoundOutcome::Reopened`] carries the persisted round/task pair
+/// read back through the production [`RoundRow::from_row`]/[`Task::from_row`]
+/// mapping after the atomic transition. [`ReopenFailedRoundOutcome::NotEligible`]
+/// is the typed no-op for a missing task, a task that is not a recoverable
+/// failed `assistant_error` or a repeated call; it never writes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReopenFailedRoundOutcome {
+    /// The current failed `assistant_error` round was reopened atomically.
+    Reopened(Box<RoundUpdateOutcome>),
+    /// The task is not an eligible recoverable failure; nothing changed.
+    NotEligible,
+}
+
+impl ReopenFailedRoundOutcome {
+    /// Returns the persisted round/task pair when the round was reopened, or
+    /// `None` for the no-op outcome.
+    #[must_use]
+    pub fn reopened(&self) -> Option<&RoundUpdateOutcome> {
+        match self {
+            Self::Reopened(outcome) => Some(outcome.as_ref()),
+            Self::NotEligible => None,
+        }
+    }
+}
+
+/// The outcome of [`StorageConnection::request_task_close`] (task 3.9d).
+///
+/// [`Requested`](Self::Requested) is the first persisted request and carries the
+/// persisted [`Task`]; [`AlreadyRequested`](Self::AlreadyRequested) is the
+/// idempotent repeat that wrote nothing. Both correspond to the Python
+/// `"close_requested"` result. [`UnknownTask`](Self::UnknownTask) and
+/// [`Terminal`](Self::Terminal) mirror the Python `"unknown_task"` and terminal
+/// status results.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum RequestTaskCloseOutcome {
+    /// The close request was newly persisted with exactly one `close_requested`
+    /// event.
+    Requested(Task),
+    /// A close request was already persisted; nothing changed.
+    AlreadyRequested(Task),
+    /// The task does not exist.
+    UnknownTask,
+    /// The task is already terminal; carries its terminal status.
+    Terminal(TaskStatus),
+}
+
+impl RequestTaskCloseOutcome {
+    /// Returns the persisted task when the outcome is
+    /// [`RequestTaskCloseOutcome::Requested`] or
+    /// [`RequestTaskCloseOutcome::AlreadyRequested`].
+    #[must_use]
+    pub fn task(&self) -> Option<&Task> {
+        match self {
+            Self::Requested(task) | Self::AlreadyRequested(task) => Some(task),
+            Self::UnknownTask | Self::Terminal(_) => None,
+        }
+    }
+
+    /// Whether a close request is pending after this call (first or repeat).
+    #[must_use]
+    pub fn is_close_requested(&self) -> bool {
+        matches!(self, Self::Requested(_) | Self::AlreadyRequested(_))
+    }
+}
+
+/// The outcome of [`StorageConnection::complete_requested_close`] (task 3.9d).
+///
+/// [`Closed`](Self::Closed) is the first application of a pending request and
+/// carries the persisted [`Task`]. Every other variant is a typed no-op that
+/// writes nothing, matching the Python `False` result.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum CompleteRequestedCloseOutcome {
+    /// The pending close request was applied; the task is now `closed`.
+    Closed(Box<Task>),
+    /// The task has no pending close request; nothing changed.
+    NoCloseRequest,
+    /// The task is already terminal; nothing changed.
+    Terminal(TaskStatus),
+    /// The task does not exist.
+    UnknownTask,
+}
+
+impl CompleteRequestedCloseOutcome {
+    /// Returns the persisted task when the task was closed.
+    #[must_use]
+    pub fn task(&self) -> Option<&Task> {
+        match self {
+            Self::Closed(task) => Some(task.as_ref()),
+            Self::NoCloseRequest | Self::Terminal(_) | Self::UnknownTask => None,
+        }
+    }
+}
+
+/// The maximum number of Unicode scalar values persisted for a close reason,
+/// matching the Python `reason[:300]` slice (which counts code points).
+pub const CLOSE_REASON_MAX_CHARS: usize = 300;
+
+/// The exact fallback close reason used when no non-empty reason is persisted,
+/// matching the Python `"requested while worker was running"` literal.
+pub const CLOSE_REASON_FALLBACK: &str = "requested while worker was running";
+
+/// Loads one `tasks` row inside a transaction, mapping it through
+/// [`Task::from_row`], or `None` when the task is absent.
+fn load_optional_task_for_update(
+    connection: &Connection,
+    task_id: TaskId,
+) -> Result<Option<Task>, RoundUpdateError> {
+    let row = connection
+        .query_row(
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            params![task_id.to_string()],
+            |row| Ok(Task::from_row(row)),
+        )
+        .optional()
+        .map_err(RoundUpdateError::Database)?;
+    match row {
+        None => Ok(None),
+        Some(Ok(task)) => Ok(Some(task)),
+        Some(Err(error)) => Err(RoundUpdateError::TaskRow(error)),
+    }
+}
+
 /// Loads one `tasks` row inside a transaction, mapping it through
 /// [`Task::from_row`].
 fn load_task_for_update(
@@ -8563,6 +10247,25 @@ fn load_task_for_update(
         .map_err(RoundUpdateError::Database)?
         .ok_or(RoundUpdateError::MissingTask)?
         .map_err(RoundUpdateError::TaskRow)
+}
+
+/// Truncates a close reason to [`CLOSE_REASON_MAX_CHARS`] Unicode scalar values,
+/// matching the Python `reason[:300]` slice that counts code points rather than
+/// bytes.
+fn truncate_close_reason(reason: &str) -> String {
+    reason.chars().take(CLOSE_REASON_MAX_CHARS).collect()
+}
+
+/// Builds the `closed` event message `task closed: <reason>` from an optional
+/// persisted close reason, using [`CLOSE_REASON_FALLBACK`] for an absent or
+/// empty reason and truncating the reason to [`CLOSE_REASON_MAX_CHARS`] Unicode
+/// scalar values, matching Python.
+fn close_event_message(reason: Option<&str>) -> String {
+    let reason = match reason {
+        Some(reason) if !reason.is_empty() => truncate_close_reason(reason),
+        _ => CLOSE_REASON_FALLBACK.to_owned(),
+    };
+    format!("task closed: {reason}")
 }
 
 /// Loads one `rounds` row inside a transaction, mapping it through

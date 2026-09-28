@@ -128,15 +128,56 @@ endpoints, а перенос истории — только односторо�
   завершённый результат нельзя молча заменить. Verifier-переходы не пишут
   events, а повреждённая пара/state отвергается fail closed. Cooperative close,
   `reopen_failed_round` и schema/fixtures изменения не входят.
+- Завершён этап **3.9c. reopen_failed_round**: `bridge-storage` предоставляет
+  типизированный `StorageConnection::reopen_failed_round` и
+  `ReopenFailedRoundOutcome` (`Reopened`/`NotEligible`). В одной
+  `BEGIN IMMEDIATE` транзакции метод читает task и его current round, маппит обе
+  строки через production-контракт и восстанавливает только если
+  `task.status=failed`, `close_requested_at` отсутствует, текущий round
+  `failed` с `error_code="assistant_error"` и round согласован с task. Round
+  переводится `failed->observing`, `error_code` очищается, task возвращается в
+  `implementing` (implement) или `revising` (revise), и пишется ровно одно
+  событие `reopened` (`failed assistant_error reopened for recovery`) с общим
+  timestamp. Неизвестная/неподходящая задача и повторный вызов возвращают
+  `NotEligible` без записей (Python no-op), другие error_code, pending
+  cooperative close и не-current/несогласованный round не восстанавливаются, а
+  повреждённые строки и несогласованная пара task/round отвергаются fail closed
+  без частичных записей. Ошибки не раскрывают ids, payload, SQL, JSON и пути.
+  Cooperative close не входит.
+- Завершён этап **3.9d. Cooperative close** — storage-часть этапа 3.9 закрыта:
+  `bridge-storage` предоставляет типизированные `StorageConnection::request_task_close`
+  (`RequestTaskCloseOutcome`: `Requested`/`AlreadyRequested`/`UnknownTask`/
+  `Terminal`) и `StorageConnection::complete_requested_close`
+  (`CompleteRequestedCloseOutcome`: `Closed`/`NoCloseRequest`/`Terminal`/
+  `UnknownTask`), а `finish_round` учитывает pending close. В одной
+  `BEGIN IMMEDIATE` транзакции `request_task_close` по Python-семантике
+  возвращает `UnknownTask` для отсутствующей задачи, `Terminal(status)` для
+  `accepted`/`closed`, при первом запросе пишет `close_requested_at`,
+  `close_reason` (обрезается до 300 Unicode-символов, как Python `reason[:300]`),
+  `updated_at` и ровно одно событие `close_requested` (`round_number=NULL`,
+  `task close requested`) с единым timestamp, а повтор возвращает
+  `AlreadyRequested` без изменения timestamp/reason и без нового события.
+  `complete_requested_close` переводит nonterminal-задачу с запросом в `closed`
+  и пишет ровно одно событие `closed` (`round_number=NULL`,
+  `task closed: <reason>`; пустой/отсутствующий reason даёт точный fallback
+  `requested while worker was running`), а unknown/terminal/без-запроса/повтор
+  — типизированный no-op без записей. `finish_round` всегда пишет запрошенные
+  round fields/status, но при pending close применяет фактический переход task в
+  `closed` (валидируется через `TaskStatus::require_transition`) и пишет событие
+  `closed` вместо round-finished, поэтому caller-supplied `task_status` не
+  обходит pending close. Paired-записи и события атомарны и используют один
+  timestamp, event failure откатывает всё, а ошибки не раскрывают ids, reason,
+  response, SQL, JSON и пути. Pending close по-прежнему запрещает
+  `reopen_failed_round`. Schema/version/fixtures не менялись.
 - Зафиксирована (документация, ещё не реализовано) стратегия изоляции storage:
   Python и Rust используют раздельные state root, SQLite, locks, PID/ownership
   records, token-файлы, логи и endpoints, а перенос истории — односторонний
   импорт WAL-aware копии при остановленном Python runtime без общей рабочей БД.
   Реализация — задачи **3.10** (storage isolation/импорт копии) и **3.11**
   (ownership/format marker).
-- Следующий незавершённый шаг потока 3 — оставшиеся подэтапы **3.9**
-  (cooperative close и `reopen_failed_round`), затем **3.10** (storage
-  isolation/импорт копии) и **3.11** (ownership/format marker).
+- Этап **3.9** (atomic round/verifier updates и cooperative close) завершён.
+  Следующий незавершённый шаг потока 3 — **3.10** (storage isolation/импорт
+  копии), затем **3.11** (ownership/format marker).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

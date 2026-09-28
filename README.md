@@ -229,8 +229,28 @@ endpoints. Rust всегда создаёт и использует собств
   fail closed. Типизированный `TokenizeError` не содержит исходную команду или
   токены. Policy-решения (запрещённые Git writes, wrappers, shell
   metacharacters, globs, permission decision) намеренно не входят в 4.1.
-- **Поток 3 завершён, поток 4 начат.** Следующий шаг — **4.2** (запрещённые
-  Git writes и wrappers).
+- Завершён этап **4.2. Запрещённые Git writes и wrappers**. Crate
+  `bridge-command-policy` переносит token-level семантику reference
+  `command_policy.py` (`git_invocation_problem`, `env_invocation_problem`,
+  `tokens_problem`): запрещённые `git add`/`commit`/`push` распознаются через
+  leading assignments, path-prefixed executable (`/usr/bin/git`, `./git`) и
+  wrappers `env`, `sudo`, `command`, `exec`, `nohup`, `nice`, `time`, включая
+  вложенность; global options `git` (`-C`/`-c`/`--git-dir`/`--work-tree`/
+  `--namespace`/`--exec-path`/`--config-env`/`--super-prefix`/`--shallow-file`)
+  пропускаются, glob в позиции подкоманды даёт `unprovable_git_glob`. Узкий
+  typed API — `tokens_problem` и `policy_decision` с `PolicyReason`
+  (`git_write_blocked`/`unprovable_git_glob`/`unprovable_wrapper_command`) и
+  `PolicyDecision`; ни решение, ни причины не несут command text, argv, пути или
+  secrets. Fail-closed сверх reference (документированное intentional
+  difference): `env` command-splitting отклоняется не только для `-S`/
+  `--split-string`, но и для combined short-option cluster (`-iS`) и
+  однозначных long-option аббревиатур (`--split`, `--spl`), а неизвестные,
+  неоднозначные и value-missing `env` options завершаются
+  `unprovable_wrapper_command`; reference пропускает `env -iS 'git push'` и
+  `env --split 'git push'`. Compound shell syntax, raw shell metacharacters,
+  general globs, shell executables и `eval` остаются задачей 4.3.
+- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.3**
+  (fail-closed compound shell syntax).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

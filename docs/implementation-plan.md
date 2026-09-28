@@ -259,8 +259,8 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 начат.** Следующий незавершённый шаг — **4.2**
-(запрещённые Git writes и wrappers).
+**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.3**
+(fail-closed compound shell syntax).
 
 ## Поток 4. Security и Git
 
@@ -293,6 +293,38 @@ open невозможен без полной согласованности sid
   metacharacters/globs и permission decision остаются задачами 4.2/4.3.
 
 ### 4.2. Запрещённые Git writes и wrappers
+
+- **Завершено.** `bridge-command-policy` переносит token-level семантику
+  reference `command_policy.py`: `git_invocation_problem`, `env_invocation_problem`
+  и wrapper-aware `tokens_problem`. Запрещённые `git add`/`commit`/`push`
+  распознаются после пропуска leading (и любых) `NAME=value` assignments,
+  path-prefixed executable (`/usr/bin/git`, `./git`) и wrappers `env`, `sudo`,
+  `command`, `exec`, `nohup`, `nice`, `time` (включая вложенные и
+  path-prefixed wrappers). `git` global options с отдельным значением
+  (`-C`/`-c`/`--git-dir`/`--work-tree`/`--namespace`/`--exec-path`/
+  `--config-env`/`--super-prefix`/`--shallow-file`) и `--opt=value`
+  пропускаются; glob в позиции подкоманды даёт `unprovable_git_glob`; basename
+  подкоманды сравнивается регистронезависимо (`git ADD`).
+  `env -S`/`--split-string` (включая `--split-string=`, `-Sxxx`) даёт
+  `unprovable_wrapper_command`. Узкий typed API: `tokens_problem` и
+  `policy_decision`, `PolicyReason` (`git_write_blocked`/`unprovable_git_glob`/
+  `unprovable_wrapper_command`) и `PolicyDecision`; решения и причины не несут
+  command text, argv, пути и secrets, а Display/Debug содержат только
+  статические строки. Как задокументированное fail-closed расширение над
+  reference (intentional difference) `env` command-splitting отклоняется также
+  для combined short-option cluster с флагом `S` (`-iS`, `-0S`, `-vS`) и
+  однозначных long-option аббревиатур `--split-string` (`--split`, `--spl`,
+  `--s`), а неизвестные, неоднозначные и value-missing `env` options
+  завершаются fail closed; reference пропускает такие формы
+  (`env -iS 'git push'`, `env --split 'git push'` действительно выполняют
+  split-команду). Table-driven тесты покрывают read-only и запрещённые git
+  операции, path-prefixed и абсолютные пути, `git` global options, glob
+  подкоманды, все поддерживаемые wrappers, вложенность, assignments,
+  combined/abbreviated/malformed env options и representative in-scope corpus
+  из `docs/fixtures/command-policy-cases.json` (42 case, семантически сверены с
+  Python reference; metacharacters/globs/shell executables/`eval` — 4.3).
+  Существующие тесты 4.1 продолжают проходить. Cargo.toml/Cargo.lock не
+  менялись.
 
 ### 4.3. Fail-closed compound shell syntax
 

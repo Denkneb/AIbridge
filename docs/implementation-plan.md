@@ -259,8 +259,8 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.6**
-(External Git repository paths).
+**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.7**
+(Snapshot основного repository).
 
 ## Поток 4. Security и Git
 
@@ -430,6 +430,53 @@ open невозможен без полной согласованности sid
   регрессировали.
 
 ### 4.6. External Git repository paths
+
+- **Завершено.** `bridge-path-policy` расширен trusted-root слоем поверх
+  лексической (4.4) и workspace symlink-confinement (4.5) семантики, не меняя
+  существующий узкий API и его поведение. Новые typed-функции
+  `validate_allowed_paths_with_trusted_roots` и
+  `validate_allowed_path_entries_with_trusted_roots` принимают workspace,
+  trusted external roots и `allowed_paths`: workspace и каждый trusted root
+  канонизируются fail closed, относительные entries обрабатываются ровно как в
+  4.5, а абсолютные разрешаются по семантике Python `Path.resolve(strict=False)`
+  и проверяются в reference-порядке. Абсолютный путь, разрешающийся внутри
+  canonical workspace, отклоняется как `absolute_workspace_path` **до**
+  trusted-root lookup; затем путь вне всех trusted roots отклоняется как
+  `outside_trusted_roots` (в том числе при escape через symlink). Для
+  допустимого пути канонический root содержащего Git worktree находится через
+  `git rev-parse --show-toplevel` (ближайший существующий предок для missing
+  leaf, сам repo root и child поддержаны), probe ограничен таймаутом с
+  принудительным kill/reap, timeout — fail-closed `path_resolution_failure`, а
+  stdout читается как raw Unix path bytes без lossy/strict UTF-8 (non-UTF-8 repo
+  root распознаётся), отсутствие репозитория даёт
+  `not_git_repository`, а repo root вне trusted roots —
+  `external_repo_root_outside_trusted`, поэтому вложенный trusted subdir внутри
+  более высокого репозитория не расширяет доверие. Нормализованный validated
+  scope типизирован как `ValidatedAllowedPath`: workspace-relative entries
+  остаются относительными, external entries — каноническими абсолютными, а
+  `PathScope` (`File`/`Directory`) сохраняет trailing-slash различие. Узкий typed
+  API `group_allowed_paths_by_repo` группирует raw entries по каноническому
+  repository root: relative entries без нормализации/валидации попадают в
+  canonical main workspace, absolute — в найденный repository root, trusted roots
+  не применяются; main-workspace bucket всегда присутствует и идёт первым,
+  внешние bucket-ы детерминированно отсортированы. Ошибки представлены
+  payload-free `PathPolicyReason` с новыми стабильными категориями
+  `outside_trusted_roots`/`not_git_repository`/`external_repo_root_outside_trusted`
+  и не раскрывают workspace, roots, входные пути, Git output, symlink target или
+  OS error text в `Debug`/`Display`; symlink loop и I/O/canonicalization failures
+  остаются fail closed (`symlink_loop`/`path_resolution_failure`). Table-driven
+  тесты покрывают все относящиеся к 4.6 cases `validate_allowed_paths` и
+  `group_allowed_paths_by_repo` из `docs/fixtures/path-policy-cases.json`
+  (`validate-absolute-trusted-repo-file`, `validate-absolute-trusted-repo-directory`,
+  `validate-absolute-outside-trusted`, `validate-absolute-repo-root-outside-trusted`,
+  `validate-absolute-symlink-escape-outside-trusted`,
+  `validate-absolute-trusted-not-git-repository`, `validate-absolute-workspace-file`,
+  `validate-absolute-workspace-directory`, `group-empty-list`,
+  `group-external-not-git-repository`, `group-external-repo-root-and-child`,
+  `group-relative-and-external`, `group-two-external-repos`), а также repo
+  root/child, missing leaf, trusted symlink escape, nested trusted root, missing
+  trusted root, boundary non-string, сохранение raw entries, отсутствие утечки и
+  regression 4.4–4.5. Cargo manifests/dependencies не менялись.
 
 ### 4.7. Snapshot основного repository
 

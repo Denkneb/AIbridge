@@ -309,8 +309,36 @@ endpoints. Rust всегда создаёт и использует собств
   loop/failure и отсутствие утечки; тесты 4.4 не регрессировали. Absolute
   external paths и trusted roots (4.6), scope/snapshot (4.7–4.9) и MCP-envelope
   не входят.
-- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.6**
-  (external Git repository paths).
+- Завершён этап **4.6. External Git repository paths**. `bridge-path-policy`
+  расширен trusted-root слоем поверх семантики 4.4–4.5 без изменения
+  существующего API. Новые typed-функции
+  `validate_allowed_paths_with_trusted_roots` и
+  `validate_allowed_path_entries_with_trusted_roots` канонизируют workspace и
+  trusted external roots, относительные entries обрабатывают как 4.5, а
+  абсолютные разрешают по семантике Python `Path.resolve(strict=False)` и
+  проверяют в reference-порядке: путь внутри canonical workspace отклоняется как
+  `absolute_workspace_path` до trusted-root lookup, путь вне trusted roots — как
+  `outside_trusted_roots` (включая symlink escape), отсутствие Git-репозитория —
+  как `not_git_repository`, а repo root вне trusted roots — как
+  `external_repo_root_outside_trusted`, поэтому вложенный trusted subdir внутри
+  более высокого репозитория не расширяет доверие. Канонический root
+  содержащего worktree находится через `git rev-parse --show-toplevel` (missing
+  leaf использует существующего предка, repo root и child поддержаны); probe
+  ограничен таймаутом с принудительным kill/reap (timeout — fail-closed
+  `path_resolution_failure`), а stdout читается как raw Unix path bytes без
+  lossy/strict UTF-8, поэтому repo root с non-UTF-8 компонентом распознаётся.
+  Нормализованный scope типизирован `ValidatedAllowedPath` (relative остаётся
+  относительным, external — каноническим абсолютным, `PathScope` сохраняет
+  file/directory различие), а `group_allowed_paths_by_repo` группирует raw
+  entries по каноническому repository root без применения trusted roots
+  (relative — в main workspace, absolute — в найденный репозиторий, main bucket
+  всегда первый). Ошибки payload-free и не раскрывают workspace, roots, пути,
+  Git output или OS text. Table-driven тесты покрывают относящиеся к 4.6 cases
+  `docs/fixtures/path-policy-cases.json` для `validate_allowed_paths` и
+  `group_allowed_paths_by_repo`, repo root/child, missing leaf, symlink escape,
+  nested/missing trusted root, boundary non-string и regression 4.4–4.5.
+- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.7**
+  (snapshot основного repository).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

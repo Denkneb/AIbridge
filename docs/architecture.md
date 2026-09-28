@@ -64,6 +64,8 @@ implementing -> awaiting_review -> revising -> awaiting_review -> accepted
 - Python и Rust никогда не используют общую рабочую БД или общий runtime state.
 - Каждая реализация владеет отдельным state root, `state.sqlite`, WAL/SHM
   sidecar-файлами, locks, PID/ownership records, token-файлами и логами.
+- Rust всегда инициализирует собственную пустую БД schema v6 и ведёт отдельную
+  историю задач; Python state/history в Rust не импортируется и не копируется.
 - Внутри собственного state каждой реализации сохраняются WAL, foreign keys,
   busy timeout и `BEGIN IMMEDIATE`.
 - `PRAGMA user_version` меняется только отдельной миграцией внутри владельца
@@ -120,18 +122,13 @@ Rust fail-closed отказывается открывать или инициа
 изоляция обеспечивается раздельными namespace, запретом одновременного запуска
 и Rust-side проверкой.
 
-## Односторонний импорт истории
+## Собственная история Rust
 
-История переносится только явным односторонним импортом:
-
-1. остановить Python runtime проекта и убедиться в отсутствии живых locks и
-   process records;
-2. снять WAL-aware копию Python `state.sqlite` (вместе с `-wal`/`-shm` либо
-   через backup API/`VACUUM INTO`) в Rust state dir;
-3. выставить Rust ownership marker и проверить schema v6;
-4. исходный Python state остаётся неизменным и служит точкой отката.
-
-Обратная запись Rust state в Python state запрещена.
+Rust всегда создаёт и использует собственную пустую БД и отдельную историю
+задач. Импорт, копирование или перенос Python state/history в Rust не
+поддерживается и не планируется: Python history в Rust не появляется, а Python
+state не получает записей от Rust. Исходный Python state остаётся отдельным и
+служит точкой отката.
 
 ## Процессы
 

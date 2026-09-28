@@ -18,12 +18,11 @@
 
 Python- и Rust-версии никогда не используют общую рабочую SQLite БД или общий
 runtime state. У каждой реализации собственные state root, SQLite-файлы, locks,
-PID/ownership records, token-файлы, логи и endpoints/порты. Перенос истории
-допускается только как явный односторонний импорт WAL-aware копии Python state
-в Rust state при остановленном Python runtime; исходный Python state остаётся
-неизменным и служит точкой отката. Обратная запись Rust state в Python state
-запрещена. Дифференциальные fixtures остаются эталоном Python-семантики и не
-являются общей рабочей БД.
+PID/ownership records, token-файлы, логи и endpoints/порты. Rust всегда создаёт и
+использует собственную пустую БД и отдельную историю задач; импорт, копирование
+или перенос Python state/history в Rust не поддерживается и не планируется, а
+Python state не получает записей от Rust. Дифференциальные fixtures остаются
+эталоном Python-семантики и не являются общей рабочей БД.
 
 Работа разбивается на небольшие автономные задачи. Каждая задача должна иметь
 узкий список файлов, один основной результат, короткий набор проверок и не
@@ -63,9 +62,8 @@ PID/ownership records, token-файлы, логи и endpoints/порты. Пе�
 - Python и Rust никогда не используют общую рабочую `state.sqlite` или общий
   runtime state: у каждой реализации свои state root, БД, locks,
   PID/ownership records, token-файлы, логи и endpoints/порты.
-- История переносится только односторонним импортом WAL-aware копии Python
-  state в Rust state при остановленном Python runtime; исходный Python state
-  не изменяется.
+- Rust начинает с новой пустой БД и отдельной истории; Python history в Rust не
+  появляется, а Python state не получает записей от Rust.
 - Имена CLI-команд и контракт шести MCP tools сохраняются.
 - Неоднозначные security-сценарии обрабатываются fail-closed.
 - Python и Rust worker/MCP не запускаются одновременно для одного проекта.

@@ -176,27 +176,31 @@ Data model и serde compatibility без runtime logic.
   по-прежнему запрещает `reopen_failed_round`. Schema/version/fixtures не
   менялись.
 - **Этап 3.9 завершён.** Следующий незавершённый шаг потока 3 — задача **3.10**
-  (storage isolation и односторонний импорт копии), затем **3.11**
-  (ownership/format marker).
+  (storage isolation и создание нового Rust state), затем **3.11**
+  (ownership/format marker и fail-closed guard).
 
-### 3.10. Storage isolation и односторонний импорт копии
+### 3.10. Storage isolation и создание нового Rust state
 
 Проверить, что Python- и Rust-реализации используют раздельные state root,
 SQLite-файлы, locks, PID/ownership records, token-файлы, логи и endpoints;
 write tests выполняются только на независимых временных копиях каждой
-реализации. Импорт — односторонний: WAL-aware копия Python state при
-остановленном Python runtime, исходный Python state не изменяется. Contract
-fixtures Python остаются эталоном семантики; запись обеими реализациями в одну
-рабочую БД не предполагается.
+реализации. Rust всегда создаёт и использует собственную пустую БД schema v6 и
+отдельную историю задач: импорт, копирование или перенос Python state/history в
+Rust не поддерживается, Python history в Rust не появляется, а Python state не
+получает записей от Rust. Contract fixtures Python остаются эталоном семантики
+на независимых копиях; запись обеими реализациями в одну рабочую БД не
+предполагается.
 
 ### 3.11. Ownership/format marker и fail-closed guard
 
-Зафиксировать sidecar marker (`implementation="rust"`, `format_version`) и
-additive `meta.runtime_owner='rust'`; Rust отказывается открывать state другой
+Зависит от **3.10**: маркеры выставляются только на новом изолированном Rust
+state. Зафиксировать sidecar marker (`implementation="rust"`, `format_version`)
+и additive `meta.runtime_owner='rust'`; Rust отказывается открывать state другой
 реализации или чужого namespace. Schema v6 и contract fixtures не меняются.
 
 **Готовность потока:** семантика совместима без изменения schema version, а
-Python- и Rust-state изолированы и связаны только односторонним импортом копии.
+Python- и Rust-state изолированы: Rust ведёт собственную пустую БД и отдельную
+историю, общая рабочая БД и перенос Python history отсутствуют.
 
 ## Поток 4. Security и Git
 
@@ -448,22 +452,27 @@ Python- и Rust-state изолированы и связаны только од
 
 ## Поток 14. Миграция
 
-### 14.1. Read-only запуск на изолированной копии state
+### 14.1. Подготовка переключения и остановка Python runtime
 
-### 14.2. Односторонний импорт WAL-aware копии Python state в Rust state
+Python runtime останавливается; проверяется отсутствие живых locks и
+PID/process records. Python state при этом не копируется, не читается и не
+импортируется.
 
-Python runtime остановлен; исходный Python state не изменяется и сохраняется
-для отката.
+### 14.2. Создание нового Rust state
 
-### 14.3. Проверка Rust state и ownership marker
+Rust инициализирует собственную пустую БД schema v6 и отдельную историю задач;
+Python state не импортируется, не копируется и не переносится.
 
-Schema v6, `meta.runtime_owner='rust'` и sidecar marker; fail-closed при чужом
-state.
+### 14.3. Проверка изоляции и ownership marker
+
+Раздельные state root, SQLite, locks, PID/ownership records, token-файлы, логи и
+endpoints; schema v6, `meta.runtime_owner='rust'` и sidecar marker; fail-closed
+при чужом state.
 
 ### 14.4. Backup и независимый rollback rehearsal
 
 Откат возвращает к неизменённому Python state; Rust state не переносится
-обратно.
+обратно, а Python state не получает записей от Rust.
 
 ### 14.5. Один тестовый проект на Rust runtime
 

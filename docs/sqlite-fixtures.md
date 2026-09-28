@@ -2,7 +2,7 @@
 
 Машиночитаемый manifest: [fixtures/sqlite/expected.json](fixtures/sqlite/expected.json).
 Это контрактные fixtures для будущих Rust-задач потока 3 (SQLite storage) и
-задачи 3.10 (storage isolation и односторонний импорт копии); они описывают
+задачи 3.10 (storage isolation и создание нового Rust state); они описывают
 наблюдаемую schema и состояния существующего Python-кода и остаются immutable
 эталоном семантики, а не целевой реализацией. Rust здесь не реализуется.
 
@@ -161,10 +161,9 @@ Fixtures immutable и описывают наблюдаемое Python-пове�
 5. Проверять `invariants` (уникальность активной task, FK, идемпотентность
    `request_id`, `verifier_state`).
 
-Migration test — отдельный односторонний сценарий: WAL-aware копия Python
-state при остановленном Python runtime импортируется в Rust state; исходный
-Python state не изменяется, а обратная запись Rust state в Python state
-запрещена.
+Rust начинает с собственной пустой БД и отдельной истории; Python state/history
+в Rust не импортируется, не копируется и не переносится, а Python state не
+получает записей от Rust.
 
 Такой harness воспроизводит fixtures на текущей Python suite и позже
 становится differential-раннером на независимых копиях Python и Rust.

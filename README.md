@@ -7,8 +7,9 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
 добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
 Python и Rust никогда не делят рабочую БД или runtime state: у каждой реализации
 свои state root, SQLite, locks, PID/ownership records, token-файлы, логи и
-endpoints, а перенос истории — только односторонний импорт WAL-aware копии при
-остановленном Python runtime.
+endpoints. Rust всегда создаёт и использует собственную пустую БД и отдельную
+историю задач; импорт, копирование или перенос Python state/history в Rust не
+поддерживается и не планируется.
 
 ## Статус миграции
 
@@ -171,13 +172,15 @@ endpoints, а перенос истории — только односторо�
   `reopen_failed_round`. Schema/version/fixtures не менялись.
 - Зафиксирована (документация, ещё не реализовано) стратегия изоляции storage:
   Python и Rust используют раздельные state root, SQLite, locks, PID/ownership
-  records, token-файлы, логи и endpoints, а перенос истории — односторонний
-  импорт WAL-aware копии при остановленном Python runtime без общей рабочей БД.
-  Реализация — задачи **3.10** (storage isolation/импорт копии) и **3.11**
-  (ownership/format marker).
+  records, token-файлы, логи и endpoints. Rust всегда создаёт собственную пустую
+  БД и отдельную историю задач; Python state/history в Rust не импортируется и не
+  копируется, а Python state не получает записей от Rust. Реализация — задачи
+  **3.10** (storage isolation и создание нового Rust state) и **3.11**
+  (ownership/format marker и fail-closed guard).
 - Этап **3.9** (atomic round/verifier updates и cooperative close) завершён.
-  Следующий незавершённый шаг потока 3 — **3.10** (storage isolation/импорт
-  копии), затем **3.11** (ownership/format marker).
+  Следующий незавершённый шаг потока 3 — **3.10** (storage isolation и создание
+  нового Rust state), затем **3.11** (ownership/format marker и fail-closed
+  guard).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

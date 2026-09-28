@@ -19,9 +19,10 @@ Codex/OpenCode сохраняют streaming, permissions, tools и slash-ком�
 ### Раздельные state Python и Rust
 
 Реализации не делят рабочую БД или runtime state. У Python и Rust свои state
-root, SQLite, locks, PID/ownership records, token-файлы, логи и endpoints.
-Перенос истории — только односторонний импорт WAL-aware копии при остановленном
-Python runtime; исходный Python state не изменяется и служит точкой отката.
+root, SQLite, locks, PID/ownership records, token-файлы, логи и endpoints. Rust
+всегда создаёт собственную пустую БД и отдельную историю задач; импорт,
+копирование или перенос Python state/history в Rust не поддерживается и не
+планируется, а Python state не изменяется и служит точкой отката.
 
 ### projects.toml — источник истины
 
@@ -51,8 +52,9 @@ fixtures, одинаковая mock history и сравнение SQLite/securit
 Даже при поэтапной миграции две реализации не должны открывать одну рабочую БД.
 Изоляция гарантируется раздельными state root и ownership/format marker:
 одновременный запуск Python и Rust для проекта запрещён, а общая запись
-отсутствует by design. Вместо dual write используется односторонний импорт
-WAL-aware копии Python state в Rust state.
+отсутствует by design. Rust ведёт собственную пустую БД и отдельную историю;
+перенос Python state/history в Rust не выполняется, а Python state не получает
+записей от Rust.
 
 ### libgit2 против Git CLI
 

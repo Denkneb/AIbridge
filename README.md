@@ -247,10 +247,29 @@ endpoints. Rust всегда создаёт и использует собств
   однозначных long-option аббревиатур (`--split`, `--spl`), а неизвестные,
   неоднозначные и value-missing `env` options завершаются
   `unprovable_wrapper_command`; reference пропускает `env -iS 'git push'` и
-  `env --split 'git push'`. Compound shell syntax, raw shell metacharacters,
-  general globs, shell executables и `eval` остаются задачей 4.3.
-- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.3**
-  (fail-closed compound shell syntax).
+  `env --split 'git push'`.
+- Завершён этап **4.3. Fail-closed compound shell syntax**. Crate
+  `bridge-command-policy` добавляет raw-pattern entry point
+  `bash_pattern_problem` (и typed `bash_pattern_decision`): raw-строка
+  проверяется до токенизации, поэтому неразрешимый shell-синтаксис отклоняется
+  fail closed как `unprovable_shell_syntax` даже внутри кавычек — separators
+  (`;`/`&&`/`||`), pipes (`|`), background (`&`), redirects (`<`/`>`), command
+  substitution (`$(`), backticks, subshells, brace/variable expansion (`$`,
+  `${}`, `{}`) и newline/CR. Пустой/whitespace-only вход даёт
+  `empty_bash_pattern`, NUL или неразбираемая строка — `unparsable_bash_pattern`.
+  `tokens_problem` расширен: general glob даёт `unprovable_glob_command`;
+  shell executables (`sh`/`bash`/`zsh`/`dash`/`ksh`/`fish`, включая
+  path-prefixed) либо перепроверяются через `-c` (вложенный `tokens_problem`),
+  либо отклоняются как `unsafe_shell_invocation` (без `-c`, включая combined
+  `-lc`) и `shell_command_missing` (`-c` без строки); `eval` склеивает аргументы
+  и заново проверяет их через `bash_pattern_problem`. Новые `PolicyReason`
+  (`empty_bash_pattern`/`unprovable_shell_syntax`/`unprovable_glob_command`/
+  `unsafe_shell_invocation`/`shell_command_missing`/`unparsable_bash_pattern`)
+  не несут command text, argv, пути и secrets. Семантика совпадает с reference,
+  включая raw-скан до токенизации и отклонение shell без `-c`; verifier-конверт
+  `missing_executable` остаётся задачей 5.1. Тесты 4.1–4.2 не регрессировали.
+- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.4**
+  (workspace-relative allowed paths).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

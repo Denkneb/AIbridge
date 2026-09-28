@@ -1,19 +1,37 @@
-//! Minimal command-policy primitives for simple shell commands (tasks 4.1-4.2).
+//! Minimal command-policy primitives for simple shell commands (tasks 4.1-4.3).
 //!
 //! This crate reproduces the tokenization and leading-assignment layer (task
-//! 4.1) and the token-level forbidden-Git-write and wrapper layer (task 4.2) of
-//! the reference Python `command_policy` module
+//! 4.1), the token-level forbidden-Git-write and wrapper layer (task 4.2) and
+//! the fail-closed compound-shell-syntax layer (task 4.3) of the reference
+//! Python `command_policy` module
 //! (`/home/denis/Python/agent_bridge/src/agent_bridge/command_policy.py`):
 //! `basename`, `is_assignment`, `split_command`, `leading_assignments`,
-//! `git_invocation_problem`, `env_invocation_problem` and the wrapper-aware
-//! `tokens_problem`.
+//! `has_shell_metacharacters`, `has_glob`, `git_invocation_problem`,
+//! `env_invocation_problem`, the wrapper-aware `tokens_problem` and the
+//! raw-pattern entry point `bash_pattern_problem`.
 //!
 //! Task 4.2 classifies forbidden `git add`/`commit`/`push` writes through
 //! leading assignments, path-prefixed executables and the wrappers `env`,
 //! `sudo`, `command`, `exec`, `nohup`, `nice` and `time`, and fails closed on
-//! `env` command-splitting forms. Fail-closed compound shell syntax, raw shell
-//! metacharacters, general globs, shell executables, `eval` and permission
-//! decisions are out of scope and are deferred to task 4.3.
+//! `env` command-splitting forms.
+//!
+//! Task 4.3 adds [`bash_pattern_problem`]: the raw pattern is scanned before
+//! tokenization, so shell syntax that cannot be statically resolved (separators,
+//! pipes, background execution, redirects, command substitution, backticks,
+//! subshells, brace/variable expansion and newlines) fails closed as
+//! `unprovable_shell_syntax` even when it appears inside quotes. Empty and
+//! whitespace-only patterns yield `empty_bash_pattern`, NUL and untokenizable
+//! input yield `unparsable_bash_pattern`, general globs yield
+//! `unprovable_glob_command`, and shell executables (`sh`, `bash`, `zsh`,
+//! `dash`, `ksh`, `fish`) are re-checked through `-c` or rejected as
+//! `unsafe_shell_invocation`/`shell_command_missing`. `eval` joins its arguments
+//! and re-checks them as a fresh pattern. Permission-policy envelopes (the
+//! `configured`/`missing_executable` split) remain outside this crate.
+//!
+//! Reference semantics are reproduced exactly, including two observable
+//! details: the raw scan happens before tokenization, so a metacharacter or glob
+//! inside quotes is still seen; and a non-`-c` shell executable (for example
+//! `bash --version`) fails closed as `unsafe_shell_invocation`.
 //!
 //! [`split_command`] is a POSIX tokenizer equivalent to Python
 //! `shlex.split(text, posix=True)` with the default `comments=False` and
@@ -294,6 +312,14 @@ const GIT_VALUE_OPTIONS: [&str; 9] = [
 /// Mirrors the reference `_SHELL_WRAPPERS`.
 const SHELL_WRAPPERS: [&str; 7] = ["sudo", "env", "command", "exec", "nohup", "nice", "time"];
 
+/// Shell executables whose script argument the policy must inspect. Mirrors the
+/// reference `_SHELL_EXECUTABLES`.
+const SHELL_EXECUTABLES: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Builtins that re-run their joined arguments as a fresh command. Mirrors the
+/// reference `_SHELL_EVAL`.
+const SHELL_EVAL: [&str; 1] = ["eval"];
+
 /// All GNU `env` long options, used to resolve unambiguous abbreviations the
 /// same way `getopt_long` does. Only `--split-string` can hide a fresh command.
 const ENV_LONG_OPTIONS: [&str; 12] = [
@@ -327,6 +353,23 @@ pub enum PolicyReason {
     /// command string (`-S`/`--split-string`, including combined/abbreviated
     /// spellings), or an `env` option is unknown, ambiguous or missing a value.
     UnprovableWrapperCommand,
+    /// The raw pattern is empty or whitespace-only.
+    EmptyBashPattern,
+    /// The raw pattern contains shell metacharacters that cannot be statically
+    /// resolved: separators, pipes, background execution, redirects, command
+    /// substitution, backticks, subshells, brace/variable expansion or
+    /// newlines. The scan runs before tokenization, so quoting does not hide it.
+    UnprovableShellSyntax,
+    /// A non-`git` token contains glob characters (`*`, `?`, `[`) and cannot be
+    /// resolved to a concrete executable.
+    UnprovableGlobCommand,
+    /// A shell executable was invoked without `-c`, so its script cannot be
+    /// inspected.
+    UnsafeShellInvocation,
+    /// A shell executable was invoked with `-c` but no following command string.
+    ShellCommandMissing,
+    /// The pattern contains a NUL byte or cannot be tokenized.
+    UnparsableBashPattern,
 }
 
 impl PolicyReason {
@@ -338,6 +381,12 @@ impl PolicyReason {
             Self::GitWriteBlocked => "git_write_blocked",
             Self::UnprovableGitGlob => "unprovable_git_glob",
             Self::UnprovableWrapperCommand => "unprovable_wrapper_command",
+            Self::EmptyBashPattern => "empty_bash_pattern",
+            Self::UnprovableShellSyntax => "unprovable_shell_syntax",
+            Self::UnprovableGlobCommand => "unprovable_glob_command",
+            Self::UnsafeShellInvocation => "unsafe_shell_invocation",
+            Self::ShellCommandMissing => "shell_command_missing",
+            Self::UnparsableBashPattern => "unparsable_bash_pattern",
         }
     }
 }
@@ -382,6 +431,22 @@ impl PolicyDecision {
 /// mirroring the reference `has_glob`.
 fn has_glob(value: &str) -> bool {
     value.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+/// Returns whether `value` contains raw shell syntax that cannot be statically
+/// resolved, mirroring the reference `has_shell_metacharacters`.
+///
+/// The set is exactly the reference `_SHELL_METACHARACTERS`
+/// (`; | & < > \` $ ( ) { }`) plus newline and carriage return. The check runs
+/// on the raw pattern before tokenization, so a metacharacter inside quotes is
+/// still detected.
+fn has_shell_metacharacters(value: &str) -> bool {
+    value.chars().any(|ch| {
+        matches!(
+            ch,
+            ';' | '|' | '&' | '<' | '>' | '`' | '$' | '(' | ')' | '{' | '}' | '\n' | '\r'
+        )
+    })
 }
 
 /// Returns whether `base` (a basename) names a supported command wrapper.
@@ -551,13 +616,17 @@ fn env_invocation_problem(tokens: &[String], start: usize) -> Option<PolicyReaso
 }
 
 /// Returns a problem reason for a tokenized simple command, mirroring the
-/// reference `tokens_problem` for the task 4.2 subset.
+/// reference `tokens_problem`.
 ///
 /// Leading (and any) `NAME=value` assignments are skipped, supported wrappers
-/// are unwrapped so nested and path-prefixed invocations stay visible, and the
-/// first `git` invocation is classified. Raw shell syntax, general globs,
-/// shell executables and `eval` are task 4.3 and are intentionally not handled
-/// here.
+/// are unwrapped so nested and path-prefixed invocations stay visible, shell
+/// executables are unwrapped through a safe `-c` script or rejected, `eval`
+/// re-checks its joined arguments as a fresh pattern, and the first `git`
+/// invocation is classified. A general glob in an ordinary token fails closed.
+///
+/// This function classifies already-tokenized input; [`bash_pattern_problem`]
+/// is the raw-pattern entry point that additionally rejects shell syntax before
+/// tokenization.
 #[must_use]
 pub fn tokens_problem(tokens: &[String]) -> Option<PolicyReason> {
     let mut index = 0;
@@ -576,12 +645,48 @@ pub fn tokens_problem(tokens: &[String]) -> Option<PolicyReason> {
             index += 1;
             continue;
         }
+        if SHELL_EXECUTABLES.contains(&base) {
+            let mut probe = index + 1;
+            while let Some(candidate) = tokens.get(probe) {
+                if !candidate.starts_with('-') || candidate == "-c" {
+                    break;
+                }
+                probe += 1;
+            }
+            if tokens.get(probe).map(String::as_str) == Some("-c") {
+                let Some(script) = tokens.get(probe + 1) else {
+                    return Some(PolicyReason::ShellCommandMissing);
+                };
+                let Ok(nested) = split_command(script) else {
+                    return Some(PolicyReason::UnparsableBashPattern);
+                };
+                if let Some(problem) = tokens_problem(&nested) {
+                    return Some(problem);
+                }
+                index = probe + 2;
+                continue;
+            }
+            return Some(PolicyReason::UnsafeShellInvocation);
+        }
         if base == "git" {
             if let Some(problem) = git_invocation_problem(&tokens[index + 1..]) {
                 return Some(problem);
             }
             index += 1;
             continue;
+        }
+        if SHELL_EVAL.contains(&base) {
+            // `eval` joins its arguments and runs them as another command, so
+            // the joined text is re-checked as a fresh pattern. Like the
+            // reference, `eval` is terminal: the rest of the argv is consumed.
+            let joined = tokens[index + 1..].join(" ");
+            if let Some(problem) = bash_pattern_problem(&joined) {
+                return Some(problem);
+            }
+            return None;
+        }
+        if has_glob(token) {
+            return Some(PolicyReason::UnprovableGlobCommand);
         }
         index += 1;
     }
@@ -600,11 +705,50 @@ pub fn policy_decision(tokens: &[String]) -> PolicyDecision {
     }
 }
 
+/// Returns a problem reason when a raw shell pattern is unsafe to approve or
+/// execute, mirroring the reference `bash_pattern_problem`.
+///
+/// The raw pattern is validated before tokenization, so shell syntax that cannot
+/// be statically resolved fails closed as [`PolicyReason::UnprovableShellSyntax`]
+/// even inside quotes. Empty/whitespace-only input yields
+/// [`PolicyReason::EmptyBashPattern`], NUL or untokenizable input yields
+/// [`PolicyReason::UnparsableBashPattern`], and the remaining tokens are
+/// classified by [`tokens_problem`].
+#[must_use]
+pub fn bash_pattern_problem(pattern: &str) -> Option<PolicyReason> {
+    if pattern.trim().is_empty() {
+        return Some(PolicyReason::EmptyBashPattern);
+    }
+    if pattern.contains('\0') {
+        return Some(PolicyReason::UnparsableBashPattern);
+    }
+    if has_shell_metacharacters(pattern) {
+        return Some(PolicyReason::UnprovableShellSyntax);
+    }
+    match split_command(pattern) {
+        Ok(tokens) => tokens_problem(&tokens),
+        Err(_) => Some(PolicyReason::UnparsableBashPattern),
+    }
+}
+
+/// Returns the typed policy decision for a raw shell pattern.
+///
+/// This is the narrow raw-pattern entry point for later stages: it never carries
+/// the pattern, argv, paths or secrets, only a [`PolicyReason`] on denial.
+#[must_use]
+pub fn bash_pattern_decision(pattern: &str) -> PolicyDecision {
+    match bash_pattern_problem(pattern) {
+        Some(reason) => PolicyDecision::Deny(reason),
+        None => PolicyDecision::Allow,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LeadingAssignments, PolicyDecision, PolicyReason, TokenizeError, basename, crate_name,
-        is_assignment, leading_assignments, policy_decision, split_command, tokens_problem,
+        LeadingAssignments, PolicyDecision, PolicyReason, TokenizeError, basename,
+        bash_pattern_decision, bash_pattern_problem, crate_name, is_assignment,
+        leading_assignments, policy_decision, split_command, tokens_problem,
     };
 
     fn split(text: &str) -> Vec<String> {
@@ -613,6 +757,10 @@ mod tests {
 
     fn problem(command: &str) -> Option<PolicyReason> {
         tokens_problem(&split(command))
+    }
+
+    fn pattern_problem(command: &str) -> Option<PolicyReason> {
+        bash_pattern_problem(command)
     }
 
     fn decision(command: &str) -> PolicyDecision {
@@ -1069,10 +1217,375 @@ mod tests {
         assert!(!rendered.contains("push"));
     }
 
+    #[test]
+    fn pattern_empty_and_whitespace_fail_closed() {
+        for command in ["", "   ", "\t", "\n", "\r\n", "  \t "] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::EmptyBashPattern),
+                "{command:?} should fail closed as empty"
+            );
+        }
+    }
+
+    #[test]
+    fn pattern_nul_and_untokenizable_fail_closed() {
+        for command in [
+            "\0",
+            "echo\0",
+            "git push\0",
+            "echo 'unclosed",
+            "echo \"unclosed",
+            "'",
+            "echo a\\",
+            "\"a\\",
+            "sh -c \"echo '\"",
+            "sh -c '\\''",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::UnparsableBashPattern),
+                "{command:?} should fail closed as unparsable"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_shell_metacharacters_fail_closed() {
+        for command in [
+            "git status && git commit -m x",
+            "sleep 1 & git push",
+            "echo `git push`",
+            "bash -c 'echo `git push`'",
+            "echo {a,b}",
+            "{ git push; }",
+            "echo $(git push)",
+            "sh -c 'echo $(git push)'",
+            "cat < file",
+            "git status\ngit push",
+            "git status\rgit push",
+            "git log || git push",
+            "git push > /dev/null",
+            "echo hi > out.txt",
+            "cat x | git push",
+            "echo 'a;b'",
+            "git status; git push",
+            "echo a; echo b",
+            "(git push)",
+            "echo $HOME",
+            "echo ${VAR}",
+            "echo \\$HOME",
+            "echo \"\\$HOME\"",
+            "git commit -m 'fix; thing'",
+            "echo \"a|b\"",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::UnprovableShellSyntax),
+                "{command:?} should fail closed as shell syntax"
+            );
+        }
+    }
+
+    #[test]
+    fn metacharacters_inside_quotes_are_still_detected() {
+        for command in [
+            "git commit -m 'fix; thing'",
+            "echo 'a;b'",
+            "echo \"a|b\"",
+            "echo 'a&b'",
+            "echo 'a>b'",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::UnprovableShellSyntax),
+                "{command:?} should fail closed even when quoted"
+            );
+        }
+    }
+
+    #[test]
+    fn general_globs_fail_closed() {
+        for command in [
+            "echo *",
+            "echo a?",
+            "echo [abc]",
+            "echo 'x*y'",
+            "echo '?'",
+            "echo '['",
+            "echo \\*",
+            "sh -c 'ls *'",
+            "eval 'echo *'",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::UnprovableGlobCommand),
+                "{command:?} should fail closed as a glob"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_executables_are_inspected_or_rejected() {
+        for command in [
+            "bash script.sh",
+            "sh --version",
+            "bash",
+            "fish",
+            "bash -lc 'git push'",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::UnsafeShellInvocation),
+                "{command:?} should fail closed as an unsafe shell invocation"
+            );
+        }
+
+        for command in ["sh -c", "bash -c", "fish -c", "zsh -c", "/usr/bin/bash -c"] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::ShellCommandMissing),
+                "{command:?} should fail closed as a missing shell command"
+            );
+        }
+
+        for command in [
+            "bash -c 'git push'",
+            "sh -c 'git add .'",
+            "zsh -c 'git push'",
+            "dash -c 'git push'",
+            "/bin/bash -c 'git push'",
+            "bash -e -c 'git push'",
+            "bash -c 'bash -c \"git push\"'",
+            "sh -c 'env git push'",
+            "sh -c 'eval git push'",
+            "env bash -c 'git push'",
+            "sudo bash -c 'git push'",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::GitWriteBlocked),
+                "{command:?} should expose the nested git write"
+            );
+        }
+
+        for command in [
+            "sh -c 'git status'",
+            "sh -c 'echo hi'",
+            "sh -c ''",
+            "sh -c ' '",
+            "bash -c 'git status'",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                None,
+                "{command:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn eval_rechecks_joined_arguments() {
+        for command in ["eval git push", "eval \"git push\"", "eval echo 'git push'"] {
+            assert_eq!(
+                pattern_problem(command),
+                Some(PolicyReason::GitWriteBlocked),
+                "{command:?} should expose the joined git write"
+            );
+        }
+
+        assert_eq!(
+            pattern_problem("eval 'echo $HOME'"),
+            Some(PolicyReason::UnprovableShellSyntax)
+        );
+        assert_eq!(
+            pattern_problem("eval 'echo a; echo b'"),
+            Some(PolicyReason::UnprovableShellSyntax)
+        );
+        assert_eq!(
+            pattern_problem("eval 'echo *'"),
+            Some(PolicyReason::UnprovableGlobCommand)
+        );
+        assert_eq!(
+            pattern_problem("eval"),
+            Some(PolicyReason::EmptyBashPattern)
+        );
+
+        for command in [
+            "eval 'git status'",
+            "eval echo hi",
+            "eval 'echo hi'",
+            "eval \"echo 'git push'\"",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                None,
+                "{command:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_pattern_allows_safe_simple_commands() {
+        for command in [
+            "ls -la",
+            "true",
+            "cat module.py",
+            "pytest -q",
+            "printf '%s\\n' 'a b'",
+            "echo 'a=b'",
+            "echo 'hello world'",
+            "grep -n 'foo bar' module.py",
+            "echo a\\ b",
+            "echo a\tb",
+            "FOO=bar",
+            "FOO=bar .venv/bin/pytest -q",
+            "A=1 B=two .venv/bin/pytest -q",
+            "FOO=* cmd",
+            "git status",
+            "git log --oneline -5",
+            "git diff --check",
+            "env -i git status",
+            "command ls -la",
+            "sudo ls -la",
+        ] {
+            assert_eq!(
+                pattern_problem(command),
+                None,
+                "{command:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_pattern_decision_matches_problem() {
+        assert_eq!(
+            bash_pattern_decision("git push").reason(),
+            Some(PolicyReason::GitWriteBlocked)
+        );
+        assert_eq!(
+            bash_pattern_decision("echo $HOME").reason(),
+            Some(PolicyReason::UnprovableShellSyntax)
+        );
+        assert_eq!(bash_pattern_decision("git status").reason(), None);
+        assert!(bash_pattern_decision("git status").is_allow());
+        assert!(!bash_pattern_decision("echo $HOME").is_allow());
+    }
+
+    #[test]
+    fn new_policy_reason_strings_match_reference_categories() {
+        for (reason, expected) in [
+            (PolicyReason::EmptyBashPattern, "empty_bash_pattern"),
+            (
+                PolicyReason::UnprovableShellSyntax,
+                "unprovable_shell_syntax",
+            ),
+            (
+                PolicyReason::UnprovableGlobCommand,
+                "unprovable_glob_command",
+            ),
+            (
+                PolicyReason::UnsafeShellInvocation,
+                "unsafe_shell_invocation",
+            ),
+            (PolicyReason::ShellCommandMissing, "shell_command_missing"),
+            (
+                PolicyReason::UnparsableBashPattern,
+                "unparsable_bash_pattern",
+            ),
+        ] {
+            assert_eq!(reason.as_str(), expected);
+            assert_eq!(reason.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn pattern_decisions_and_reasons_do_not_reveal_input() {
+        let command = "echo super-secret; cat /etc/passwd";
+        let rendered = format!(
+            "{:?} {:?} {}",
+            bash_pattern_decision(command),
+            pattern_problem(command).expect("shell syntax should be blocked"),
+            pattern_problem(command).expect("shell syntax should be blocked")
+        );
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("super"));
+        assert!(!rendered.contains("passwd"));
+        assert!(!rendered.contains("echo"));
+    }
+
+    /// Task 4.3 subset of `docs/fixtures/command-policy-cases.json`: raw shell
+    /// syntax, globs, shell executables and `eval`. Cases whose behavior is
+    /// token-level 4.2 or verifier-envelope (`missing_executable`) are covered
+    /// elsewhere or deferred to task 5.1.
+    #[test]
+    fn reference_corpus_cases_4_3() {
+        let allow = [
+            ("FOO=bar", None),
+            ("true", None),
+            ("cat module.py", None),
+            ("printf '%s\\n' 'a b'", None),
+            ("echo 'a=b'", None),
+            ("echo 'hello world'", None),
+            ("grep -n 'foo bar' module.py", None),
+        ];
+        for (command, reason) in allow {
+            assert_eq!(
+                pattern_problem(command),
+                reason,
+                "{command:?} should be allowed"
+            );
+        }
+
+        let deny = [
+            ("git status && git commit -m x", "unprovable_shell_syntax"),
+            ("sleep 1 & git push", "unprovable_shell_syntax"),
+            ("echo `git push`", "unprovable_shell_syntax"),
+            ("bash -c 'echo `git push`'", "unprovable_shell_syntax"),
+            ("echo {a,b}", "unprovable_shell_syntax"),
+            ("{ git push; }", "unprovable_shell_syntax"),
+            ("echo $(git push)", "unprovable_shell_syntax"),
+            ("sh -c 'echo $(git push)'", "unprovable_shell_syntax"),
+            ("cat < file", "unprovable_shell_syntax"),
+            ("git status\ngit push", "unprovable_shell_syntax"),
+            ("git log || git push", "unprovable_shell_syntax"),
+            ("git push > /dev/null", "unprovable_shell_syntax"),
+            ("echo hi > out.txt", "unprovable_shell_syntax"),
+            ("cat x | git push", "unprovable_shell_syntax"),
+            ("git commit -m 'fix; thing'", "unprovable_shell_syntax"),
+            ("echo 'x*y'", "unprovable_glob_command"),
+            ("echo 'a;b'", "unprovable_shell_syntax"),
+            ("git status; git push", "unprovable_shell_syntax"),
+            ("echo a; echo b", "unprovable_shell_syntax"),
+            ("bash -c 'git push'", "git_write_blocked"),
+            ("sh -c 'git add .'", "git_write_blocked"),
+            ("sh -c 'git push'", "git_write_blocked"),
+            ("zsh -c 'git push'", "git_write_blocked"),
+            ("dash -c 'git push'", "git_write_blocked"),
+            ("sh -c", "shell_command_missing"),
+            ("bash script.sh", "unsafe_shell_invocation"),
+            ("(git push)", "unprovable_shell_syntax"),
+            ("echo $HOME", "unprovable_shell_syntax"),
+            ("echo ${VAR}", "unprovable_shell_syntax"),
+            ("eval git push", "git_write_blocked"),
+            ("eval \"git push\"", "git_write_blocked"),
+            ("", "empty_bash_pattern"),
+            ("   ", "empty_bash_pattern"),
+        ];
+        for (command, category) in deny {
+            let reason = pattern_problem(command).expect("case should be denied");
+            assert_eq!(
+                reason.as_str(),
+                category,
+                "{command:?} should be denied with {category}"
+            );
+        }
+    }
+
     /// Representative subset of `docs/fixtures/command-policy-cases.json` whose
     /// behavior falls inside the task 4.2 token-level scope. Cases that need raw
     /// shell metacharacter scanning, general globs, shell executables or `eval`
-    /// are intentionally absent and belong to task 4.3.
+    /// are covered by the task 4.3 tests above.
     #[test]
     fn reference_corpus_cases_in_scope() {
         let allow = [

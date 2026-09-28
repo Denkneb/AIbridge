@@ -259,8 +259,8 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.4**
-(workspace-relative allowed paths).
+**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.5**
+(symlink confinement).
 
 ## Поток 4. Security и Git
 
@@ -363,6 +363,30 @@ open невозможен без полной согласованности sid
   менялись.
 
 ### 4.4. Workspace-relative allowed paths
+
+- **Завершено.** Новый workspace-crate `bridge-path-policy` реализует только
+  workspace-relative лексическую валидацию и нормализацию `allowed_paths` из
+  reference `git_snapshot.validate_allowed_paths`, не обращаясь к файловой
+  системе. Пустой список разрешён и нормализуется в пустой scope. Для каждого
+  entry сохраняется reference-порядок проверок: пустая строка/не-строка
+  (`invalid_allowed_paths_entry`), backslash (`backslash_in_path`), компонент
+  `..` до нормализации (`parent_traversal`, поэтому `a/../b` отвергается),
+  сведение к empty/`.` включая голый корневой слэш (`empty_or_dot_path`,
+  `./`, `/`, `//`) и абсолютный путь (`absolute_workspace_path`). Оставшиеся
+  относительные file/directory scopes нормализуются детерминированно: `.` и
+  пустые компоненты удаляются, trailing `/` сохраняет семантическое различие
+  file и directory scope, а missing file/directory обрабатываются лексически
+  без требования существования. Узкий typed API — `validate_allowed_paths`
+  (строковые entries) и boundary-уровень `validate_allowed_path_entries` с
+  `AllowedPathEntry::NonText` для non-string JSON-значения; типизированный
+  `PathPolicyReason` (`as_str`/`Display`/`Error`) не несёт входной путь, имена
+  и secrets. Table-driven тесты покрывают все относящиеся к 4.4 cases и
+  variants из `docs/fixtures/path-policy-cases.json`, включая
+  `invalid_allowed_paths_entry` для non-string на boundary API, а также
+  нормализацию, детерминизм и отсутствие утечки путей в ошибках. Symlink
+  confinement (4.5), trusted external directories/абсолютные внешние пути и Git
+  repository discovery (4.6), scope/snapshot/сравнение (4.7–4.9) и MCP-envelope
+  не входят. Существующие crates и их public API не менялись.
 
 ### 4.5. Symlink confinement
 

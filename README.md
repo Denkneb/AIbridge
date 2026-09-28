@@ -3,7 +3,8 @@
 Rust-переписывание `agent-bridge`: Cargo workspace с доменной моделью
 (`bridge-domain`), загрузчиком конфигурации (`bridge-config`), read-only
 инспекцией SQLite (`bridge-storage`), primitives политики команд
-(`bridge-command-policy`) и CLI (`agent-bridge-cli`). Цель —
+(`bridge-command-policy`), лексической политики путей (`bridge-path-policy`) и
+CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
 добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
 Python и Rust никогда не делят рабочую БД или runtime state: у каждой реализации
@@ -268,8 +269,26 @@ endpoints. Rust всегда создаёт и использует собств
   не несут command text, argv, пути и secrets. Семантика совпадает с reference,
   включая raw-скан до токенизации и отклонение shell без `-c`; verifier-конверт
   `missing_executable` остаётся задачей 5.1. Тесты 4.1–4.2 не регрессировали.
-- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.4**
-  (workspace-relative allowed paths).
+- Завершён этап **4.4. Workspace-relative allowed paths**. Новый crate
+  `bridge-path-policy` реализует только workspace-relative лексическую
+  валидацию и нормализацию `allowed_paths` (reference
+  `git_snapshot.validate_allowed_paths`) без обращения к файловой системе.
+  Пустой список разрешён; для каждого entry сохраняется reference-порядок
+  проверок: непустая строка (`invalid_allowed_paths_entry`), backslash
+  (`backslash_in_path`), компонент `..` до нормализации (`parent_traversal`),
+  сведение к empty/`.` включая `/` и `//` (`empty_or_dot_path`) и абсолютный
+  путь (`absolute_workspace_path`). Относительные file/directory scopes
+  нормализуются детерминированно, trailing `/` сохраняет различие file и
+  directory scope, а missing пути обрабатываются лексически. Узкий typed API —
+  `validate_allowed_paths` и boundary-уровень `validate_allowed_path_entries`
+  (`AllowedPathEntry::NonText` для non-string), а типизированный
+  `PathPolicyReason` не раскрывает входные пути и secrets. Table-driven тесты
+  покрывают относящиеся к 4.4 cases/variants из
+  `docs/fixtures/path-policy-cases.json`. Symlink confinement (4.5), trusted
+  external directories и абсолютные внешние пути (4.6), scope/snapshot
+  (4.7–4.9) и MCP-envelope не входят. Существующие crates не менялись.
+- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.5**
+  (symlink confinement).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

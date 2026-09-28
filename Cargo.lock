@@ -38,6 +38,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-path-policy"
+version = "0.1.0"
+
+[[package]]
 name = "bridge-storage"
 version = "0.1.0"
 dependencies = [

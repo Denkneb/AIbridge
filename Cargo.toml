@@ -5,6 +5,7 @@ members = [
     "crates/bridge-command-policy",
     "crates/bridge-config",
     "crates/bridge-domain",
+    "crates/bridge-path-policy",
     "crates/bridge-storage",
 ]
 
@@ -17,6 +18,7 @@ rust-version = "1.98"
 bridge-command-policy = { path = "crates/bridge-command-policy" }
 bridge-config = { path = "crates/bridge-config" }
 bridge-domain = { path = "crates/bridge-domain" }
+bridge-path-policy = { path = "crates/bridge-path-policy" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

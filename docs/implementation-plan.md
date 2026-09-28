@@ -175,21 +175,30 @@ Data model и serde compatibility без runtime logic.
   не раскрывают ids, reason, response, SQL, JSON и пути. Pending close
   по-прежнему запрещает `reopen_failed_round`. Schema/version/fixtures не
   менялись.
-- **Этап 3.9 завершён.** Следующий незавершённый шаг потока 3 — задача **3.10**
-  (storage isolation и создание нового Rust state), затем **3.11**
-  (ownership/format marker и fail-closed guard).
+- **Этап 3.9 завершён.**
 
 ### 3.10. Storage isolation и создание нового Rust state
 
-Проверить, что Python- и Rust-реализации используют раздельные state root,
-SQLite-файлы, locks, PID/ownership records, token-файлы, логи и endpoints;
-write tests выполняются только на независимых временных копиях каждой
-реализации. Rust всегда создаёт и использует собственную пустую БД schema v6 и
-отдельную историю задач: импорт, копирование или перенос Python state/history в
-Rust не поддерживается, Python history в Rust не появляется, а Python state не
-получает записей от Rust. Contract fixtures Python остаются эталоном семантики
-на независимых копиях; запись обеими реализациями в одну рабочую БД не
-предполагается.
+- **Завершено.** `bridge-storage` предоставляет типизированный storage-level
+  контракт `RustStateLayout` для одного Rust-owned project state. Layout
+  строится только из явно переданного Rust state root и `ProjectId` и выводит
+  все runtime-пути внутри этого root: `<root>/<project_id>/state.sqlite`,
+  project-scoped locks `mcp.lock`/`worker.lock` и root-scoped `runtime.lock`,
+  PID/ownership records `<kind>.process.json`, логи `mcp.server.log`/
+  `opencode.server.log`/`worker.log`, token-файлы и endpoint-файлы. `project_id`
+  и artifact-имена валидируются как единый безопасный path component, поэтому
+  пути не могут выйти за root; типизированный `StateLayoutError` не раскрывает
+  id, имена и пути. `RustStateLayout::initialize` создаёт только собственную
+  новую пустую БД schema v6 по derived Rust-пути и идемпотентно сохраняет
+  существующие Rust-rows; API, читающего, копирующего или импортирующего Python
+  SQLite/history, нет. Тесты на независимых временных Rust/Python roots
+  доказывают, что все Rust runtime paths лежат внутри Rust root и не
+  пересекаются с Python root, новая БД пуста (schema v6, без Python
+  task/history rows), инициализация и Rust-записи не меняют байты Python state,
+  а повторная инициализация сохраняет Rust-rows. Schema v6, version и fixtures
+  не менялись.
+- **Следующий незавершённый шаг потока 3 — 3.11** (ownership/format marker и
+  fail-closed guard).
 
 ### 3.11. Ownership/format marker и fail-closed guard
 

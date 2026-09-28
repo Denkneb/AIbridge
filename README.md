@@ -170,17 +170,26 @@ endpoints. Rust всегда создаёт и использует собств
   timestamp, event failure откатывает всё, а ошибки не раскрывают ids, reason,
   response, SQL, JSON и пути. Pending close по-прежнему запрещает
   `reopen_failed_round`. Schema/version/fixtures не менялись.
-- Зафиксирована (документация, ещё не реализовано) стратегия изоляции storage:
-  Python и Rust используют раздельные state root, SQLite, locks, PID/ownership
-  records, token-файлы, логи и endpoints. Rust всегда создаёт собственную пустую
-  БД и отдельную историю задач; Python state/history в Rust не импортируется и не
-  копируется, а Python state не получает записей от Rust. Реализация — задачи
-  **3.10** (storage isolation и создание нового Rust state) и **3.11**
-  (ownership/format marker и fail-closed guard).
+- Завершён этап **3.10. Storage isolation и создание нового Rust state**:
+  `bridge-storage` предоставляет типизированный `RustStateLayout` — storage-level
+  контракт одного Rust-owned project state. Layout строится только из явно
+  переданного Rust state root и `ProjectId` и выводит все runtime-пути внутри
+  этого root: `<root>/<project_id>/state.sqlite`, project-scoped locks
+  (`mcp.lock`, `worker.lock`) и root-scoped `runtime.lock`, PID/ownership records
+  (`<kind>.process.json`), логи (`mcp.server.log`, `opencode.server.log`,
+  `worker.log`), token- и endpoint-файлы. `project_id` и artifact-имена
+  проверяются как единый безопасный path component, поэтому путь не может выйти
+  за root, а типизированный `StateLayoutError` не раскрывает id, имена и пути.
+  `RustStateLayout::initialize` создаёт только собственную новую пустую БД schema
+  v6 по derived Rust-пути и идемпотентно сохраняет существующие Rust-rows; API,
+  читающего, копирующего или импортирующего Python SQLite/history, нет. Тесты на
+  независимых временных Rust/Python roots доказывают изоляцию путей, пустую
+  schema v6 без Python rows, неизменность байтов Python state после
+  инициализации и Rust-записей и сохранение Rust-rows при повторной
+  инициализации. Schema v6, version и fixtures не менялись.
 - Этап **3.9** (atomic round/verifier updates и cooperative close) завершён.
-  Следующий незавершённый шаг потока 3 — **3.10** (storage isolation и создание
-  нового Rust state), затем **3.11** (ownership/format marker и fail-closed
-  guard).
+  Следующий незавершённый шаг потока 3 — **3.11** (ownership/format marker и
+  fail-closed guard).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

@@ -114,10 +114,19 @@
 //! caller-supplied `task_status` can never bypass a pending close. All paired
 //! writes and events share one timestamp and every failure rolls the whole
 //! transaction back. Schema changes remain out of scope.
+//!
+//! Rust state isolation (task 3.10) is expressed by [`RustStateLayout`], the
+//! typed storage-level contract of one Rust-owned project state. It derives the
+//! `state.sqlite`, lock, PID/ownership, log, token and endpoint paths of a
+//! project exclusively from an explicitly passed Rust state root, so Rust
+//! runtime artifacts can never overlap a Python state root.
+//! [`RustStateLayout::initialize`] creates only the Rust-owned empty schema v6
+//! database in that root, and there is deliberately no API that reads, copies
+//! or imports a Python SQLite database or history.
 
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
@@ -2091,6 +2100,289 @@ fn apply_schema_v6(connection: &Connection, ddl: &str) -> Result<(), InitializeE
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Rust state isolation (task 3.10).
+//
+// Rust owns a dedicated state root and derives every runtime artifact from it.
+// The layout below is the single production source of Rust runtime paths: it
+// never accepts, reads or writes a Python path and cannot produce a path
+// outside the explicitly passed Rust state root.
+// ---------------------------------------------------------------------------
+
+/// A Rust runtime lock file.
+///
+/// The names match the frozen runtime contract: `mcp.lock` and `worker.lock`
+/// live in the project state directory, while `runtime.lock` is scoped to the
+/// whole Rust state root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLock {
+    /// One MCP server process per project (`mcp.lock`).
+    Mcp,
+    /// One worker process per project (`worker.lock`).
+    Worker,
+    /// One start/status/stop operation per state root (`runtime.lock`).
+    Runtime,
+}
+
+impl RuntimeLock {
+    /// Every lock kind.
+    pub const ALL: [Self; 3] = [Self::Mcp, Self::Worker, Self::Runtime];
+
+    /// The lock file stem (`mcp`, `worker`, `runtime`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mcp => "mcp",
+            Self::Worker => "worker",
+            Self::Runtime => "runtime",
+        }
+    }
+
+    /// Whether the lock is scoped to the state root instead of a project.
+    #[must_use]
+    pub const fn is_root_scoped(self) -> bool {
+        matches!(self, Self::Runtime)
+    }
+}
+
+/// A Rust PID/ownership process record kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeProcess {
+    /// MCP server process record.
+    Mcp,
+    /// Worker process record.
+    Worker,
+    /// OpenCode server process record.
+    OpencodeServer,
+}
+
+impl RuntimeProcess {
+    /// Every process record kind.
+    pub const ALL: [Self; 3] = [Self::Mcp, Self::Worker, Self::OpencodeServer];
+
+    /// The process record file stem (`mcp`, `worker`, `opencode_server`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mcp => "mcp",
+            Self::Worker => "worker",
+            Self::OpencodeServer => "opencode_server",
+        }
+    }
+}
+
+/// A Rust runtime log file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLog {
+    /// MCP server log (`mcp.server.log`).
+    McpServer,
+    /// OpenCode server log (`opencode.server.log`).
+    OpencodeServer,
+    /// Worker log (`worker.log`).
+    Worker,
+}
+
+impl RuntimeLog {
+    /// Every log kind.
+    pub const ALL: [Self; 3] = [Self::McpServer, Self::OpencodeServer, Self::Worker];
+
+    /// The log file name, matching the frozen runtime contract.
+    #[must_use]
+    pub const fn file_name(self) -> &'static str {
+        match self {
+            Self::McpServer => "mcp.server.log",
+            Self::OpencodeServer => "opencode.server.log",
+            Self::Worker => "worker.log",
+        }
+    }
+}
+
+/// A typed, safe error raised while building or using a [`RustStateLayout`].
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains project ids, artifact names or machine-specific
+/// paths; the rejected value itself is never rendered.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum StateLayoutError {
+    /// The project id is not a single safe path component.
+    UnsafeProjectId,
+    /// The artifact name is empty, absolute or contains a path separator or a
+    /// traversal component.
+    InvalidArtifactName,
+}
+
+impl fmt::Display for StateLayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsafeProjectId => f.write_str("project id is not a safe state path component"),
+            Self::InvalidArtifactName => f.write_str("artifact name is not a safe file name"),
+        }
+    }
+}
+
+impl Error for StateLayoutError {}
+
+/// The typed storage-level path/namespace contract of one Rust-owned project
+/// state.
+///
+/// A layout is created only from an explicitly passed Rust state root and a
+/// [`ProjectId`], and every derived runtime artifact lives under that root.
+/// Rust therefore cannot share a `state.sqlite`, lock, PID/ownership record,
+/// log, token file or endpoint record with a Python state root.
+///
+/// The layout is purely declarative: it creates no files and never opens a
+/// database. It has no API that accepts, copies or imports a Python SQLite
+/// database or history. [`RustStateLayout::initialize`] creates the Rust-owned
+/// empty schema v6 database at [`RustStateLayout::database`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustStateLayout {
+    root: PathBuf,
+    project_id: ProjectId,
+}
+
+impl RustStateLayout {
+    /// The Rust-owned SQLite file name inside the project state directory.
+    pub const DATABASE_FILE: &'static str = "state.sqlite";
+    /// The Rust-owned token/secret namespace directory inside the state root.
+    pub const SECRETS_DIR: &'static str = "secrets";
+    /// The Rust-owned endpoint namespace directory inside the state root.
+    pub const ENDPOINTS_DIR: &'static str = "endpoints";
+    /// The lock file suffix.
+    pub const LOCK_SUFFIX: &'static str = ".lock";
+    /// The PID/ownership process record suffix.
+    pub const PROCESS_SUFFIX: &'static str = ".process.json";
+
+    /// Builds the layout of `project_id` under the explicit Rust `root`.
+    ///
+    /// `root` is the Rust state root (for example
+    /// `$XDG_STATE_HOME/agent-bridge-rs`). `project_id` must be a single safe
+    /// path component, so the derived project directory can never escape
+    /// `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateLayoutError::UnsafeProjectId`] when `project_id` is not a
+    /// single safe path component. No error message contains the id or a path.
+    pub fn new(root: impl Into<PathBuf>, project_id: ProjectId) -> Result<Self, StateLayoutError> {
+        if !is_safe_component(project_id.as_str()) {
+            return Err(StateLayoutError::UnsafeProjectId);
+        }
+        Ok(Self {
+            root: root.into(),
+            project_id,
+        })
+    }
+
+    /// The explicit Rust state root.
+    #[must_use]
+    pub fn state_root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The owning project id.
+    #[must_use]
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    /// The project state directory `<root>/<project_id>`.
+    #[must_use]
+    pub fn project_dir(&self) -> PathBuf {
+        self.root.join(self.project_id.as_str())
+    }
+
+    /// The Rust-owned SQLite database `<root>/<project_id>/state.sqlite`.
+    #[must_use]
+    pub fn database(&self) -> PathBuf {
+        self.project_dir().join(Self::DATABASE_FILE)
+    }
+
+    /// The state-root-scoped runtime manager lock `<root>/runtime.lock`.
+    #[must_use]
+    pub fn runtime_lock(&self) -> PathBuf {
+        self.lock(RuntimeLock::Runtime)
+    }
+
+    /// The lock file of `kind`.
+    ///
+    /// Project-scoped locks live in the project state directory; the runtime
+    /// manager lock lives directly in the state root.
+    #[must_use]
+    pub fn lock(&self, kind: RuntimeLock) -> PathBuf {
+        let directory = if kind.is_root_scoped() {
+            self.root.clone()
+        } else {
+            self.project_dir()
+        };
+        directory.join(format!("{}{}", kind.as_str(), Self::LOCK_SUFFIX))
+    }
+
+    /// The PID/ownership process record `<project_dir>/<kind>.process.json`.
+    #[must_use]
+    pub fn ownership_record(&self, kind: RuntimeProcess) -> PathBuf {
+        self.project_dir()
+            .join(format!("{}{}", kind.as_str(), Self::PROCESS_SUFFIX))
+    }
+
+    /// The log file `<project_dir>/<file_name>`.
+    #[must_use]
+    pub fn log(&self, kind: RuntimeLog) -> PathBuf {
+        self.project_dir().join(kind.file_name())
+    }
+
+    /// The Rust-owned token file `<root>/secrets/<name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateLayoutError::InvalidArtifactName`] when `name` is not a
+    /// single safe file name. No error message contains the name or a path.
+    pub fn token_file(&self, name: &str) -> Result<PathBuf, StateLayoutError> {
+        let name = checked_artifact_name(name)?;
+        Ok(self.root.join(Self::SECRETS_DIR).join(name))
+    }
+
+    /// The Rust-owned endpoint record `<root>/endpoints/<name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateLayoutError::InvalidArtifactName`] when `name` is not a
+    /// single safe file name. No error message contains the name or a path.
+    pub fn endpoint_record(&self, name: &str) -> Result<PathBuf, StateLayoutError> {
+        let name = checked_artifact_name(name)?;
+        Ok(self.root.join(Self::ENDPOINTS_DIR).join(name))
+    }
+
+    /// Creates the Rust-owned empty schema v6 database at [`Self::database`].
+    ///
+    /// This is exactly [`initialize`] on the derived Rust path: only the Rust
+    /// state root is touched, an existing compatible v6 Rust database is
+    /// validated and left unchanged, and no Python state is read or written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed [`InitializeError`] categories as [`initialize`].
+    /// No error message contains row data, secrets or machine-specific paths.
+    pub fn initialize(&self) -> Result<(), InitializeError> {
+        initialize(self.database())
+    }
+}
+
+/// Whether `name` is a single, safe path component that cannot escape a root
+/// directory when joined to it.
+fn is_safe_component(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+/// Validates an artifact file name, returning it unchanged on success.
+fn checked_artifact_name(name: &str) -> Result<&str, StateLayoutError> {
+    if is_safe_component(name) {
+        Ok(name)
+    } else {
+        Err(StateLayoutError::InvalidArtifactName)
+    }
+}
+
 /// A fully typed view of one schema v6 `tasks` row.
 ///
 /// All fifteen columns are represented. Domain-typed columns use [`TaskId`],
@@ -2609,10 +2901,10 @@ mod tests {
         FinishRoundInput, ForeignKey, Index, InitializeError, InspectError, QueryError,
         RECOVERABLE_FAILED_ERROR_CODE, ROUND_TRANSITIONS, ReopenFailedRoundOutcome,
         ReplayStateError, RequestTaskCloseOutcome, RoundRef, RoundRow, RoundRowError,
-        RoundUpdateError, SCHEMA_VERSION, SchemaMismatch, StorageConnection, TASK_COLUMNS, Table,
-        Task, TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect,
-        initialize, inspect, open_read_only, query_user_version, round_transition_allowed,
-        v6_contract,
+        RoundUpdateError, RuntimeLock, RuntimeLog, RuntimeProcess, RustStateLayout, SCHEMA_VERSION,
+        SchemaMismatch, StateLayoutError, StorageConnection, TASK_COLUMNS, Table, Task,
+        TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect, initialize,
+        inspect, open_read_only, query_user_version, round_transition_allowed, v6_contract,
     };
     use bridge_domain::{
         ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerificationCommand,
@@ -8849,6 +9141,218 @@ mod tests {
                 .iter()
                 .all(|event| event.1 != "reopened")
         );
+    }
+
+    /// Writes a Python-like schema v6 state with one distinctive task row and
+    /// returns its exact bytes. This stands in for a Python-owned state root
+    /// that Rust must never read, copy or modify.
+    fn write_python_state(path: &Path) -> Vec<u8> {
+        create_v6(path);
+        execute(
+            path,
+            "INSERT INTO tasks (task_id, project_id, workspace, status, task, allowed_paths, \
+             test_commands, created_at, updated_at, revision_count) VALUES \
+             ('python-task', 'python-proj', '/python/workspace', 'implementing', 'python task', \
+             '[]', '[]', '2026-01-01T00:00:00.000+00:00', '2026-01-01T00:00:00.000+00:00', 0);",
+        );
+        std::fs::read(path).expect("read python state bytes")
+    }
+
+    fn demo_layout(root: &Path) -> RustStateLayout {
+        let project = ProjectId::from_str("demo").expect("demo project id");
+        RustStateLayout::new(root.to_path_buf(), project).expect("layout must be built")
+    }
+
+    #[test]
+    fn rust_state_layout_confines_every_runtime_path_to_the_rust_root() {
+        let rust_root = TempDir::new("layout-rust");
+        let python_root = TempDir::new("layout-python");
+        let layout = demo_layout(&rust_root.path);
+
+        let mut paths = vec![
+            layout.project_dir(),
+            layout.database(),
+            layout.runtime_lock(),
+        ];
+        for kind in RuntimeLock::ALL {
+            paths.push(layout.lock(kind));
+        }
+        for kind in RuntimeProcess::ALL {
+            paths.push(layout.ownership_record(kind));
+        }
+        for kind in RuntimeLog::ALL {
+            paths.push(layout.log(kind));
+        }
+        paths.push(layout.token_file("mcp.token").expect("token file path"));
+        paths.push(layout.endpoint_record("mcp.json").expect("endpoint path"));
+
+        for path in &paths {
+            assert!(
+                path.starts_with(&rust_root.path),
+                "runtime path escaped the rust root: {path:?}"
+            );
+            assert!(
+                !path.starts_with(&python_root.path),
+                "runtime path entered the python root: {path:?}"
+            );
+        }
+
+        let project_dir = rust_root.path.join("demo");
+        assert_eq!(layout.project_dir(), project_dir);
+        assert_eq!(layout.database(), project_dir.join("state.sqlite"));
+        assert_eq!(layout.runtime_lock(), rust_root.path.join("runtime.lock"));
+        assert_eq!(layout.lock(RuntimeLock::Mcp), project_dir.join("mcp.lock"));
+        assert_eq!(
+            layout.lock(RuntimeLock::Worker),
+            project_dir.join("worker.lock")
+        );
+        assert_eq!(
+            layout.ownership_record(RuntimeProcess::Worker),
+            project_dir.join("worker.process.json")
+        );
+        assert_eq!(
+            layout.log(RuntimeLog::McpServer),
+            project_dir.join("mcp.server.log")
+        );
+        assert_eq!(
+            layout.token_file("mcp.token").expect("token file path"),
+            rust_root.path.join("secrets").join("mcp.token")
+        );
+        assert_eq!(
+            layout.endpoint_record("mcp.json").expect("endpoint path"),
+            rust_root.path.join("endpoints").join("mcp.json")
+        );
+    }
+
+    #[test]
+    fn rust_state_layout_rejects_escaping_components_without_leaking_them() {
+        let root = TempDir::new("layout-escape");
+        for id in ["..", "a/b", "/abs", "."] {
+            let project = ProjectId::from_str(id).expect("non-empty project id parses");
+            let error = RustStateLayout::new(root.path.clone(), project)
+                .expect_err("unsafe project id must be rejected");
+            assert!(
+                matches!(error, StateLayoutError::UnsafeProjectId),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(!message.contains(id), "project id leaked: {message}");
+        }
+
+        let layout = demo_layout(&root.path);
+        for name in ["..", "a/b", "/abs"] {
+            let error = layout
+                .token_file(name)
+                .expect_err("unsafe token name must be rejected");
+            assert!(
+                matches!(error, StateLayoutError::InvalidArtifactName),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(!message.contains(name), "artifact name leaked: {message}");
+        }
+        assert!(matches!(
+            layout
+                .token_file("")
+                .expect_err("empty name must be rejected"),
+            StateLayoutError::InvalidArtifactName
+        ));
+    }
+
+    #[test]
+    fn rust_initialize_creates_only_its_own_empty_v6_state() {
+        let rust_root = TempDir::new("isolate-rust");
+        let python_root = TempDir::new("isolate-python");
+        let python_state = python_root.join("state.sqlite");
+        let python_before = write_python_state(&python_state);
+
+        let layout = demo_layout(&rust_root.path);
+        let rust_db = layout.database();
+        assert!(!rust_db.exists(), "rust state must not exist yet");
+
+        layout.initialize().expect("rust initialize must succeed");
+
+        assert!(rust_db.exists(), "rust initialize must create its database");
+        assert_compatible_empty_v6(&rust_db);
+
+        assert_eq!(
+            std::fs::read(&python_state).expect("read python state bytes"),
+            python_before,
+            "rust initialize changed python state bytes"
+        );
+        let python = Connection::open(&python_state).expect("open python state");
+        let python_tasks: i64 = python
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("count python tasks");
+        assert_eq!(python_tasks, 1, "python history must remain untouched");
+
+        let rust = Connection::open(&rust_db).expect("open rust state");
+        let rust_tasks: i64 = rust
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("count rust tasks");
+        assert_eq!(rust_tasks, 0, "new rust state must not contain python rows");
+    }
+
+    #[test]
+    fn rust_writes_stay_in_rust_state_and_never_touch_python_state() {
+        let rust_root = TempDir::new("isolate-writes-rust");
+        let python_root = TempDir::new("isolate-writes-python");
+        let python_state = python_root.join("state.sqlite");
+        let python_before = write_python_state(&python_state);
+
+        let layout = demo_layout(&rust_root.path);
+        layout.initialize().expect("rust initialize must succeed");
+
+        let project = ProjectId::from_str("demo").expect("demo project id");
+        let task_id = TaskId::from_str(VALID_TASK_ID).expect("valid task id");
+        {
+            let mut storage = connect(layout.database()).expect("connect rust state");
+            let outcome = storage
+                .create_task(create_task_input(task_id, &project, "rust-request"))
+                .expect("create rust task");
+            assert!(outcome.is_created(), "{outcome:?}");
+            assert_eq!(count_rows(&storage, "tasks"), 1);
+        }
+
+        assert_eq!(
+            std::fs::read(&python_state).expect("read python state bytes"),
+            python_before,
+            "rust writes changed python state bytes"
+        );
+        let python = Connection::open(&python_state).expect("open python state");
+        let python_tasks: i64 = python
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("count python tasks");
+        assert_eq!(python_tasks, 1, "python history must remain untouched");
+    }
+
+    #[test]
+    fn rust_reinitialize_preserves_existing_rust_rows() {
+        let rust_root = TempDir::new("reinit-rust");
+        let layout = demo_layout(&rust_root.path);
+        layout.initialize().expect("first initialize must succeed");
+
+        let project = ProjectId::from_str("demo").expect("demo project id");
+        let task_id = TaskId::from_str(VALID_TASK_ID).expect("valid task id");
+        {
+            let mut storage = connect(layout.database()).expect("connect rust state");
+            storage
+                .create_task(create_task_input(task_id, &project, "rust-request"))
+                .expect("create rust task");
+        }
+
+        layout
+            .initialize()
+            .expect("second initialize must be an idempotent no-op");
+
+        let storage = connect(layout.database()).expect("reconnect rust state");
+        let task = storage
+            .get_task(task_id)
+            .expect("get_task must succeed")
+            .expect("rust task must be preserved");
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
     }
 }
 

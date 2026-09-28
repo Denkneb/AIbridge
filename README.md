@@ -337,8 +337,37 @@ endpoints. Rust всегда создаёт и использует собств
   `docs/fixtures/path-policy-cases.json` для `validate_allowed_paths` и
   `group_allowed_paths_by_repo`, repo root/child, missing leaf, symlink escape,
   nested/missing trusted root, boundary non-string и regression 4.4–4.5.
-- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.7**
-  (snapshot основного repository).
+- Завершён частично этап **4.7. Snapshot основного repository** (подзадача
+  **4.7a. Базовый снимок**). Новый workspace-crate `bridge-git` (без зависимостей
+  от других bridge-crates) реализует изолированный read-only слой базового
+  состояния одного Git worktree. Проверка worktree эквивалентна
+  `git rev-parse --is-inside-work-tree`: `false`/nonzero — typed
+  `GitError::NotRepository`, а spawn/wait/timeout/I/O и malformed output — fail
+  closed инфраструктурная ошибка. `head` (`git rev-parse HEAD`) даёт `None` для
+  валидного repository без commit и принимает успешный ответ только как opaque
+  ASCII commit id строгой формы (40/64 lowercase hex) без lossy decode.
+  `status --porcelain=v1 -z` парсится собственным parser-ом: обычные entries и
+  обе стороны rename/copy, пути как Unix `OsString` bytes без lossy `String`,
+  malformed porcelain — fail closed, результат сортируется и дедуплицируется.
+  `index_fingerprint` — SHA-256 от точных bytes `git ls-files --stage -z`, NUL
+  separator, затем `git ls-files -v -z` (SHA-256 реализован в crate и сверен с
+  FIPS 180-4 vectors). `RepositorySnapshot` содержит только HEAD, raw
+  status/dirty paths и index fingerprint; worktree fingerprint/manifest и
+  фиктивные поля не добавлены. Runner ограничен: фиксированный `git`, stdin
+  null, stderr отбрасывается, stdout — raw bytes отдельным потоком (нет pipe
+  deadlock), wall-clock timeout с kill/reap; shell и Git write-команды
+  отсутствуют, а payload-free `GitError` не раскрывает workspace, argv,
+  stdout/stderr, Git config, OS errors и secrets. Тесты — только во временных
+  synthetic repositories (clean, no commit, dirty tracked/untracked, staged,
+  intent-to-add, rename/copy, malformed porcelain, non-repository,
+  timeout/kill/reap, non-UTF-8 Unix paths, стабильность index fingerprint).
+  Manifest/хеширование файлов, executable-bit/symlink identity,
+  changed/committed paths, history ancestry, scope/policy violations,
+  external/multi-repository snapshots и worker/MCP integration не входят;
+  существующие crates и fixtures не менялись. Следующий шаг — **4.7b**
+  (worktree manifest).
+- **Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** начат: 4.7a завершён,
+  следующий незавершённый шаг — **4.7b** (worktree manifest).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

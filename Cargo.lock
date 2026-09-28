@@ -38,6 +38,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-git"
+version = "0.1.0"
+
+[[package]]
 name = "bridge-path-policy"
 version = "0.1.0"
 

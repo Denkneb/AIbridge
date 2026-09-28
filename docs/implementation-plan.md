@@ -259,8 +259,9 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.7**
-(Snapshot основного repository).
+**Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** (Snapshot основного
+repository) начат: 4.7a (базовый снимок HEAD/status/index) завершён; следующий
+незавершённый шаг — **4.7b** (worktree manifest и `worktree_fingerprint`).
 
 ## Поток 4. Security и Git
 
@@ -479,6 +480,38 @@ open невозможен без полной согласованности sid
   regression 4.4–4.5. Cargo manifests/dependencies не менялись.
 
 ### 4.7. Snapshot основного repository
+
+- **4.7a. Базовый снимок — завершено частично.** Новый workspace-crate
+  `bridge-git` (без зависимостей от других bridge-crates) реализует
+  изолированный read-only слой для базового состояния одного Git worktree.
+  Проверка worktree эквивалентна `git rev-parse --is-inside-work-tree`:
+  `false`/nonzero даёт typed `GitError::NotRepository`, а
+  spawn/wait/timeout/I/O и malformed output завершаются fail closed
+  инфраструктурной ошибкой. `head` вызывает `git rev-parse HEAD`: nonzero даёт
+  `None` для валидного repository без commit, а успешный ответ принимается
+  только как opaque ASCII commit id строгой формы (40 или 64 lowercase hex) без
+  lossy decode. `status --porcelain=v1 -z` парсится собственным parser-ом:
+  обычные entries и обе стороны rename/copy, пути как Unix `OsString` bytes без
+  lossy `String`, malformed porcelain — fail closed, результат сортируется и
+  дедуплицируется. `index_fingerprint` — SHA-256 от точных bytes
+  `git ls-files --stage -z`, затем NUL separator, затем `git ls-files -v -z`
+  (SHA-256 реализован внутри crate и сверен с FIPS 180-4 vectors, внешних
+  зависимостей нет). `RepositorySnapshot` содержит только HEAD, raw status/dirty
+  paths и index fingerprint; worktree fingerprint/manifest и фиктивные поля не
+  добавлены. Git command runner ограничен: фиксированный executable `git`,
+  stdin null, stderr отбрасывается (не попадает в ошибку), stdout читается как
+  raw bytes отдельным потоком (нет pipe deadlock), wall-clock timeout с
+  принудительным kill/reap; shell и Git write-команды отсутствуют. Узкий
+  payload-free `GitError` не раскрывает workspace, argv, stdout/stderr, Git
+  config, OS errors и secrets через `Display`/`Debug`. Тесты выполняются только
+  во временных synthetic repositories: clean, no commit, dirty tracked/untracked,
+  staged, intent-to-add, rename/copy parser, malformed porcelain, non-repository,
+  timeout/kill/reap, non-UTF-8 Unix paths и стабильность index fingerprint.
+  Manifest/хеширование файлов, executable-bit/symlink identity,
+  changed/committed paths, history ancestry, scope/policy violations,
+  external/multi-repository snapshots и worker/MCP integration не входят.
+  Существующие crates, их schema/public API и fixtures не менялись. Следующий
+  шаг — **4.7b** (worktree manifest и `worktree_fingerprint`).
 
 ### 4.8. Multi-repository snapshots
 

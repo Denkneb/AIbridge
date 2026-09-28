@@ -2,7 +2,8 @@
 
 Rust-переписывание `agent-bridge`: Cargo workspace с доменной моделью
 (`bridge-domain`), загрузчиком конфигурации (`bridge-config`), read-only
-инспекцией SQLite (`bridge-storage`) и CLI (`agent-bridge-cli`). Цель —
+инспекцией SQLite (`bridge-storage`), primitives политики команд
+(`bridge-command-policy`) и CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
 добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
 Python и Rust никогда не делят рабочую БД или runtime state: у каждой реализации
@@ -187,9 +188,49 @@ endpoints. Rust всегда создаёт и использует собств
   schema v6 без Python rows, неизменность байтов Python state после
   инициализации и Rust-записей и сохранение Rust-rows при повторной
   инициализации. Schema v6, version и fixtures не менялись.
-- Этап **3.9** (atomic round/verifier updates и cooperative close) завершён.
-  Следующий незавершённый шаг потока 3 — **3.11** (ownership/format marker и
-  fail-closed guard).
+- Завершён этап **3.11. Ownership/format marker и fail-closed guard** —
+  storage-поток 3 закрыт. `bridge-storage` помечает Rust-owned state
+  versioned sidecar marker `<project_dir>/.agent-bridge-state.json`
+  (`implementation="rust"`, `format_version=1`, `project_id`, `state_root`) и
+  additive-строкой `meta.runtime_owner='rust'` в schema v6. Поле `state_root` —
+  это обязательный namespace-ключ: лексически нормализованный (`.` и повторные
+  разделители убираются; `..` гасит только предшествующий обычный компонент, а
+  несведённый ведущий `..` сохраняется, поэтому `../a` и `../../a` не
+  сталкиваются с `a`) и hex-кодированный из стабильных Unix OS-байтов root
+  (`OsStrExt::as_bytes`, явный контракт поддерживаемой платформы Unix/Linux;
+  не unspecified `OsStr::as_encoded_bytes`), поэтому скопированный или
+  перенесённый под другой Rust root state не совпадает.
+  Маркеры выставляются только `RustStateLayout::initialize` для собственного
+  нового пустого Rust state; `RustStateLayout::open` до выдачи writable
+  `StorageConnection` проверяет sidecar marker, поддерживаемый `format_version`,
+  implementation, project namespace, нормализованный `state_root`,
+  `meta.runtime_owner` и frozen schema v6 contract. Любое отсутствующее,
+  malformed (в том числе без `state_root`), unsupported, foreign или
+  противоречивое состояние (missing/foreign marker, namespace или state_root
+  mismatch, missing/foreign `meta.runtime_owner`, sidecar/SQLite disagreement,
+  несовместимая schema) завершается fail closed без записей, не перезаписывает
+  чужой marker/state и не читает, не импортирует и не меняет Python
+  state/history. Sidecar пишется crash-safe: приватный уникальный временный файл
+  (`create_new`), `sync_all`, no-clobber публикация через hard link без
+  перезаписи существующего маркера и синхронизация каталога; порядок «сначала
+  marker, затем DB» делает прерванную инициализацию обнаруживаемой и
+  восстановимой, а параллельные инициализаторы не делят temp-файл. Generic
+  `initialize`/`inspect`, `PRAGMA user_version=6`, DDL и contract fixtures не
+  меняются. Типизированный `RustStateError` не раскрывает project id, namespace,
+  marker contents, SQL, пути и secrets.
+- Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
+  Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
+  базовой семантики Python `command_policy.py`: `split_command`
+  (POSIX-токенизация, эквивалентная `shlex.split(posix=True)` с
+  `comments=False`), `basename`, `is_assignment` и `leading_assignments` с
+  last-value-wins для повторяющихся имён. Токенизатор реализован напрямую, а не
+  через crate `shlex`, потому что `shlex` трактует `#` как комментарий и
+  `\<newline>` как продолжение строки, тогда как Python — нет; NUL отклоняется
+  fail closed. Типизированный `TokenizeError` не содержит исходную команду или
+  токены. Policy-решения (запрещённые Git writes, wrappers, shell
+  metacharacters, globs, permission decision) намеренно не входят в 4.1.
+- **Поток 3 завершён, поток 4 начат.** Следующий шаг — **4.2** (запрещённые
+  Git writes и wrappers).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

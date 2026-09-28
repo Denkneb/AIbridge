@@ -123,11 +123,27 @@
 //! [`RustStateLayout::initialize`] creates only the Rust-owned empty schema v6
 //! database in that root, and there is deliberately no API that reads, copies
 //! or imports a Python SQLite database or history.
+//!
+//! Ownership/format markers (task 3.11) extend that layout with a versioned
+//! sidecar marker ([`RustStateLayout::marker`]) and the additive
+//! `meta.runtime_owner='rust'` row. [`RustStateLayout::initialize`] writes both
+//! markers only for a new, isolated Rust state, and [`RustStateLayout::open`]
+//! refuses to hand out a writable [`StorageConnection`] until the sidecar
+//! marker, its supported `format_version`, its implementation, its project
+//! namespace, its normalized state root, `meta.runtime_owner` and the frozen
+//! schema v6 contract all agree.
+//! Every missing, malformed, unsupported, foreign or contradictory state fails
+//! closed without writing anything, so a Python state, a foreign namespace or a
+//! partially created state is never adopted.
 
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use bridge_domain::{
@@ -434,6 +450,19 @@ fn open_read_only(path: &Path) -> Result<Connection, InspectError> {
 /// The path is percent-encoded so that `%`, `?` and `#` (and any non-ASCII
 /// byte) cannot be mistaken for URI syntax.
 fn read_only_uri(path: &Path) -> String {
+    encoded_file_uri(path, "mode=ro&immutable=1")
+}
+
+/// Builds a `file:` URI with a plain `mode=ro` query.
+///
+/// Unlike [`read_only_uri`], the connection sees the current committed content
+/// (including a live WAL) instead of an immutable snapshot.
+fn read_only_current_uri(path: &Path) -> String {
+    encoded_file_uri(path, "mode=ro")
+}
+
+/// Percent-encodes `path` into a `file:` URI with the given query string.
+fn encoded_file_uri(path: &Path, query: &str) -> String {
     let mut encoded = String::new();
     for &byte in path.as_os_str().as_encoded_bytes() {
         match byte {
@@ -447,7 +476,7 @@ fn read_only_uri(path: &Path) -> String {
             }
         }
     }
-    format!("file:{encoded}?mode=ro&immutable=1")
+    format!("file:{encoded}?{query}")
 }
 
 fn hex_digit(value: u8) -> char {
@@ -2223,6 +2252,93 @@ impl fmt::Display for StateLayoutError {
 
 impl Error for StateLayoutError {}
 
+/// A typed, safe error raised while opening or initializing a Rust-owned state.
+///
+/// The [`Display`](fmt::Display) representation is a fixed, developer-authored
+/// message that never contains project ids, namespaces, marker contents, SQL,
+/// secrets or machine-specific paths. The underlying connection, inspection or
+/// SQLite error, when present, is reachable only through [`Error::source`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RustStateError {
+    /// The ownership/format sidecar marker is absent.
+    MissingMarker,
+    /// The sidecar marker exists but is not valid JSON or lacks a required
+    /// field.
+    MalformedMarker,
+    /// The sidecar marker is owned by a different implementation.
+    ForeignImplementation,
+    /// The sidecar marker's `format_version` is not supported.
+    UnsupportedFormatVersion { found: u64 },
+    /// The sidecar marker's project namespace differs from this layout.
+    NamespaceMismatch,
+    /// The Rust state database file is missing.
+    MissingDatabase,
+    /// An existing database carries no Rust ownership marker and is therefore
+    /// never adopted or initialized.
+    UnmarkedState,
+    /// `meta.runtime_owner` is absent from an otherwise compatible database.
+    MissingRuntimeOwner,
+    /// `meta.runtime_owner` is present but is not `rust`.
+    ForeignRuntimeOwner,
+    /// An existing database is not compatible with the schema v6 contract.
+    IncompatibleSchema(InspectError),
+    /// An existing database has an unsupported `PRAGMA user_version`.
+    UnsupportedSchemaVersion { found: i64 },
+    /// The schema v6 DDL could not be applied to a new state.
+    Initialize(InitializeError),
+    /// The runtime connection could not be opened or configured.
+    Connect(ConnectError),
+    /// The sidecar marker could not be read or written.
+    MarkerIo,
+    /// An unexpected SQLite failure.
+    Database(rusqlite::Error),
+}
+
+impl fmt::Display for RustStateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingMarker => f.write_str("rust state ownership marker is missing"),
+            Self::MalformedMarker => f.write_str("rust state ownership marker is malformed"),
+            Self::ForeignImplementation => {
+                f.write_str("state is owned by a different implementation")
+            }
+            Self::UnsupportedFormatVersion { found } => {
+                write!(f, "unsupported state format version {found}")
+            }
+            Self::NamespaceMismatch => {
+                f.write_str("state belongs to a different project namespace")
+            }
+            Self::MissingDatabase => f.write_str("rust state database is missing"),
+            Self::UnmarkedState => f.write_str("existing state is not marked as rust-owned"),
+            Self::MissingRuntimeOwner => f.write_str("database is not marked as rust-owned"),
+            Self::ForeignRuntimeOwner => f.write_str("database is owned by a different runtime"),
+            Self::IncompatibleSchema(_) => {
+                f.write_str("database schema is not compatible with schema v6")
+            }
+            Self::UnsupportedSchemaVersion { found } => {
+                write!(f, "unsupported schema version {found}")
+            }
+            Self::Initialize(_) => f.write_str("rust state could not be initialized"),
+            Self::Connect(_) => f.write_str("storage connection could not be opened"),
+            Self::MarkerIo => f.write_str("state ownership marker could not be accessed"),
+            Self::Database(_) => f.write_str("storage database error"),
+        }
+    }
+}
+
+impl Error for RustStateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::IncompatibleSchema(error) => Some(error),
+            Self::Initialize(error) => Some(error),
+            Self::Connect(error) => Some(error),
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// The typed storage-level path/namespace contract of one Rust-owned project
 /// state.
 ///
@@ -2244,6 +2360,9 @@ pub struct RustStateLayout {
 impl RustStateLayout {
     /// The Rust-owned SQLite file name inside the project state directory.
     pub const DATABASE_FILE: &'static str = "state.sqlite";
+    /// The Rust-owned ownership/format sidecar marker file name inside the
+    /// project state directory.
+    pub const MARKER_FILE: &'static str = ".agent-bridge-state.json";
     /// The Rust-owned token/secret namespace directory inside the state root.
     pub const SECRETS_DIR: &'static str = "secrets";
     /// The Rust-owned endpoint namespace directory inside the state root.
@@ -2353,18 +2472,105 @@ impl RustStateLayout {
         Ok(self.root.join(Self::ENDPOINTS_DIR).join(name))
     }
 
-    /// Creates the Rust-owned empty schema v6 database at [`Self::database`].
+    /// The Rust-owned ownership/format sidecar marker
+    /// `<project_dir>/.agent-bridge-state.json`.
+    #[must_use]
+    pub fn marker(&self) -> PathBuf {
+        self.project_dir().join(Self::MARKER_FILE)
+    }
+
+    /// Creates the Rust-owned ownership markers and empty schema v6 database.
     ///
-    /// This is exactly [`initialize`] on the derived Rust path: only the Rust
-    /// state root is touched, an existing compatible v6 Rust database is
-    /// validated and left unchanged, and no Python state is read or written.
+    /// A new, isolated Rust state is initialized in a crash-safe order: the
+    /// sidecar marker is written first (crash-durably, through a private
+    /// temporary file, a no-clobber link and a directory sync) and only then
+    /// the schema v6 database with the additive `meta.runtime_owner='rust'`
+    /// row. An interrupted initialization is therefore always detectable: the
+    /// marker without a database is completed on the next call, while a
+    /// database without a marker is never adopted. A concurrent initializer
+    /// that publishes the identical marker first is accepted rather than
+    /// overwritten.
+    ///
+    /// Initialization is idempotent. An existing Rust-owned state (a valid
+    /// marker *and* a schema v6 database with `meta.runtime_owner='rust'`) is
+    /// validated and left completely unchanged, preserving every Rust row. A
+    /// missing or truly empty database is created; every other state fails
+    /// closed without repair, upgrade or writes.
     ///
     /// # Errors
     ///
-    /// Returns the same typed [`InitializeError`] categories as [`initialize`].
-    /// No error message contains row data, secrets or machine-specific paths.
-    pub fn initialize(&self) -> Result<(), InitializeError> {
-        initialize(self.database())
+    /// Returns a typed category (see [`RustStateError`]). An unmarked existing
+    /// database, a foreign or mismatched sidecar marker, a foreign or missing
+    /// `meta.runtime_owner`, an unsupported `format_version` and an
+    /// incompatible schema are all rejected before any write. No error message
+    /// contains row data, ids, marker contents, SQL, secrets or paths.
+    pub fn initialize(&self) -> Result<(), RustStateError> {
+        let marker = self.marker();
+        let database = self.database();
+
+        match read_owned_marker(&marker, &self.project_id, &self.root) {
+            MarkerState::Owned => initialize_owned_state(&database),
+            MarkerState::Absent => {
+                if let Err(error) = require_adoptable_database(&database) {
+                    // A concurrent initializer may have published the marker
+                    // and populated the database after our first read. Re-read
+                    // once and adopt it only when it is now our own state;
+                    // otherwise fail closed with the original error.
+                    if matches!(
+                        read_owned_marker(&marker, &self.project_id, &self.root),
+                        MarkerState::Owned
+                    ) {
+                        return initialize_owned_state(&database);
+                    }
+                    return Err(error);
+                }
+                // The marker is deliberately left in place if the database
+                // creation then fails: a marker without a database is the
+                // documented, recoverable interrupted-initialization state, and
+                // never removing it here means a concurrent initializer's
+                // adopted marker can never be deleted out from under it.
+                write_owned_marker(&marker, &self.project_id, &self.root)?;
+                initialize_rust_database(&database)
+            }
+            MarkerState::Invalid(error) => Err(error),
+        }
+    }
+
+    /// Opens the Rust-owned state writable after the full fail-closed guard.
+    ///
+    /// A writable [`StorageConnection`] is returned only when *all* of the
+    /// following agree:
+    ///
+    /// * the sidecar marker exists, parses and has
+    ///   `implementation = "rust"` and a supported `format_version`;
+    /// * the marker's project namespace equals this layout's project;
+    /// * the marker's normalized `state_root` equals this layout's state root,
+    ///   so a state copied or moved under another root is rejected;
+    /// * the database exists and matches the frozen schema v6 contract;
+    /// * `meta.runtime_owner` is present and exactly `rust`.
+    ///
+    /// Any missing, malformed, unsupported, foreign or contradictory state
+    /// returns a typed [`RustStateError`] *before* the writable connection is
+    /// created, so a foreign database, an unmarked database, a Python state or
+    /// a partially initialized state is never opened or modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed category (see [`RustStateError`]). No error message
+    /// contains row data, ids, marker contents, SQL, secrets or paths.
+    pub fn open(&self) -> Result<StorageConnection, RustStateError> {
+        match read_owned_marker(&self.marker(), &self.project_id, &self.root) {
+            MarkerState::Owned => {}
+            MarkerState::Absent => return Err(RustStateError::MissingMarker),
+            MarkerState::Invalid(error) => return Err(error),
+        }
+
+        validate_rust_database(&self.database())?;
+
+        let connection =
+            open_read_write_existing(&self.database()).map_err(RustStateError::Connect)?;
+        configure(&connection).map_err(RustStateError::Connect)?;
+        Ok(StorageConnection { connection })
     }
 }
 
@@ -2381,6 +2587,408 @@ fn checked_artifact_name(name: &str) -> Result<&str, StateLayoutError> {
     } else {
         Err(StateLayoutError::InvalidArtifactName)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ownership/format marker and fail-closed guard (task 3.11).
+//
+// Rust-owned state carries two independent ownership markers: a versioned
+// sidecar file next to the database and the additive `meta.runtime_owner` row.
+// A writable connection is handed out only when both markers, the project
+// namespace and the frozen schema v6 contract agree.
+// ---------------------------------------------------------------------------
+
+/// The `meta.runtime_owner` value of every Rust-owned state.
+pub const RUNTIME_OWNER: &str = "rust";
+
+/// The sidecar marker `implementation` value of Rust-owned state.
+const MARKER_IMPLEMENTATION: &str = "rust";
+
+/// The only supported sidecar marker `format_version`.
+const MARKER_FORMAT_VERSION: u64 = 1;
+
+/// The outcome of reading a sidecar marker file.
+enum MarkerState {
+    /// No marker file exists.
+    Absent,
+    /// A valid Rust marker for this exact project namespace.
+    Owned,
+    /// The marker exists but must fail closed with this error.
+    Invalid(RustStateError),
+}
+
+/// The parsed fields of a sidecar marker that the guard depends on.
+struct OwnedMarker {
+    implementation: String,
+    format_version: u64,
+    project_id: String,
+    state_root: String,
+}
+
+/// Reads and validates the sidecar marker at `path` for `project_id`/`root`.
+///
+/// The marker is only [`MarkerState::Owned`] when it parses, is owned by the
+/// Rust implementation, has a supported `format_version` and names exactly this
+/// project namespace *and* this state root. Any other state is
+/// [`MarkerState::Invalid`] with a safe typed error, so the caller never
+/// proceeds on a foreign marker.
+fn read_owned_marker(path: &Path, project_id: &ProjectId, root: &Path) -> MarkerState {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return MarkerState::Absent,
+        Err(_) => return MarkerState::Invalid(RustStateError::MarkerIo),
+    };
+    let marker = match parse_owned_marker(&text) {
+        Ok(marker) => marker,
+        Err(error) => return MarkerState::Invalid(error),
+    };
+    if marker.implementation != MARKER_IMPLEMENTATION {
+        return MarkerState::Invalid(RustStateError::ForeignImplementation);
+    }
+    if marker.format_version != MARKER_FORMAT_VERSION {
+        return MarkerState::Invalid(RustStateError::UnsupportedFormatVersion {
+            found: marker.format_version,
+        });
+    }
+    if marker.project_id != project_id.as_str() {
+        return MarkerState::Invalid(RustStateError::NamespaceMismatch);
+    }
+    if marker.state_root != encode_state_root(root) {
+        return MarkerState::Invalid(RustStateError::NamespaceMismatch);
+    }
+    MarkerState::Owned
+}
+
+/// Parses a sidecar marker, failing closed on malformed JSON or a missing field.
+///
+/// Every field, including `state_root`, is required: a marker that omits or
+/// mistypes one is [`RustStateError::MalformedMarker`].
+fn parse_owned_marker(text: &str) -> Result<OwnedMarker, RustStateError> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| RustStateError::MalformedMarker)?;
+    let object = value.as_object().ok_or(RustStateError::MalformedMarker)?;
+    let implementation = object
+        .get("implementation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(RustStateError::MalformedMarker)?
+        .to_owned();
+    let format_version = object
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(RustStateError::MalformedMarker)?;
+    let project_id = object
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(RustStateError::MalformedMarker)?
+        .to_owned();
+    let state_root = object
+        .get("state_root")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(RustStateError::MalformedMarker)?
+        .to_owned();
+    Ok(OwnedMarker {
+        implementation,
+        format_version,
+        project_id,
+        state_root,
+    })
+}
+
+/// Lexically normalizes a state root into a stable namespace key.
+///
+/// `.` components are dropped and redundant separators disappear. A `..`
+/// component cancels only a *preceding normal* component; an unmatched leading
+/// `..` (one with no normal component left to cancel) is preserved instead of
+/// being silently dropped, so `../a` and `../../a` keep distinct keys and never
+/// collide with `a`. Nothing touches the filesystem and no symlink is followed.
+/// The normalized path is then hex-encoded from its stable raw OS bytes, so the
+/// key is a valid UTF-8 JSON string, lossless even for non-UTF-8 paths, and two
+/// distinct roots never collide. A copied or moved project directory therefore
+/// keeps the key of its original root and fails the guard under another root.
+fn encode_state_root(root: &Path) -> String {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in root.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let cancels_normal = matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                );
+                if cancels_normal {
+                    normalized.pop();
+                } else {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    encode_state_root_key(&normalized)
+}
+
+/// Hex-encodes a normalized state root into its stable on-disk namespace key.
+///
+/// The bytes are taken from the documented, stable Unix byte representation
+/// ([`std::os::unix::ffi::OsStrExt::as_bytes`]) rather than the unspecified
+/// [`std::ffi::OsStr::as_encoded_bytes`] encoding, whose output may change
+/// between Rust versions and is only meant for same-version round trips. This
+/// makes the persisted `state_root` marker field a stable interchange value for
+/// the supported platform (Unix/Linux). Hex encoding keeps the key a valid
+/// UTF-8 JSON string and lossless even for non-UTF-8 paths.
+#[cfg(unix)]
+fn encode_state_root_key(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(hex_digit(byte >> 4));
+        encoded.push(hex_digit(byte & 0x0f));
+    }
+    encoded
+}
+
+#[cfg(not(unix))]
+compile_error!(
+    "bridge-storage persists stable state-root namespace keys via the Unix byte encoding; only Unix/Linux targets are supported"
+);
+
+/// A private, uniquely named temporary marker path in `path`'s directory.
+///
+/// The process id and a monotonic counter make the name unique per attempt, so
+/// concurrent initializers never share or clobber a temporary file.
+fn marker_temp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path
+        .file_name()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| OsString::from("marker"));
+    name.push(format!(".tmp.{}.{}", std::process::id(), sequence));
+    path.with_file_name(name)
+}
+
+/// Best-effort `fsync` of a directory so a link/rename is durable.
+///
+/// Directories cannot be opened for sync on every platform; unsupported
+/// platforms are ignored because the marker content itself was already synced.
+fn sync_directory(path: &Path) {
+    if let Ok(directory) = std::fs::File::open(path) {
+        let _ = directory.sync_all();
+    }
+}
+
+/// Writes the Rust sidecar marker for `project_id` under `root`.
+///
+/// A concurrent initializer that has already published an identical,
+/// compatible marker is accepted rather than treated as a failure.
+///
+/// The marker is written and synced to a private, uniquely named temporary file
+/// (`create_new`, so another attempt's temp file is never clobbered), then
+/// published with a no-clobber hard link so an existing marker is never
+/// overwritten. The temporary file is always cleaned up and the parent
+/// directory is synced where supported, so the published marker is durable and
+/// a crash never leaves a truncated marker at the final path.
+fn write_owned_marker(
+    path: &Path,
+    project_id: &ProjectId,
+    root: &Path,
+) -> Result<(), RustStateError> {
+    let parent = path.parent().ok_or(RustStateError::MarkerIo)?;
+    std::fs::create_dir_all(parent).map_err(|_| RustStateError::MarkerIo)?;
+
+    let value = serde_json::json!({
+        "implementation": MARKER_IMPLEMENTATION,
+        "format_version": MARKER_FORMAT_VERSION,
+        "project_id": project_id.as_str(),
+        "state_root": encode_state_root(root),
+    });
+    let text = serde_json::to_string(&value).map_err(|_| RustStateError::MarkerIo)?;
+
+    let temporary = marker_temp_path(path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|_| RustStateError::MarkerIo)?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(RustStateError::MarkerIo);
+    }
+
+    let published = match std::fs::hard_link(&temporary, path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(RustStateError::MarkerIo);
+        }
+    };
+    let _ = std::fs::remove_file(&temporary);
+
+    if !published {
+        return match read_owned_marker(path, project_id, root) {
+            MarkerState::Owned => {
+                sync_directory(parent);
+                Ok(())
+            }
+            MarkerState::Absent => Err(RustStateError::MarkerIo),
+            MarkerState::Invalid(error) => Err(error),
+        };
+    }
+
+    sync_directory(parent);
+    Ok(())
+}
+
+/// Rejects an unmarked existing database that must never be adopted.
+///
+/// A missing database or a truly empty one (`user_version=0` with no user
+/// objects) may be initialized; anything else is a foreign or unmarked state.
+fn require_adoptable_database(path: &Path) -> Result<(), RustStateError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if is_truly_empty_database(path)? {
+        Ok(())
+    } else {
+        Err(RustStateError::UnmarkedState)
+    }
+}
+
+/// Initializes or validates a state whose sidecar marker is already owned.
+///
+/// A populated database is validated read-only and left byte-for-byte
+/// unchanged, so a repeated `initialize` is an idempotent no-op. A missing or
+/// truly empty database is created through [`initialize_rust_database`].
+fn initialize_owned_state(path: &Path) -> Result<(), RustStateError> {
+    if path.exists() && !is_truly_empty_database(path)? {
+        validate_rust_database(path)
+    } else {
+        initialize_rust_database(path)
+    }
+}
+
+/// Whether `path` is a readable SQLite database with no user objects and
+/// `PRAGMA user_version=0`.
+///
+/// A file that cannot be opened as a database is never considered empty.
+fn is_truly_empty_database(path: &Path) -> Result<bool, RustStateError> {
+    let connection = match open_read_only_current(path) {
+        Ok(connection) => connection,
+        Err(_) => return Ok(false),
+    };
+    let user_version = query_user_version(&connection).map_err(RustStateError::Database)?;
+    if user_version != 0 {
+        return Ok(false);
+    }
+    let non_empty = has_user_objects(&connection).map_err(RustStateError::Database)?;
+    Ok(!non_empty)
+}
+
+/// Validates an existing database as a Rust-owned schema v6 state.
+///
+/// The database must exist, match the frozen schema v6 contract and carry
+/// `meta.runtime_owner='rust'`. The check is read-only and never creates or
+/// modifies the database.
+fn validate_rust_database(path: &Path) -> Result<(), RustStateError> {
+    if !path.exists() {
+        return Err(RustStateError::MissingDatabase);
+    }
+    let connection = open_read_only_current(path)?;
+    validate_database(&connection).map_err(RustStateError::IncompatibleSchema)?;
+    require_runtime_owner(&connection)
+}
+
+/// Requires the exact `meta.runtime_owner='rust'` row on `connection`.
+fn require_runtime_owner(connection: &Connection) -> Result<(), RustStateError> {
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'runtime_owner'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(RustStateError::Database)?;
+    match value.as_deref() {
+        Some(RUNTIME_OWNER) => Ok(()),
+        Some(_) => Err(RustStateError::ForeignRuntimeOwner),
+        None => Err(RustStateError::MissingRuntimeOwner),
+    }
+}
+
+/// Creates a new Rust-owned schema v6 database with `meta.runtime_owner='rust'`.
+///
+/// Only a missing or truly empty database is initialized. An already compatible
+/// Rust-owned v6 database (for example a concurrent initializer's result) is
+/// accepted unchanged; every other state fails closed. The whole creation runs
+/// inside one `BEGIN IMMEDIATE` transaction, so a partial schema or a database
+/// without `meta.runtime_owner` is never committed.
+fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
+    let mut storage = connect(path).map_err(RustStateError::Connect)?;
+    let connection = storage.connection_mut();
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(RustStateError::Database)?;
+
+    let user_version = query_user_version(&transaction).map_err(RustStateError::Database)?;
+    let non_empty = has_user_objects(&transaction).map_err(RustStateError::Database)?;
+
+    match user_version {
+        SCHEMA_VERSION => {
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+            require_runtime_owner(&transaction)?;
+        }
+        0 if !non_empty => {
+            apply_schema_v6(&transaction, V6_SCHEMA_DDL).map_err(RustStateError::Initialize)?;
+            transaction
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES ('runtime_owner', ?1)",
+                    params![RUNTIME_OWNER],
+                )
+                .map_err(RustStateError::Database)?;
+        }
+        0 => return Err(RustStateError::UnmarkedState),
+        found => return Err(RustStateError::UnsupportedSchemaVersion { found }),
+    }
+
+    transaction.commit().map_err(RustStateError::Database)?;
+    Ok(())
+}
+
+/// Opens an existing database read-write without creating it.
+///
+/// Unlike [`open_read_write`], the missing-file case is a typed error rather
+/// than a silent creation, which keeps [`RustStateLayout::open`] fail closed.
+fn open_read_write_existing(path: &Path) -> Result<Connection, ConnectError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    Connection::open_with_flags(path, flags).map_err(classify_open_error)
+}
+
+/// Opens an existing database read-only using the current `mode=ro` URI.
+///
+/// The shared [`open_read_only`] uses `immutable=1`; the ownership guard needs
+/// the *current* committed content (including a live WAL) so a marker written
+/// by another connection is observed. No file is created and no sidecar is
+/// written by a read-only open.
+fn open_read_only_current(path: &Path) -> Result<Connection, RustStateError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    Connection::open_with_flags(read_only_current_uri(path), flags)
+        .map_err(classify_error)
+        .map_err(RustStateError::IncompatibleSchema)
 }
 
 /// A fully typed view of one schema v6 `tasks` row.
@@ -2899,12 +3507,13 @@ mod tests {
         CompleteRequestedCloseOutcome, CompleteVerifierInput, ConnectError, Contract,
         CreateRevisionRoundInput, CreateTaskError, CreateTaskInput, CreateTaskOutcome,
         FinishRoundInput, ForeignKey, Index, InitializeError, InspectError, QueryError,
-        RECOVERABLE_FAILED_ERROR_CODE, ROUND_TRANSITIONS, ReopenFailedRoundOutcome,
+        RECOVERABLE_FAILED_ERROR_CODE, ROUND_TRANSITIONS, RUNTIME_OWNER, ReopenFailedRoundOutcome,
         ReplayStateError, RequestTaskCloseOutcome, RoundRef, RoundRow, RoundRowError,
-        RoundUpdateError, RuntimeLock, RuntimeLog, RuntimeProcess, RustStateLayout, SCHEMA_VERSION,
-        SchemaMismatch, StateLayoutError, StorageConnection, TASK_COLUMNS, Table, Task,
-        TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect, initialize,
-        inspect, open_read_only, query_user_version, round_transition_allowed, v6_contract,
+        RoundUpdateError, RuntimeLock, RuntimeLog, RuntimeProcess, RustStateError, RustStateLayout,
+        SCHEMA_VERSION, SchemaMismatch, StateLayoutError, StorageConnection, TASK_COLUMNS, Table,
+        Task, TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect,
+        encode_state_root, initialize, inspect, open_read_only, query_user_version,
+        round_transition_allowed, v6_contract,
     };
     use bridge_domain::{
         ProjectId, RoundKind, RoundStatus, TaskId, TaskStatus, Verification, VerificationCommand,
@@ -9353,6 +9962,719 @@ mod tests {
         assert_eq!(task.task_id, task_id);
         assert_eq!(count_rows(&storage, "rounds"), 1);
         assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Ownership/format marker and fail-closed guard (task 3.11).
+    // -----------------------------------------------------------------------
+
+    /// Creates the project state directory that `create_v6`/marker writes need.
+    fn ensure_project_dir(layout: &RustStateLayout) {
+        std::fs::create_dir_all(layout.project_dir()).expect("create project state dir");
+    }
+
+    /// Writes a sidecar marker with explicit fields, bypassing production code.
+    fn write_marker_fields(
+        layout: &RustStateLayout,
+        implementation: &str,
+        format_version: u64,
+        project_id: &str,
+    ) {
+        let value = serde_json::json!({
+            "implementation": implementation,
+            "format_version": format_version,
+            "project_id": project_id,
+            "state_root": encode_state_root(layout.state_root()),
+        });
+        write_marker_json(layout, &value);
+    }
+
+    /// Writes an arbitrary sidecar marker JSON value, bypassing production code.
+    fn write_marker_json(layout: &RustStateLayout, value: &Value) {
+        ensure_project_dir(layout);
+        std::fs::write(
+            layout.marker(),
+            serde_json::to_vec(value).expect("serialize marker"),
+        )
+        .expect("write marker");
+    }
+
+    /// The exact bytes of a file, or `None` when it does not exist.
+    fn file_bytes(path: &Path) -> Option<Vec<u8>> {
+        std::fs::read(path).ok()
+    }
+
+    /// Asserts that neither the database nor the sidecar marker changed.
+    fn assert_state_unchanged(
+        layout: &RustStateLayout,
+        before_db: &Option<Vec<u8>>,
+        before_marker: &Option<Vec<u8>>,
+    ) {
+        assert_eq!(
+            &file_bytes(&layout.database()),
+            before_db,
+            "database bytes changed"
+        );
+        assert_eq!(
+            &file_bytes(&layout.marker()),
+            before_marker,
+            "marker bytes changed"
+        );
+    }
+
+    /// Reads `meta.runtime_owner`, or `None` when the row is absent.
+    fn runtime_owner(storage: &StorageConnection) -> Option<String> {
+        storage
+            .connection()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'runtime_owner'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    #[test]
+    fn encode_state_root_normalization_is_component_aware_and_collision_free() {
+        // The expected values are the exact uppercase-hex keys of the normalized
+        // paths, which pins both the component-aware normalization and the
+        // stable Unix byte encoding of the persisted marker field.
+        let cases = [
+            (".", ""),
+            ("a/../b", "62"),
+            ("../a", "2E2E2F61"),
+            ("../../a", "2E2E2F2E2E2F61"),
+            ("a/../../b", "2E2E2F62"),
+            ("a", "61"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                encode_state_root(Path::new(input)),
+                expected,
+                "unexpected namespace key for {input:?}"
+            );
+        }
+
+        // Distinct relative roots must never share a key: unmatched leading
+        // `..` components are preserved, so they cannot collapse onto `a`.
+        assert_ne!(
+            encode_state_root(Path::new("../a")),
+            encode_state_root(Path::new("a"))
+        );
+        assert_ne!(
+            encode_state_root(Path::new("../../a")),
+            encode_state_root(Path::new("a"))
+        );
+        assert_ne!(
+            encode_state_root(Path::new("../../a")),
+            encode_state_root(Path::new("../a"))
+        );
+    }
+
+    #[test]
+    fn rust_initialize_writes_ownership_markers_and_open_succeeds() {
+        let root = TempDir::new("marker-fresh");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("rust initialize must succeed");
+
+        assert!(layout.marker().exists(), "sidecar marker must be created");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(layout.marker()).expect("read marker"))
+                .expect("marker must be valid JSON");
+        assert_eq!(marker["implementation"].as_str(), Some("rust"));
+        assert_eq!(marker["format_version"].as_u64(), Some(1));
+        assert_eq!(marker["project_id"].as_str(), Some("demo"));
+
+        let storage = layout.open().expect("open rust state");
+        assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
+        let journal_mode: String = storage
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        assert_eq!(journal_mode, "wal");
+        let user_version: i64 = storage
+            .connection()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read user_version");
+        assert_eq!(user_version, SCHEMA_VERSION);
+        drop(storage);
+
+        assert_compatible_empty_v6(&layout.database());
+    }
+
+    #[test]
+    fn rust_open_after_close_preserves_markers_and_rows() {
+        let root = TempDir::new("marker-reopen");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        let project = ProjectId::from_str("demo").expect("project");
+        let task_id = TaskId::from_str(VALID_TASK_ID).expect("task id");
+
+        {
+            let mut storage = layout.open().expect("first open");
+            storage
+                .create_task(create_task_input(task_id, &project, "rust-request"))
+                .expect("create task");
+        }
+        let marker_before = file_bytes(&layout.marker());
+
+        let storage = layout.open().expect("reopen");
+        let task = storage
+            .get_task(task_id)
+            .expect("get_task")
+            .expect("task preserved");
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        drop(storage);
+
+        assert_eq!(
+            file_bytes(&layout.marker()),
+            marker_before,
+            "marker changed on reopen"
+        );
+    }
+
+    #[test]
+    fn rust_reinitialize_preserves_markers_and_rows() {
+        let root = TempDir::new("marker-idempotent");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        let project = ProjectId::from_str("demo").expect("project");
+        let task_id = TaskId::from_str(VALID_TASK_ID).expect("task id");
+        {
+            let mut storage = layout.open().expect("open");
+            storage
+                .create_task(create_task_input(task_id, &project, "rust-request"))
+                .expect("create task");
+        }
+        let marker_before = file_bytes(&layout.marker());
+        let database_before = file_bytes(&layout.database());
+
+        layout.initialize().expect("second initialize");
+
+        assert_eq!(
+            file_bytes(&layout.marker()),
+            marker_before,
+            "marker changed"
+        );
+        assert_eq!(
+            file_bytes(&layout.database()),
+            database_before,
+            "database changed"
+        );
+        let storage = layout.open().expect("reopen");
+        assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    #[test]
+    fn rust_open_without_marker_fails_closed() {
+        let root = TempDir::new("marker-missing");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        std::fs::remove_file(layout.marker()).expect("remove marker");
+        let database_before = file_bytes(&layout.database());
+
+        let error = layout.open().expect_err("missing marker must fail");
+        assert!(matches!(error, RustStateError::MissingMarker), "{error:?}");
+
+        let error = layout
+            .initialize()
+            .expect_err("unmarked state must not be adopted");
+        assert!(matches!(error, RustStateError::UnmarkedState), "{error:?}");
+
+        assert_eq!(
+            file_bytes(&layout.database()),
+            database_before,
+            "database changed"
+        );
+        assert!(!layout.marker().exists(), "marker must not be recreated");
+    }
+
+    #[test]
+    fn rust_open_with_malformed_marker_fails_closed() {
+        let root = TempDir::new("marker-malformed");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        std::fs::write(layout.marker(), b"{not json").expect("write marker");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("malformed marker must fail");
+        assert!(
+            matches!(error, RustStateError::MalformedMarker),
+            "{error:?}"
+        );
+        let error = layout.initialize().expect_err("malformed marker must fail");
+        assert!(
+            matches!(error, RustStateError::MalformedMarker),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_foreign_implementation_without_writes() {
+        let root = TempDir::new("marker-foreign-impl");
+        let layout = demo_layout(&root.path);
+        write_marker_fields(&layout, "python", 1, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("foreign implementation must fail");
+        assert!(
+            matches!(error, RustStateError::ForeignImplementation),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("foreign implementation must fail");
+        assert!(
+            matches!(error, RustStateError::ForeignImplementation),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_unsupported_format_version_without_writes() {
+        let root = TempDir::new("marker-format");
+        let layout = demo_layout(&root.path);
+        write_marker_fields(&layout, "rust", 999, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("unsupported format must fail");
+        assert!(
+            matches!(
+                error,
+                RustStateError::UnsupportedFormatVersion { found: 999 }
+            ),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("unsupported format must fail");
+        assert!(
+            matches!(
+                error,
+                RustStateError::UnsupportedFormatVersion { found: 999 }
+            ),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_namespace_mismatch_without_writes() {
+        let root = TempDir::new("marker-namespace");
+        let layout = demo_layout(&root.path);
+        write_marker_fields(&layout, "rust", 1, "other-project");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("namespace mismatch must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("namespace mismatch must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_open_rejects_missing_runtime_owner_without_writes() {
+        let root = TempDir::new("owner-missing");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        create_v6(&layout.database());
+        write_marker_fields(&layout, "rust", 1, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("missing runtime owner must fail");
+        assert!(
+            matches!(error, RustStateError::MissingRuntimeOwner),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("missing runtime owner must fail");
+        assert!(
+            matches!(error, RustStateError::MissingRuntimeOwner),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_open_rejects_foreign_runtime_owner_without_writes() {
+        let root = TempDir::new("owner-foreign");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        create_v6(&layout.database());
+        execute(
+            &layout.database(),
+            "INSERT INTO meta (key, value) VALUES ('runtime_owner', 'python');",
+        );
+        write_marker_fields(&layout, "rust", 1, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("foreign runtime owner must fail");
+        assert!(
+            matches!(error, RustStateError::ForeignRuntimeOwner),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_sidecar_database_disagreement_without_writes() {
+        let root = TempDir::new("disagreement");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        execute(
+            &layout.database(),
+            "DELETE FROM meta WHERE key = 'runtime_owner';",
+        );
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("disagreement must fail");
+        assert!(
+            matches!(error, RustStateError::MissingRuntimeOwner),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_open_rejects_incompatible_schema_without_writes() {
+        let root = TempDir::new("schema-incompatible");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        execute(&layout.database(), "DROP INDEX ix_events_task;");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("incompatible schema must fail");
+        assert!(
+            matches!(error, RustStateError::IncompatibleSchema(_)),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_does_not_adopt_python_or_unmarked_state() {
+        let root = TempDir::new("adopt");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        let python_before = write_python_state(&layout.database());
+
+        let error = layout.open().expect_err("unmarked python state must fail");
+        assert!(matches!(error, RustStateError::MissingMarker), "{error:?}");
+        let error = layout
+            .initialize()
+            .expect_err("unmarked python state must not be adopted");
+        assert!(matches!(error, RustStateError::UnmarkedState), "{error:?}");
+
+        assert_eq!(
+            file_bytes(&layout.database()),
+            Some(python_before),
+            "python state bytes changed"
+        );
+        assert!(
+            !layout.marker().exists(),
+            "marker must not be created for python state"
+        );
+    }
+
+    #[test]
+    fn rust_initialize_recovers_marker_without_database() {
+        let root = TempDir::new("recover");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        let marker_before = file_bytes(&layout.marker());
+        std::fs::remove_file(layout.database()).expect("remove database");
+
+        let error = layout.open().expect_err("missing database must fail");
+        assert!(
+            matches!(error, RustStateError::MissingDatabase),
+            "{error:?}"
+        );
+        assert!(
+            !layout.database().exists(),
+            "open must not recreate the database"
+        );
+
+        layout
+            .initialize()
+            .expect("initialize must recover the interrupted state");
+        assert!(layout.database().exists(), "database must be recreated");
+        assert_eq!(
+            file_bytes(&layout.marker()),
+            marker_before,
+            "marker changed during recovery"
+        );
+        let storage = layout.open().expect("open recovered state");
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+    }
+
+    #[test]
+    fn rust_initialize_recovers_marker_with_empty_database() {
+        let root = TempDir::new("recover-empty");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        let marker_before = file_bytes(&layout.marker());
+        std::fs::remove_file(layout.database()).expect("remove database");
+        std::fs::write(layout.database(), b"").expect("create empty database file");
+
+        let error = layout.open().expect_err("empty database must fail");
+        assert!(
+            matches!(error, RustStateError::IncompatibleSchema(_)),
+            "{error:?}"
+        );
+
+        layout
+            .initialize()
+            .expect("initialize must recover the interrupted state");
+        assert_eq!(
+            file_bytes(&layout.marker()),
+            marker_before,
+            "marker changed during recovery"
+        );
+        let storage = layout.open().expect("open recovered state");
+        assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+    }
+
+    #[test]
+    fn rust_initialize_never_overwrites_foreign_marker_or_state() {
+        let root = TempDir::new("overwrite");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        create_v6(&layout.database());
+        write_marker_fields(&layout, "python", 1, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout
+            .initialize()
+            .expect_err("foreign marker must not be overwritten");
+        assert!(
+            matches!(error, RustStateError::ForeignImplementation),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_initialize_rejects_contradictory_marker_and_database() {
+        let root = TempDir::new("contradictory");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        create_v6(&layout.database());
+        write_marker_fields(&layout, "rust", 1, "demo");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout
+            .initialize()
+            .expect_err("contradictory state must fail closed");
+        assert!(
+            matches!(error, RustStateError::MissingRuntimeOwner),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn generic_initialize_stays_free_of_runtime_owner() {
+        let dir = TempDir::new("generic-init");
+        let path = dir.join("state.sqlite");
+        initialize(&path).expect("generic initialize");
+
+        let connection = Connection::open(&path).expect("open generic state");
+        let owners: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key = 'runtime_owner'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count runtime_owner rows");
+        assert_eq!(owners, 0, "generic initialize must not add a runtime owner");
+        drop(connection);
+
+        assert_compatible_empty_v6(&path);
+    }
+
+    #[test]
+    fn rust_state_errors_do_not_leak_sensitive_values() {
+        let root = TempDir::new("no-leak");
+        let layout = demo_layout(&root.path);
+
+        write_marker_fields(&layout, "python", 1, "secret-project");
+        let error = layout.open().expect_err("foreign implementation must fail");
+        let message = error.to_string();
+        assert!(
+            !message.contains("secret-project"),
+            "namespace leaked: {message}"
+        );
+        assert!(
+            !message.contains(&root.path.to_string_lossy().into_owned()),
+            "path leaked: {message}"
+        );
+
+        write_marker_fields(&layout, "rust", 1, "secret-project");
+        let error = layout.open().expect_err("namespace mismatch must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        assert!(
+            !error.to_string().contains("secret-project"),
+            "namespace leaked: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn rust_state_rejects_missing_state_root_without_writes() {
+        let root = TempDir::new("marker-missing-root");
+        let layout = demo_layout(&root.path);
+        write_marker_json(
+            &layout,
+            &serde_json::json!({
+                "implementation": "rust",
+                "format_version": 1,
+                "project_id": "demo",
+            }),
+        );
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("missing state root must fail");
+        assert!(
+            matches!(error, RustStateError::MalformedMarker),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("missing state root must fail");
+        assert!(
+            matches!(error, RustStateError::MalformedMarker),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_state_copied_under_another_root() {
+        let source_root = TempDir::new("copy-source");
+        let other_root = TempDir::new("copy-other");
+        let source = demo_layout(&source_root.path);
+        source.initialize().expect("initialize source");
+
+        let project = ProjectId::from_str("demo").expect("project");
+        let other = RustStateLayout::new(other_root.path.clone(), project).expect("other layout");
+        std::fs::create_dir_all(other.project_dir()).expect("create other project dir");
+        std::fs::copy(source.database(), other.database()).expect("copy database");
+        std::fs::copy(source.marker(), other.marker()).expect("copy marker");
+        let database_before = file_bytes(&other.database());
+        let marker_before = file_bytes(&other.marker());
+
+        let error = other.open().expect_err("copied state must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        let error = other
+            .initialize()
+            .expect_err("copied state must not be adopted");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        assert_state_unchanged(&other, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_state_rejects_marker_with_foreign_state_root_without_writes() {
+        let root = TempDir::new("marker-foreign-root");
+        let other_root = TempDir::new("marker-foreign-root-other");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("initialize");
+        let project = ProjectId::from_str("demo").expect("project");
+        let other = RustStateLayout::new(other_root.path.clone(), project).expect("other layout");
+        write_marker_fields(&other, "rust", 1, "demo");
+        std::fs::copy(other.marker(), layout.marker()).expect("overwrite marker");
+        let database_before = file_bytes(&layout.database());
+        let marker_before = file_bytes(&layout.marker());
+
+        let error = layout.open().expect_err("foreign state root must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        let error = layout
+            .initialize()
+            .expect_err("foreign state root must fail");
+        assert!(
+            matches!(error, RustStateError::NamespaceMismatch),
+            "{error:?}"
+        );
+        assert_state_unchanged(&layout, &database_before, &marker_before);
+    }
+
+    #[test]
+    fn rust_concurrent_initialize_is_safe_and_consistent() {
+        let root = TempDir::new("concurrent-init");
+        let layout = demo_layout(&root.path);
+        let workers = 8;
+        // Pre-create the database in WAL mode so threads contend only on the
+        // marker no-clobber and the writer transaction, not on the generic
+        // journal-mode switch (see `concurrent_initialize_serializes_to_one_schema`).
+        drop(connect(layout.database()).expect("pre-create rust database"));
+
+        let results: Vec<Result<(), RustStateError>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    let layout = layout.clone();
+                    scope.spawn(move || layout.initialize())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("initialize thread"))
+                .collect()
+        });
+
+        for result in &results {
+            assert!(result.is_ok(), "concurrent initialize failed: {result:?}");
+        }
+
+        let marker: Value =
+            serde_json::from_slice(&std::fs::read(layout.marker()).expect("read marker"))
+                .expect("marker must be valid JSON");
+        assert_eq!(marker["implementation"].as_str(), Some("rust"));
+        let expected_root = encode_state_root(&root.path);
+        assert_eq!(marker["state_root"].as_str(), Some(expected_root.as_str()));
+
+        let storage = layout.open().expect("open after concurrent initialize");
+        assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
+        assert_eq!(count_rows(&storage, "tasks"), 0);
+        drop(storage);
+        assert_compatible_empty_v6(&layout.database());
     }
 }
 

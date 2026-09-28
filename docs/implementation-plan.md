@@ -197,23 +197,100 @@ Data model и serde compatibility без runtime logic.
   task/history rows), инициализация и Rust-записи не меняют байты Python state,
   а повторная инициализация сохраняет Rust-rows. Schema v6, version и fixtures
   не менялись.
-- **Следующий незавершённый шаг потока 3 — 3.11** (ownership/format marker и
-  fail-closed guard).
+- **Этап 3.10 завершён.**
 
 ### 3.11. Ownership/format marker и fail-closed guard
 
-Зависит от **3.10**: маркеры выставляются только на новом изолированном Rust
-state. Зафиксировать sidecar marker (`implementation="rust"`, `format_version`)
-и additive `meta.runtime_owner='rust'`; Rust отказывается открывать state другой
-реализации или чужого namespace. Schema v6 и contract fixtures не меняются.
+- **Завершено.** `bridge-storage` расширяет `RustStateLayout` ownership/format
+  marker-ами поверх завершённого Rust state. Rust-owned state получает
+  versioned sidecar marker `<project_dir>/.agent-bridge-state.json`
+  (`implementation="rust"`, `format_version=1`, `project_id`, `state_root`) и
+  additive-строку `meta.runtime_owner='rust'`; `PRAGMA user_version=6`,
+  DDL/tables/columns/indexes/foreign keys, generic `inspect`/`initialize`
+  compatibility и contract fixtures не меняются. Обязательный `state_root` —
+  это namespace-ключ root: путь лексически нормализуется (`.` и повторные
+  разделители убираются; `..` гасит только предшествующий обычный компонент, а
+  несведённый ведущий `..` сохраняется, поэтому `../a` и `../../a` не
+  сталкиваются с `a`; без обращения к FS и без следования symlink) и
+  hex-кодируется из стабильных Unix OS-байтов (`OsStrExt::as_bytes`, явный
+  контракт поддерживаемой платформы Unix/Linux; не unspecified
+  `OsStr::as_encoded_bytes`), так что ключ стабилен как on-disk interchange,
+  lossless для non-UTF-8 и не сталкивается у разных root. Оба маркера
+  выставляются только
+  `RustStateLayout::initialize` для собственного нового пустого Rust state;
+  Python state/history не читается, не импортируется и не модифицируется.
+  Новый production API `RustStateLayout::open` до выдачи writable
+  `StorageConnection` обязан сверить sidecar marker, поддерживаемый
+  `format_version`, implementation, project namespace, нормализованный
+  `state_root`, `meta.runtime_owner` и существующий schema v6 contract.
+  Отсутствующий, malformed (включая marker без `state_root`), unsupported,
+  foreign или противоречивый marker, чужой `runtime_owner`, mismatch namespace
+  или `state_root` и несовместимая schema завершаются fail closed без записи;
+  при каждом отказе байты/содержимое чужого state и marker не меняются, а
+  скопированный под другой Rust root state отклоняется. Порядок создания
+  crash-safe: marker пишется первым в приватный уникальный временный файл
+  (`create_new`, `sync_all`), публикуется no-clobber через hard link без
+  перезаписи существующего маркера с синхронизацией каталога, затем создаётся
+  schema v6 с `meta.runtime_owner` в одной `BEGIN IMMEDIATE` транзакции;
+  прерванная инициализация (marker без DB) восстанавливается повторным
+  `initialize`, а DB без marker или без `meta.runtime_owner` никогда не
+  принимается как валидная и не перезаписывает чужой marker/state. Параллельные
+  инициализаторы не делят temp-файл и сходятся к одному валидному state.
+  Типизированный `RustStateError` (`MissingMarker`/`MalformedMarker`/
+  `ForeignImplementation`/`UnsupportedFormatVersion`/`NamespaceMismatch`/
+  `MissingDatabase`/`UnmarkedState`/`MissingRuntimeOwner`/`ForeignRuntimeOwner`/
+  `IncompatibleSchema`/`UnsupportedSchemaVersion`/`Connect`/`MarkerIo`/
+  `Database`) не раскрывает project id, namespace, marker contents, SQL, пути и
+  secrets. Тесты покрывают fresh init и reopen, идемпотентный повтор,
+  компонентно-осознанную нормализацию `state_root` (`.`/`a/../b`/`../a`/
+  `../../a`, отсутствие коллизий относительных roots) со стабильным
+  hex-контрактом, missing/malformed marker (включая отсутствие `state_root`),
+  foreign
+  implementation, unsupported `format_version`, namespace mismatch, чужой
+  `state_root` и state, скопированный под другой root, missing/foreign
+  `meta.runtime_owner`, sidecar/SQLite disagreement, несовместимую schema,
+  параллельную инициализацию, неизменность чужого state/marker при каждом
+  отказе, восстановление после marker-без-DB и неизменность Python
+  state/history.
 
 **Готовность потока:** семантика совместима без изменения schema version, а
 Python- и Rust-state изолированы: Rust ведёт собственную пустую БД и отдельную
-историю, общая рабочая БД и перенос Python history отсутствуют.
+историю, общая рабочая БД и перенос Python history отсутствуют; writable Rust
+open невозможен без полной согласованности sidecar + namespace +
+`meta.runtime_owner` + schema v6.
+
+**Поток 3 завершён, поток 4 начат.** Следующий незавершённый шаг — **4.2**
+(запрещённые Git writes и wrappers).
 
 ## Поток 4. Security и Git
 
 ### 4.1. Простые command tokens
+
+- **Завершено.** Новый workspace-crate `bridge-command-policy` воспроизводит
+  только базовую семантику токенизации простых команд и leading environment
+  assignments из reference `command_policy.py` (`basename`, `is_assignment`,
+  `split_command`, `leading_assignments`) и не принимает policy-решений.
+  `split_command` — POSIX-токенизатор, эквивалентный Python
+  `shlex.split(text, posix=True)` с `comments=False` и `whitespace_split=True`:
+  кавычки снимаются, quoted whitespace сохраняется, backslash экранирует
+  следующий символ вне одинарных кавычек, соседние quoted/unquoted фрагменты
+  склеиваются, `#` — обычный символ, а `\r`/`\n`/`\t`/пробел разделяют токены.
+  Crate `shlex` не используется, потому что он трактует `#` как комментарий и
+  `\<newline>` как продолжение строки, тогда как Python — нет. Как fail-closed
+  расширение NUL отклоняется (reference отклоняет NUL до токенизации), хотя
+  Python `shlex` сохранил бы его. `basename` повторяет `token.rsplit("/", 1)[-1]`,
+  `is_assignment` требует непустое имя, начинающееся с alphabetic или `_` и
+  состоящее далее из alphanumeric или `_`, а `leading_assignments` отделяет
+  только ведущие assignments от argv, сохраняя порядок первого появления имени
+  и last-value-wins для повторяющихся имён. Узкий typed API представлен
+  `TokenizeError` без payload (ошибка не содержит исходную команду/токены) и
+  `LeadingAssignments` с доступами `variables`/`get`/`argv`. Unit-тесты
+  покрывают простые команды, whitespace, одинарные/двойные кавычки, quoted
+  spaces/backslash, path-prefixed executable, валидные и невалидные
+  assignments, повторяющиеся assignments, assignment-only вход,
+  empty/whitespace вход, NUL и unmatched quotes. Запрещённые Git writes,
+  wrappers env/sudo/command/exec/nohup/nice/time, shell executables, raw shell
+  metacharacters/globs и permission decision остаются задачами 4.2/4.3.
 
 ### 4.2. Запрещённые Git writes и wrappers
 

@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/agent-bridge-cli",
+    "crates/bridge-command-policy",
     "crates/bridge-config",
     "crates/bridge-domain",
     "crates/bridge-storage",
@@ -13,6 +14,7 @@ edition = "2024"
 rust-version = "1.98"
 
 [workspace.dependencies]
+bridge-command-policy = { path = "crates/bridge-command-policy" }
 bridge-config = { path = "crates/bridge-config" }
 bridge-domain = { path = "crates/bridge-domain" }
 rusqlite = { version = "0.40", features = ["bundled"] }

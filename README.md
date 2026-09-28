@@ -287,8 +287,30 @@ endpoints. Rust всегда создаёт и использует собств
   `docs/fixtures/path-policy-cases.json`. Symlink confinement (4.5), trusted
   external directories и абсолютные внешние пути (4.6), scope/snapshot
   (4.7–4.9) и MCP-envelope не входят. Существующие crates не менялись.
-- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.5**
-  (symlink confinement).
+- Завершён этап **4.5. Symlink confinement**. `bridge-path-policy` расширен
+  filesystem-aware слоем поверх лексической семантики 4.4 без изменения
+  существующего API. Новые typed-функции `validate_workspace_allowed_paths` и
+  `validate_workspace_allowed_path_entries` канонизируют workspace и разрешают
+  каждый лексически нормализованный relative scope по семантике Python
+  `Path.resolve(strict=False)`: существующие symlink-компоненты (включая
+  промежуточные) следуются, `.`/`..` внутри target сворачиваются, missing tail
+  присоединяется лексически. Resolved target вне canonical workspace
+  отклоняется стабильной категорией `workspace_escape` (существующий и dangling
+  symlink escape), а разрешённый entry сохраняет нормализованный исходный
+  workspace-relative scope с trailing-slash различием file/directory. Symlink
+  loops и I/O/canonicalization failures (неканонизируемый workspace,
+  non-`NotFound` metadata-ошибки) завершаются fail closed типизированными
+  `SymlinkLoop`/`ResolutionFailure`; ошибки не несут payload и не раскрывают
+  пути, workspace, target и OS text. Table-driven тесты воспроизводят четыре
+  относящиеся к 4.5 ветви `docs/fixtures/path-policy-cases.json`
+  (`validate-relative-symlink-inside-scope`,
+  `validate-relative-symlink-escape`, `validate-dangling-symlink-inside-scope`,
+  `validate-relative-dangling-symlink-outside`), промежуточные symlink,
+  loop/failure и отсутствие утечки; тесты 4.4 не регрессировали. Absolute
+  external paths и trusted roots (4.6), scope/snapshot (4.7–4.9) и MCP-envelope
+  не входят.
+- **Поток 3 завершён, поток 4 продолжается.** Следующий шаг — **4.6**
+  (external Git repository paths).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

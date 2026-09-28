@@ -259,8 +259,8 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.5**
-(symlink confinement).
+**Поток 3 завершён, поток 4 продолжается.** Следующий незавершённый шаг — **4.6**
+(External Git repository paths).
 
 ## Поток 4. Security и Git
 
@@ -389,6 +389,45 @@ open невозможен без полной согласованности sid
   не входят. Существующие crates и их public API не менялись.
 
 ### 4.5. Symlink confinement
+
+- **Завершено.** `bridge-path-policy` расширен filesystem-aware слоем поверх
+  лексической семантики 4.4, не меняя существующий узкий API
+  (`validate_allowed_paths`, `validate_allowed_path_entries`) и его поведение.
+  Новые typed-функции `validate_workspace_allowed_paths` и
+  `validate_workspace_allowed_path_entries` принимают workspace и
+  workspace-relative `allowed_paths`: workspace канонизируется через
+  `fs::canonicalize`, каждый entry сначала проходит reference-лексические
+  проверки 4.4, а затем лексически нормализованный relative scope разрешается
+  относительно canonical workspace по семантике Python
+  `Path.resolve(strict=False)` — существующие symlink-компоненты следуются
+  (абсолютный target перезапускает разрешение от корня FS, относительный
+  разрешается от родителя ссылки, `.`/`..` внутри target сворачиваются),
+  отсутствующий компонент завершает разрешение, а оставшийся хвост
+  присоединяется лексически. Symlink в промежуточном компоненте обрабатывается
+  так же, как конечный. Если resolved target не равен canonical workspace и не
+  является его потомком, entry отклоняется как стабильная reason category
+  `workspace_escape` (`PathPolicyReason::WorkspaceEscape`), покрывая и
+  существующий, и dangling symlink escape; разрешённый entry сохраняет
+  нормализованный исходный workspace-relative scope (не target path) с
+  сохранением trailing-slash различия file/directory. Symlink loops и
+  I/O/canonicalization failures (неканонизируемый workspace, non-`NotFound`
+  metadata-ошибки, например не-каталог в компоненте, нечитаемая ссылка)
+  завершаются fail closed типизированными `PathPolicyReason::SymlinkLoop`/
+  `ResolutionFailure` — задокументированное fail-closed расширение над
+  reference, который в non-strict режиме молча продолжает лексически. Все
+  ошибки не несут payload и не раскрывают входные пути, workspace, symlink
+  target, secrets или OS error text в `Display`/`Debug`. Table-driven тесты
+  воспроизводят четыре относящиеся к 4.5 ветви
+  `docs/fixtures/path-policy-cases.json`
+  (`validate-relative-symlink-inside-scope`,
+  `validate-relative-symlink-escape`, `validate-dangling-symlink-inside-scope`,
+  `validate-relative-dangling-symlink-outside`), а также промежуточные
+  symlink-компоненты, сворачивание `..` в target, symlink loop, отказ
+  канонизации/не-каталога, сохранение лексических отказов 4.4 и отсутствие
+  утечки путей/target/OS-text. Absolute external paths, trusted roots и Git
+  repository discovery (4.6), scope/snapshot/сравнение (4.7–4.9) и MCP-envelope
+  не входят. Cargo manifests/dependencies не менялись, тесты 4.4 не
+  регрессировали.
 
 ### 4.6. External Git repository paths
 

@@ -1,17 +1,22 @@
-//! Minimal lexical path-policy primitives for workspace-relative
-//! `allowed_paths` (task 4.4).
+//! Minimal path-policy primitives for workspace-relative `allowed_paths`
+//! (tasks 4.4 and 4.5).
 //!
-//! This crate reproduces only the workspace-relative, lexical validation and
-//! normalization branch of the reference Python
+//! This crate reproduces the workspace-relative branch of the reference Python
 //! `git_snapshot.validate_allowed_paths`
 //! (`/home/denis/Python/agent_bridge/src/agent_bridge/git_snapshot.py`). It
-//! never touches the filesystem: entries are classified and normalized purely
-//! from their text, so a missing file or directory behaves exactly like an
-//! existing one.
+//! offers two layers:
+//!
+//! - a purely lexical layer ([`validate_allowed_paths`],
+//!   [`validate_allowed_path_entries`]) that never touches the filesystem, so a
+//!   missing file or directory behaves exactly like an existing one (4.4);
+//! - a filesystem-aware layer ([`validate_workspace_allowed_paths`],
+//!   [`validate_workspace_allowed_path_entries`]) that canonicalizes the
+//!   workspace and resolves existing symlink components plus the missing tail
+//!   like Python `Path.resolve(strict=False)`, rejecting any entry whose
+//!   resolved target escapes the canonical workspace (4.5).
 //!
 //! Deliberately out of scope for this crate (later tasks):
 //!
-//! - symlink resolution and confinement (4.5);
 //! - trusted external directories, absolute external paths and Git repository
 //!   discovery/grouping (4.6);
 //! - scope matching, snapshots, status/index/HEAD comparison (4.7-4.9).
@@ -44,11 +49,34 @@
 //! trusted-external-root branch that can accept some absolute paths belongs to
 //! task 4.6 and is intentionally absent here.
 //!
+//! The filesystem-aware layer applies the lexical rules first and then, for
+//! each surviving relative entry, resolves the canonical workspace joined with
+//! the lexically normalized entry. Existing symlink components and the missing
+//! tail are handled like Python `Path.resolve(strict=False)`: existing links
+//! are followed, `..` in a link target is folded, and a component that does not
+//! exist terminates resolution while the remaining components are joined
+//! lexically. A resolved target that is not the canonical workspace or a
+//! descendant of it is rejected as
+//! [`PathPolicyReason::WorkspaceEscape`] (`workspace_escape`), covering both
+//! existing and dangling symlink escapes. An accepted entry keeps its
+//! normalized original workspace-relative scope (never the resolved target)
+//! with the file/directory trailing slash preserved.
+//!
+//! As a documented fail-closed extension over Python, symlink loops and
+//! filesystem/canonicalization failures (workspace canonicalization, non-
+//! `NotFound` metadata errors such as a non-directory component, unreadable
+//! links) fail closed as [`PathPolicyReason::SymlinkLoop`] or
+//! [`PathPolicyReason::ResolutionFailure`] instead of silently widening scope.
+//!
 //! Errors ([`PathPolicyReason`]) carry no payload, so a rejected entry never
-//! leaks the original path or any secrets through `Debug`/`Display`.
+//! leaks the original path, workspace, symlink target or OS error text through
+//! `Debug`/`Display`.
 
+use std::collections::VecDeque;
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::path::{Component, Path, PathBuf};
 
 /// Returns the package name as a trivial smoke-check helper.
 #[must_use]
@@ -78,6 +106,16 @@ pub enum PathPolicyReason {
     /// The entry is absolute and must be expressed as a relative path. Mirrors
     /// the reference category `absolute_workspace_path`.
     AbsolutePath,
+    /// A relative entry resolves outside the canonical workspace through an
+    /// existing or dangling symlink. Mirrors the reference category
+    /// `workspace_escape`.
+    WorkspaceEscape,
+    /// Symlink resolution did not terminate within the supported depth, which
+    /// is a symlink loop. Fail-closed extension over the reference.
+    SymlinkLoop,
+    /// The workspace could not be canonicalized or a path component could not
+    /// be inspected. Fail-closed extension over the reference.
+    ResolutionFailure,
 }
 
 impl PathPolicyReason {
@@ -91,6 +129,9 @@ impl PathPolicyReason {
             Self::ParentTraversal => "parent_traversal",
             Self::EmptyOrDotPath => "empty_or_dot_path",
             Self::AbsolutePath => "absolute_workspace_path",
+            Self::WorkspaceEscape => "workspace_escape",
+            Self::SymlinkLoop => "symlink_loop",
+            Self::ResolutionFailure => "path_resolution_failure",
         }
     }
 }
@@ -205,6 +246,444 @@ pub fn validate_allowed_path_entries(
             AllowedPathEntry::NonText => Err(PathPolicyReason::InvalidAllowedPathsEntry),
         })
         .collect()
+}
+
+/// Maximum number of symlinks resolved before a path is treated as a loop.
+///
+/// This mirrors the classic `SYMLOOP_MAX` fail-closed bound; a genuine loop can
+/// never terminate, so the bound converts it into a typed error instead of an
+/// unbounded walk.
+const MAX_SYMLINK_DEPTH: usize = 40;
+
+/// Canonicalizes the workspace root, failing closed on any filesystem error.
+fn canonical_workspace(workspace: &Path) -> Result<PathBuf, PathPolicyReason> {
+    std::fs::canonicalize(workspace).map_err(|_| PathPolicyReason::ResolutionFailure)
+}
+
+/// Resolves one lexically normalized relative entry and checks confinement.
+///
+/// The walk mirrors Python `Path.resolve(strict=False)`: existing symlink
+/// components are followed (absolute targets restart at the filesystem root,
+/// relative targets resolve against the link's parent, and `..`/`.` inside a
+/// target are folded), a missing component ends resolution while the remaining
+/// components are joined lexically, and the final path must equal the canonical
+/// workspace or be a descendant of it. No path, target or OS error text is
+/// carried in the returned error.
+fn confine_to_workspace(workspace: &Path, relative: &str) -> Result<(), PathPolicyReason> {
+    let mut resolved = workspace.to_path_buf();
+    let mut queue: VecDeque<OsString> = relative
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(OsString::from)
+        .collect();
+    let mut links = 0usize;
+
+    while let Some(part) = queue.pop_front() {
+        let part = part.as_os_str();
+        if part == OsStr::new(".") {
+            continue;
+        }
+        if part == OsStr::new("..") {
+            resolved.pop();
+            continue;
+        }
+        let candidate = resolved.join(part);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                links += 1;
+                if links > MAX_SYMLINK_DEPTH {
+                    return Err(PathPolicyReason::SymlinkLoop);
+                }
+                let target = std::fs::read_link(&candidate)
+                    .map_err(|_| PathPolicyReason::ResolutionFailure)?;
+                let mut target_parts: Vec<OsString> = Vec::new();
+                for component in target.components() {
+                    match component {
+                        Component::Normal(name) => target_parts.push(name.to_os_string()),
+                        Component::ParentDir => target_parts.push(OsString::from("..")),
+                        Component::CurDir => {}
+                        Component::RootDir => {}
+                        Component::Prefix(_) => {
+                            return Err(PathPolicyReason::ResolutionFailure);
+                        }
+                    }
+                }
+                if target.is_absolute() {
+                    resolved = PathBuf::from("/");
+                }
+                for target_part in target_parts.into_iter().rev() {
+                    queue.push_front(target_part);
+                }
+            }
+            Ok(_) => resolved.push(part),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                resolved.push(part);
+                for remaining in queue.drain(..) {
+                    let remaining = remaining.as_os_str();
+                    if remaining == OsStr::new("..") {
+                        resolved.pop();
+                    } else if remaining != OsStr::new(".") {
+                        resolved.push(remaining);
+                    }
+                }
+                break;
+            }
+            Err(_) => return Err(PathPolicyReason::ResolutionFailure),
+        }
+    }
+
+    if resolved == workspace || resolved.starts_with(workspace) {
+        Ok(())
+    } else {
+        Err(PathPolicyReason::WorkspaceEscape)
+    }
+}
+
+/// Validates and normalizes one workspace-relative entry with symlink
+/// confinement against the canonical workspace.
+fn classify_workspace_entry(workspace: &Path, raw: &str) -> Result<String, PathPolicyReason> {
+    let normalized = classify_entry(raw)?;
+    let stripped = normalized.strip_suffix('/').unwrap_or(&normalized);
+    confine_to_workspace(workspace, stripped)?;
+    Ok(normalized)
+}
+
+/// Validates and normalizes workspace-relative `allowed_paths` entries with
+/// filesystem-aware symlink confinement (task 4.5).
+///
+/// The workspace is canonicalized safely and every entry is first checked with
+/// the lexical rules of [`validate_allowed_paths`]. Each surviving relative
+/// entry is then resolved against the canonical workspace following existing
+/// symlink components and the missing tail like Python
+/// `Path.resolve(strict=False)`; an entry whose resolved target leaves the
+/// workspace is rejected as [`PathPolicyReason::WorkspaceEscape`]. Accepted
+/// entries keep their normalized original workspace-relative scope, never the
+/// resolved target, and preserve the trailing-slash file/directory
+/// distinction.
+///
+/// An empty slice returns an empty scope without touching the filesystem.
+///
+/// # Errors
+///
+/// Returns the first [`PathPolicyReason`] encountered, without the offending
+/// path, workspace, symlink target or OS error text. A missing or
+/// non-canonicalizable workspace, an unreadable/non-directory component and a
+/// symlink loop fail closed as [`PathPolicyReason::ResolutionFailure`] or
+/// [`PathPolicyReason::SymlinkLoop`].
+pub fn validate_workspace_allowed_paths(
+    workspace: &Path,
+    paths: &[&str],
+) -> Result<Vec<String>, PathPolicyReason> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workspace = canonical_workspace(workspace)?;
+    paths
+        .iter()
+        .map(|path| classify_workspace_entry(&workspace, path))
+        .collect()
+}
+
+/// Boundary variant of [`validate_workspace_allowed_paths`] that also accepts
+/// non-string entries, rejecting them fail closed as
+/// [`PathPolicyReason::InvalidAllowedPathsEntry`].
+///
+/// # Errors
+///
+/// Returns the first [`PathPolicyReason`] encountered, without the offending
+/// entry, workspace, symlink target or OS error text.
+pub fn validate_workspace_allowed_path_entries(
+    workspace: &Path,
+    entries: &[AllowedPathEntry<'_>],
+) -> Result<Vec<String>, PathPolicyReason> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workspace = canonical_workspace(workspace)?;
+    entries
+        .iter()
+        .map(|entry| match entry {
+            AllowedPathEntry::Text(path) => classify_workspace_entry(&workspace, path),
+            AllowedPathEntry::NonText => Err(PathPolicyReason::InvalidAllowedPathsEntry),
+        })
+        .collect()
+}
+
+#[cfg(all(test, unix))]
+mod workspace_tests {
+    use super::{
+        AllowedPathEntry, PathPolicyReason, validate_workspace_allowed_path_entries,
+        validate_workspace_allowed_paths,
+    };
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "bridge-path-policy-test-{}-{tag}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn missing_workspace(tag: &str) -> PathBuf {
+        let dir = TempDir::new(tag);
+        let path = dir.path().to_path_buf();
+        drop(dir);
+        path
+    }
+
+    fn mkdir(path: &Path) {
+        std::fs::create_dir_all(path).expect("create directory");
+    }
+
+    fn mkfile(path: &Path) {
+        if let Some(parent) = path.parent() {
+            mkdir(parent);
+        }
+        std::fs::write(path, b"content").expect("write file");
+    }
+
+    fn link(target: &Path, link_path: &Path) {
+        std::os::unix::fs::symlink(target, link_path).expect("create symlink");
+    }
+
+    #[test]
+    fn empty_list_is_allowed_without_filesystem() {
+        let missing = missing_workspace("empty-list");
+        assert_eq!(
+            validate_workspace_allowed_paths(&missing, &[]),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            validate_workspace_allowed_path_entries(&missing, &[]),
+            Ok(Vec::new())
+        );
+    }
+
+    /// Task 4.5 subset of `docs/fixtures/path-policy-cases.json`: the four
+    /// `validate_allowed_paths` relative symlink/dangling branches. Absolute
+    /// external paths and trusted roots (4.6) and scope/snapshot operations
+    /// (4.7-4.9) are out of scope.
+    #[test]
+    fn reference_corpus_cases_4_5() {
+        let fixture = TempDir::new("corpus-4-5");
+        let ws = fixture.join("workspace");
+        let outside = fixture.join("outside");
+        mkdir(&ws);
+        mkdir(&outside);
+
+        mkdir(&ws.join("src"));
+        link(&ws.join("src"), &ws.join("link-in"));
+        link(&outside, &ws.join("escape"));
+        link(&ws.join("missing-a"), &ws.join("dangling"));
+        link(&outside.join("missing-b"), &ws.join("dangling-out"));
+
+        let allow: [(&str, &str, &str); 2] = [
+            (
+                "validate-relative-symlink-inside-scope",
+                "link-in/file.py",
+                "link-in/file.py",
+            ),
+            (
+                "validate-dangling-symlink-inside-scope",
+                "dangling",
+                "dangling",
+            ),
+        ];
+        for (id, input, expected) in allow {
+            assert_eq!(
+                validate_workspace_allowed_paths(&ws, &[input]),
+                Ok(vec![expected.to_owned()]),
+                "{id} should be allowed"
+            );
+        }
+
+        let deny: [(&str, &str); 2] = [
+            ("validate-relative-symlink-escape", "escape/"),
+            ("validate-relative-dangling-symlink-outside", "dangling-out"),
+        ];
+        for (id, input) in deny {
+            let reason = validate_workspace_allowed_paths(&ws, &[input])
+                .expect_err("entry should be denied");
+            assert_eq!(reason.as_str(), "workspace_escape", "{id}");
+        }
+    }
+
+    #[test]
+    fn final_and_intermediate_symlinks_stay_confined() {
+        let fixture = TempDir::new("intermediate");
+        let ws = fixture.join("workspace");
+        mkdir(&ws.join("real/sub"));
+        mkfile(&ws.join("real/sub/file.py"));
+        link(&ws.join("real"), &ws.join("link"));
+        link(&ws.join("real/sub/file.py"), &ws.join("link-file.py"));
+
+        assert_eq!(
+            validate_workspace_allowed_paths(&ws, &["link/sub/file.py"]),
+            Ok(vec!["link/sub/file.py".to_owned()])
+        );
+        assert_eq!(
+            validate_workspace_allowed_paths(&ws, &["link-file.py"]),
+            Ok(vec!["link-file.py".to_owned()])
+        );
+        assert_eq!(
+            validate_workspace_allowed_paths(&ws, &["link/"]),
+            Ok(vec!["link/".to_owned()])
+        );
+    }
+
+    #[test]
+    fn symlink_target_parent_components_are_folded() {
+        let fixture = TempDir::new("parent-target");
+        let ws = fixture.join("workspace");
+        mkdir(&ws.join("real"));
+        mkdir(&ws.join("sub"));
+        link(Path::new("../real"), &ws.join("sub/inner"));
+        link(Path::new("../../outside"), &ws.join("sub/up"));
+
+        assert_eq!(
+            validate_workspace_allowed_paths(&ws, &["sub/inner/file.py"]),
+            Ok(vec!["sub/inner/file.py".to_owned()])
+        );
+        let reason = validate_workspace_allowed_paths(&ws, &["sub/up/file.py"])
+            .expect_err("escape through a '..' target should be denied");
+        assert_eq!(reason.as_str(), "workspace_escape");
+    }
+
+    #[test]
+    fn symlink_loops_fail_closed() {
+        let fixture = TempDir::new("loop");
+        let ws = fixture.join("workspace");
+        mkdir(&ws);
+        link(Path::new("loop"), &ws.join("loop"));
+        link(&ws.join("loop1"), &ws.join("loop2"));
+        link(&ws.join("loop2"), &ws.join("loop1"));
+
+        for input in ["loop", "loop/child", "loop1", "loop2/x"] {
+            let reason = validate_workspace_allowed_paths(&ws, &[input])
+                .expect_err("symlink loop should be denied");
+            assert_eq!(reason, PathPolicyReason::SymlinkLoop, "{input}");
+        }
+    }
+
+    #[test]
+    fn workspace_canonicalization_failure_fails_closed() {
+        let missing = missing_workspace("missing-workspace");
+        let reason = validate_workspace_allowed_paths(&missing, &["module.py"])
+            .expect_err("missing workspace should be denied");
+        assert_eq!(reason, PathPolicyReason::ResolutionFailure);
+    }
+
+    #[test]
+    fn non_directory_component_fails_closed() {
+        let fixture = TempDir::new("nondir");
+        let ws = fixture.join("workspace");
+        mkdir(&ws);
+        mkfile(&ws.join("file.txt"));
+
+        let reason = validate_workspace_allowed_paths(&ws, &["file.txt/child"])
+            .expect_err("non-directory component should be denied");
+        assert_eq!(reason, PathPolicyReason::ResolutionFailure);
+    }
+
+    #[test]
+    fn lexical_rejections_are_preserved_by_workspace_api() {
+        let fixture = TempDir::new("lexical");
+        let ws = fixture.join("workspace");
+        mkdir(&ws);
+
+        for (input, expected) in [
+            ("", PathPolicyReason::InvalidAllowedPathsEntry),
+            ("src\\module.py", PathPolicyReason::BackslashInPath),
+            ("../outside.py", PathPolicyReason::ParentTraversal),
+            (".", PathPolicyReason::EmptyOrDotPath),
+            ("/etc/passwd", PathPolicyReason::AbsolutePath),
+        ] {
+            let reason = validate_workspace_allowed_paths(&ws, &[input])
+                .expect_err("entry should be denied");
+            assert_eq!(reason, expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn workspace_boundary_rejects_non_text_and_preserves_scopes() {
+        let fixture = TempDir::new("boundary");
+        let ws = fixture.join("workspace");
+        mkdir(&ws.join("src"));
+
+        assert_eq!(
+            validate_workspace_allowed_path_entries(
+                &ws,
+                &[AllowedPathEntry::Text("src/"), AllowedPathEntry::NonText],
+            ),
+            Err(PathPolicyReason::InvalidAllowedPathsEntry)
+        );
+        assert_eq!(
+            validate_workspace_allowed_path_entries(&ws, &[AllowedPathEntry::Text("src/")]),
+            Ok(vec!["src/".to_owned()])
+        );
+    }
+
+    #[test]
+    fn errors_do_not_reveal_paths_targets_or_os_text() {
+        let fixture = TempDir::new("super-secret-root");
+        let ws = fixture.join("workspace");
+        mkdir(&ws);
+        link(&fixture.join("secret-target"), &ws.join("escape"));
+        link(Path::new("loop"), &ws.join("loop"));
+
+        let escape = validate_workspace_allowed_paths(&ws, &["escape"])
+            .expect_err("escape should be denied");
+        assert_eq!(escape, PathPolicyReason::WorkspaceEscape);
+        assert_eq!(format!("{escape:?}"), "WorkspaceEscape");
+        assert_eq!(format!("{escape}"), "workspace_escape");
+
+        let looped =
+            validate_workspace_allowed_paths(&ws, &["loop"]).expect_err("loop should be denied");
+        assert_eq!(looped, PathPolicyReason::SymlinkLoop);
+        assert_eq!(format!("{looped:?}"), "SymlinkLoop");
+        assert_eq!(format!("{looped}"), "symlink_loop");
+
+        let failure = validate_workspace_allowed_paths(&fixture.join("missing"), &["module.py"])
+            .expect_err("missing workspace should be denied");
+        assert_eq!(failure, PathPolicyReason::ResolutionFailure);
+        assert_eq!(format!("{failure:?}"), "ResolutionFailure");
+        assert_eq!(format!("{failure}"), "path_resolution_failure");
+
+        let workspace_text = fixture.path().display().to_string();
+        for rendered in [
+            format!("{escape:?} {escape}"),
+            format!("{looped:?} {looped}"),
+            format!("{failure:?} {failure}"),
+        ] {
+            assert!(!rendered.contains("secret"), "{rendered}");
+            assert!(!rendered.contains(&workspace_text), "{rendered}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +817,12 @@ mod tests {
             (PathPolicyReason::ParentTraversal, "parent_traversal"),
             (PathPolicyReason::EmptyOrDotPath, "empty_or_dot_path"),
             (PathPolicyReason::AbsolutePath, "absolute_workspace_path"),
+            (PathPolicyReason::WorkspaceEscape, "workspace_escape"),
+            (PathPolicyReason::SymlinkLoop, "symlink_loop"),
+            (
+                PathPolicyReason::ResolutionFailure,
+                "path_resolution_failure",
+            ),
         ] {
             assert_eq!(reason.as_str(), expected);
             assert_eq!(reason.to_string(), expected);

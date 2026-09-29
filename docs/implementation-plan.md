@@ -261,9 +261,9 @@ open невозможен без полной согласованности sid
 
 **Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
-violations) завершены; шаг **5.1** (test command validation) и шаг **5.2**
-(один command runner) завершены; следующий незавершённый шаг — **5.3**
-(последовательность команд).
+violations) завершены; шаг **5.1** (test command validation), шаг **5.2**
+(один command runner) и шаг **5.3** (последовательность команд) завершены;
+следующий незавершённый шаг — **5.4** (HEAD/workspace fingerprints).
 
 ## Поток 4. Security и Git
 
@@ -711,6 +711,38 @@ violations) завершены; шаг **5.1** (test command validation) и ша
   schema и fixtures не менялись.
 
 ### 5.3. Последовательность команд
+
+- **Завершено.** `bridge-verifier` получает узкий typed API последовательного
+  запуска заранее согласованного списка test-команд поверх существующего
+  `run_test_command` (single-command runner не дублируется):
+  `run_test_command_sequence(workspace: &Path, commands: &[&str],
+  timeout: Duration, tail_bytes: usize) -> Result<TestCommandSequenceOutcome,
+  CommandSequenceError>`. Как и reference `verifier.run_round_verification`,
+  **весь** список валидируется заранее существующей fail-closed
+  `bridge_command_policy::validate_test_commands` до любого spawn: отклонённая
+  команда в любой позиции даёт `CommandSequenceError::Rejected { index, reason }`
+  (payload-free index и `TestCommandReason`) и ни одна команда не запускается,
+  поэтому validation не может привести к частичному запуску. Пустой список
+  валиден и возвращает пустой успешный результат. Далее команды выполняются
+  строго в исходном порядке через `run_test_command` с теми же `timeout` и
+  `tail_bytes`; runner останавливается сразу после первого non-zero exit или
+  timeout, последующие команды не запускаются. Результат
+  `TestCommandSequenceOutcome` содержит только фактически запущенные команды
+  (`commands()`), позволяет определить общий success/failure (`succeeded()`,
+  для пустого списка — true) и не несёт command text; spawn/wait failure
+  валидной команды останавливает последовательность как
+  `CommandSequenceError::Run { index, error }`. `CommandSequenceError` не
+  раскрывает command text, argv, environment, workspace paths, output или
+  secrets; `Debug`/`Display` `TestCommandSequenceOutcome` редактированы (только
+  число команд и общий статус), а bounded output доступен лишь через явный
+  `CommandRunOutcome::output_tail`. Focused tests покрывают пустой список,
+  доказательство порядка через зависимые команды, stop-on-nonzero,
+  stop-on-timeout, fail-closed pre-validation всего списка (ранняя безопасная
+  команда не запускается при отклонении любой другой), rejected unsafe command,
+  spawn failure без запуска последующих команд, сохранение bounded output
+  семантики через single runner (`yes`) и redaction. Public contracts других
+  crates, schema и fixtures не менялись; fingerprints (5.4), side-effect
+  detection (5.5), persistence (5.6) и worker/MCP integration не входят.
 
 ### 5.4. HEAD/workspace fingerprints
 

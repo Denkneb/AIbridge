@@ -416,8 +416,31 @@ endpoints. Rust всегда создаёт и использует собств
   и абсолютная qualification external scope при repository-relative результате.
   Все Git-вызовы read-only и bounded; non-UTF-8 пути сохраняются и сортируются
   по reference surrogateescape-семантике, ошибки payload-free.
-- **Потоки 3 и 4 завершены.** Следующий незавершённый шаг — **5.1** (test command
-  validation).
+- Завершён этап **5.1. Test command validation**. `bridge-command-policy`
+  предоставляет `validate_test_commands(commands: &[&str]) ->
+  Vec<TestCommandProblem>`: пустой список валиден, каждая команда проверяется
+  fail-closed `bash_pattern_problem`, а команда только из ведущих `NAME=value`
+  assignments отклоняется стабильной причиной `missing_executable`; typed
+  `TestCommandReason`/`TestCommandProblem` несут только индекс и причину без
+  command text, argv, путей и secrets.
+- Завершён этап **5.2. Один command runner**. Новый workspace-crate
+  `bridge-verifier` предоставляет `run_test_command(workspace, command, timeout,
+  tail_bytes) -> Result<CommandRunOutcome, CommandRunError>`: fail-closed
+  валидация до spawn, argv отдельными OS-аргументами без shell, ведущие
+  `NAME=value` assignments в окружении, запуск в заданном `workspace` лидером
+  собственной process group, stdin закрыт, bounded stdout/stderr tail только у
+  failed-команды, timeout с kill/reap всей process group, payload-free
+  `Rejected`/`Spawn`/`Wait`.
+- Завершён этап **5.3. Последовательность команд**. `bridge-verifier`
+  предоставляет `run_test_command_sequence(workspace, commands, timeout,
+  tail_bytes) -> Result<TestCommandSequenceOutcome, CommandSequenceError>` поверх
+  `run_test_command`: fail-closed валидация **всего** списка до любого spawn
+  (при отклонении любой команды не запускается ни одна), строгий исходный
+  порядок, остановка на первом non-zero exit/timeout/spawn failure без запуска
+  последующих команд, пустой список даёт пустой успешный результат, результат
+  содержит только реально запущенные команды и payload-free `Debug`/`Display`.
+- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.3** завершены,
+  следующий незавершённый шаг — **5.4** (HEAD/workspace fingerprints).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

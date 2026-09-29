@@ -239,14 +239,14 @@ fn parse_null_listing(bytes: &[u8]) -> Result<Vec<OsString>, GitError> {
 /// order would place `U+1F600` first and change the fingerprint; the raw path
 /// bytes remain the manifest key and hash material.
 #[cfg(unix)]
-fn surrogateescape_key(value: &OsStr) -> Vec<u32> {
+pub(crate) fn surrogateescape_key(value: &OsStr) -> Vec<u32> {
     use std::os::unix::ffi::OsStrExt;
     surrogateescape_key_bytes(value.as_bytes())
 }
 
 /// Builds the ordering key on non-Unix platforms.
 #[cfg(not(unix))]
-fn surrogateescape_key(value: &OsStr) -> Vec<u32> {
+pub(crate) fn surrogateescape_key(value: &OsStr) -> Vec<u32> {
     surrogateescape_key_bytes(value.to_string_lossy().as_bytes())
 }
 

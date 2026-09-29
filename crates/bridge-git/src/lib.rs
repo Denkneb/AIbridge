@@ -1,4 +1,4 @@
-//! Isolated read-only Git baseline snapshot layer (tasks 4.7 and 4.8).
+//! Isolated read-only Git snapshot and comparison layer (tasks 4.7-4.9).
 //!
 //! This crate reproduces the read-only baseline primitives of the reference
 //! Python `git_snapshot` module
@@ -10,13 +10,11 @@
 //! The private `multi_repo` module builds on [`take_snapshot`] and on the
 //! repository buckets of `bridge-path-policy` to snapshot the main workspace
 //! plus every affected external repository (4.8); its public API is re-exported
-//! here.
+//! here. The comparison layer derives changed/committed paths, scope violations
+//! and Git-policy violations from those baselines (4.9).
 //!
-//! Deliberately out of scope for this crate (later tasks):
-//!
-//! - `changed_paths` / `committed_paths` and history ancestry (4.9);
-//! - scope/policy violations, snapshot comparison and the worker/MCP envelope
-//!   (4.9, 5.x).
+//! Worker/MCP result aggregation and verifier integration remain out of scope
+//! for later tasks.
 //!
 //! Every Git command is read-only and runs through a bounded runner: a fixed
 //! `git` executable, closed standard input, discarded standard error, raw
@@ -47,11 +45,16 @@
 //! [`GitError`] carries no payload, so `Display`/`Debug` can never leak the
 //! workspace, argv, stdout/stderr, Git configuration, OS error text or secrets.
 
+mod comparison;
 mod multi_repo;
 mod runner;
 mod sha256;
 mod worktree;
 
+pub use comparison::{
+    GitPolicyViolation, MultiRepositoryComparison, RepositoryComparison,
+    compare_multi_repository_snapshot, compare_repository_snapshot,
+};
 pub use multi_repo::{
     MultiRepoError, MultiRepositorySnapshot, RepositoryGroupSnapshot,
     take_multi_repository_snapshot,
@@ -247,7 +250,14 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<runner::GitOutput, GitErro
 
 /// Runs one read-only Git command and fails closed on a non-zero exit.
 pub(crate) fn run_checked(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-    let output = run_git(workspace, args)?;
+    let owned: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    run_checked_os(workspace, &owned)
+}
+
+/// Runs one read-only Git command with OS-native arguments and fails closed on
+/// a non-zero exit.
+pub(crate) fn run_checked_os(workspace: &Path, args: &[&OsStr]) -> Result<Vec<u8>, GitError> {
+    let output = runner::run_bounded(OsStr::new(GIT_PROGRAM), workspace, args, GIT_TIMEOUT)?;
     if output.status.success() {
         Ok(output.stdout)
     } else {

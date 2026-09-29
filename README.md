@@ -405,11 +405,19 @@ endpoints. Rust всегда создаёт и использует собств
   fail-closed duplicate/root-mismatch/disappeared/non-repository, payload-free
   errors и regression 4.7. Семантика сверена с Python reference multi-repository
   verifier flow и fixtures `docs/fixtures/path-policy-cases.json` /
-  `docs/fixtures/git-snapshot-cases.json`. 4.9 comparison/violations,
-  `changed_paths`/`committed_paths`, ancestry и worker/MCP integration не входят.
-- **Поток 3 завершён, поток 4 продолжается.** Шаги **4.7** (4.7a и 4.7b) и
-  **4.8** завершены, следующий незавершённый шаг — **4.9** (snapshot comparison
-  и violations).
+  `docs/fixtures/git-snapshot-cases.json`. Comparison/violations реализованы
+  следующим шагом 4.9; worker/MCP integration не входит.
+- Завершён этап **4.9. Snapshot comparison и violations**. `bridge-git`
+  предоставляет `compare_repository_snapshot` и
+  `compare_multi_repository_snapshot`, типизированные per-repository результаты
+  и стабильные policy-коды. Реализованы manifest-based `changed_paths`,
+  commit-based `committed_paths`, file/directory scope violations, ancestry,
+  `head_changed`/`index_changed`, `allow_commit`, missing main/external repository
+  и абсолютная qualification external scope при repository-relative результате.
+  Все Git-вызовы read-only и bounded; non-UTF-8 пути сохраняются и сортируются
+  по reference surrogateescape-семантике, ошибки payload-free.
+- **Потоки 3 и 4 завершены.** Следующий незавершённый шаг — **5.1** (test command
+  validation).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

@@ -259,10 +259,10 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Шаги **4.7** (Snapshot основного
-repository: 4.7a базовый снимок и 4.7b worktree manifest/`worktree_fingerprint`)
-и **4.8** (multi-repository snapshots) завершены; следующий незавершённый шаг —
-**4.9** (snapshot comparison и violations).
+**Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
+**4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
+violations) завершены; следующий незавершённый шаг — **5.1** (test command
+validation).
 
 ## Поток 4. Security и Git
 
@@ -591,6 +591,29 @@ repository: 4.7a базовый снимок и 4.7b worktree manifest/`worktree
   `bridge-path-policy` у `bridge-git`.
 
 ### 4.9. Snapshot comparison и violations
+
+- **Завершено.** `bridge-git` получил typed API сравнения одного и нескольких
+  repository baseline: `compare_repository_snapshot` и
+  `compare_multi_repository_snapshot`, результаты `RepositoryComparison` /
+  `MultiRepositoryComparison` и стабильный `GitPolicyViolation`. Сравнение
+  вычисляет worktree `changed_paths` по manifest, `committed_paths` через
+  read-only `git diff`/`diff-tree`, объединённые scope violations с точной
+  file/directory семантикой и Git-policy violations в reference-порядке:
+  `history_rewritten`, `head_changed`, `index_changed`; `allow_commit=true`
+  подавляет только последние два. Missing main/external repository даёт
+  соответственно `not_a_git_repo`/`external_repo_missing` без Git-команд над
+  исчезнувшим root. Multi-repository сравнение сохраняет baseline-порядок,
+  canonical root и независимые repository-relative результаты; external scope
+  проверяется по абсолютному root-qualified candidate, но наружу возвращаются
+  relative paths. Commit ids передаются Git как отдельные OS-arguments, shell и
+  Git writes отсутствуют; команды ограничены прежним timeout/kill/reap runner.
+  NUL path output парсится fail closed, Unix non-UTF-8 paths сохраняются без
+  lossy decode и сортируются по Python surrogateescape-порядку. Ошибки остаются
+  payload-free. Focused synthetic-repository tests покрывают clean/dirty,
+  file/directory scope, commit, ancestry rewrite, `allow_commit`, missing
+  external repository и независимое main/external сравнение; workspace format,
+  clippy и tests проходят. Worker/MCP flat aggregation остаётся последующей
+  интеграцией, а не частью security/Git primitive.
 
 **Готовность потока:** решения совпадают с security corpus.
 

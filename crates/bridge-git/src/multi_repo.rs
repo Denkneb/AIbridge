@@ -10,9 +10,9 @@
 //! order, and each repository keeps its own raw `allowed_paths` bucket so that
 //! identical relative paths in different repositories can never mix.
 //!
-//! Scope is deliberately narrow. This module only records snapshots: it does not
-//! implement 4.9 comparison (`changed_paths`, `committed_paths`, scope or policy
-//! violations, history ancestry) and it has no worker or MCP envelope.
+//! Scope is deliberately narrow. This module only records snapshots; task 4.9
+//! comparison is implemented by the sibling comparison module. Worker/MCP
+//! result aggregation remains outside this module.
 //!
 //! # Contract
 //!

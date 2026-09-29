@@ -337,8 +337,9 @@ endpoints. Rust всегда создаёт и использует собств
   `docs/fixtures/path-policy-cases.json` для `validate_allowed_paths` и
   `group_allowed_paths_by_repo`, repo root/child, missing leaf, symlink escape,
   nested/missing trusted root, boundary non-string и regression 4.4–4.5.
-- Завершён частично этап **4.7. Snapshot основного repository** (подзадача
-  **4.7a. Базовый снимок**). Новый workspace-crate `bridge-git` (без зависимостей
+- Завершён этап **4.7. Snapshot основного repository** (подзадачи
+  **4.7a. Базовый снимок** и **4.7b. Worktree manifest и
+  `worktree_fingerprint`**). Новый workspace-crate `bridge-git` (без зависимостей
   от других bridge-crates) реализует изолированный read-only слой базового
   состояния одного Git worktree. Проверка worktree эквивалентна
   `git rev-parse --is-inside-work-tree`: `false`/nonzero — typed
@@ -351,9 +352,9 @@ endpoints. Rust всегда создаёт и использует собств
   malformed porcelain — fail closed, результат сортируется и дедуплицируется.
   `index_fingerprint` — SHA-256 от точных bytes `git ls-files --stage -z`, NUL
   separator, затем `git ls-files -v -z` (SHA-256 реализован в crate и сверен с
-  FIPS 180-4 vectors). `RepositorySnapshot` содержит только HEAD, raw
-  status/dirty paths и index fingerprint; worktree fingerprint/manifest и
-  фиктивные поля не добавлены. Runner ограничен: фиксированный `git`, stdin
+  FIPS 180-4 vectors). `RepositorySnapshot` содержит HEAD, raw status/dirty
+  paths, index fingerprint, а с 4.7b — ещё manifest и worktree fingerprint.
+  Runner ограничен: фиксированный `git`, stdin
   null, stderr отбрасывается, stdout — raw bytes отдельным потоком (нет pipe
   deadlock), wall-clock timeout с kill/reap; shell и Git write-команды
   отсутствуют, а payload-free `GitError` не раскрывает workspace, argv,
@@ -361,13 +362,23 @@ endpoints. Rust всегда создаёт и использует собств
   synthetic repositories (clean, no commit, dirty tracked/untracked, staged,
   intent-to-add, rename/copy, malformed porcelain, non-repository,
   timeout/kill/reap, non-UTF-8 Unix paths, стабильность index fingerprint).
-  Manifest/хеширование файлов, executable-bit/symlink identity,
-  changed/committed paths, history ancestry, scope/policy violations,
-  external/multi-repository snapshots и worker/MCP integration не входят;
-  существующие crates и fixtures не менялись. Следующий шаг — **4.7b**
-  (worktree manifest).
-- **Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** начат: 4.7a завершён,
-  следующий незавершённый шаг — **4.7b** (worktree manifest).
+  4.7b добавляет детерминированный manifest рабочего дерева и стабильный SHA-256
+  `worktree_fingerprint`: tracked + non-ignored untracked files, ignored entries
+  исключает сам Git, пути — точные Unix bytes без lossy UTF-8, digest учитывает
+  content/executable bit/symlink target, а entries упорядочены ровно как Python
+  `sorted()` над surrogateescape-decoded именами (code point order: одиночный
+  invalid byte `0xff` идёт перед supplementary `U+1F600`, raw-byte порядок был бы
+  обратным) с дедупликацией. Fingerprint воспроизводит compact digest reference
+  `verifier.fingerprint` (`path || 0x00 || hex digest || 0x00` по отсортированным
+  entries, затем `status\0` и raw status) и сверен с Python reference на
+  synthetic repository, включая mixed supplementary-Unicode/invalid-byte пути. Fail-closed расширение: файловая ошибка —
+  payload-free `ManifestIo`, listed entry не обычный файл/symlink —
+  `UnsupportedFileType`. changed/committed paths, history ancestry, scope/policy
+  violations, external/multi-repository snapshots (4.8) и comparison/violations
+  (4.9), worker/MCP integration не входят; существующие crates и fixtures не
+  менялись.
+- **Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** завершён (4.7a и
+  4.7b), следующий незавершённый шаг — **4.8** (multi-repository snapshots).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

@@ -84,21 +84,95 @@ const H0: [u32; 8] = [
     0x5be0_cd19,
 ];
 
-/// Computes the SHA-256 digest of `input`.
-#[must_use]
-pub(crate) fn digest(input: &[u8]) -> [u8; 32] {
-    let mut state = H0;
-    let bit_len = (input.len() as u64).wrapping_mul(8);
+/// Streaming SHA-256 state.
+///
+/// Content is absorbed incrementally so a manifest entry can hash a file
+/// without materialising it in memory; [`digest`] is the one-shot wrapper over
+/// the same state machine.
+pub(crate) struct Sha256 {
+    state: [u32; 8],
+    buffer: [u8; 64],
+    buffered: usize,
+    length: u64,
+}
 
-    let mut message = Vec::with_capacity(input.len() + 72);
-    message.extend_from_slice(input);
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
+impl Sha256 {
+    /// Creates the initial hashing state.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            state: H0,
+            buffer: [0u8; 64],
+            buffered: 0,
+            length: 0,
+        }
     }
-    message.extend_from_slice(&bit_len.to_be_bytes());
 
-    for block in message.as_chunks::<64>().0 {
+    /// Absorbs `data` into the running digest.
+    pub(crate) fn update(&mut self, mut data: &[u8]) {
+        self.length = self.length.wrapping_add(data.len() as u64);
+
+        if self.buffered > 0 {
+            let take = (64 - self.buffered).min(data.len());
+            self.buffer[self.buffered..self.buffered + take].copy_from_slice(&data[..take]);
+            self.buffered += take;
+            data = &data[take..];
+            if self.buffered == 64 {
+                let block = self.buffer;
+                self.compress(&block);
+                self.buffered = 0;
+            }
+        }
+
+        while data.len() >= 64 {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&data[..64]);
+            self.compress(&block);
+            data = &data[64..];
+        }
+
+        if !data.is_empty() {
+            self.buffer[..data.len()].copy_from_slice(data);
+            self.buffered = data.len();
+        }
+    }
+
+    /// Finalises the digest and consumes the state.
+    #[must_use]
+    pub(crate) fn finalize(mut self) -> [u8; 32] {
+        let bit_len = self.length.wrapping_mul(8);
+
+        self.buffer[self.buffered] = 0x80;
+        self.buffered += 1;
+        if self.buffered > 56 {
+            for byte in &mut self.buffer[self.buffered..] {
+                *byte = 0;
+            }
+            let block = self.buffer;
+            self.compress(&block);
+            self.buffered = 0;
+        }
+        for byte in &mut self.buffer[self.buffered..56] {
+            *byte = 0;
+        }
+        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let block = self.buffer;
+        self.compress(&block);
+
+        let mut output = [0u8; 32];
+        for (slot, value) in output
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.state.iter())
+        {
+            slot.copy_from_slice(&value.to_be_bytes());
+        }
+        output
+    }
+
+    /// Compresses one 64-byte block into the running state.
+    fn compress(&mut self, block: &[u8; 64]) {
         let mut schedule = [0u32; 64];
         for (word, chunk) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
             *word = u32::from_be_bytes(*chunk);
@@ -114,14 +188,14 @@ pub(crate) fn digest(input: &[u8]) -> [u8; 32] {
                 .wrapping_add(s1);
         }
 
-        let mut a = state[0];
-        let mut b = state[1];
-        let mut c = state[2];
-        let mut d = state[3];
-        let mut e = state[4];
-        let mut f = state[5];
-        let mut g = state[6];
-        let mut h = state[7];
+        let mut a = self.state[0];
+        let mut b = self.state[1];
+        let mut c = self.state[2];
+        let mut d = self.state[3];
+        let mut e = self.state[4];
+        let mut f = self.state[5];
+        let mut g = self.state[6];
+        let mut h = self.state[7];
 
         for (&constant, &word) in K.iter().zip(schedule.iter()) {
             let big_s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
@@ -145,21 +219,23 @@ pub(crate) fn digest(input: &[u8]) -> [u8; 32] {
             a = temp1.wrapping_add(temp2);
         }
 
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-        state[4] = state[4].wrapping_add(e);
-        state[5] = state[5].wrapping_add(f);
-        state[6] = state[6].wrapping_add(g);
-        state[7] = state[7].wrapping_add(h);
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
     }
+}
 
-    let mut output = [0u8; 32];
-    for (slot, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(state.iter()) {
-        slot.copy_from_slice(&value.to_be_bytes());
-    }
-    output
+/// Computes the SHA-256 digest of `input`.
+#[must_use]
+pub(crate) fn digest(input: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(input);
+    hasher.finalize()
 }
 
 /// Encodes bytes as lowercase hexadecimal.
@@ -176,7 +252,7 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{digest, to_hex};
+    use super::{Sha256, digest, to_hex};
 
     #[test]
     fn fips_180_4_vectors() {
@@ -203,5 +279,37 @@ mod tests {
             to_hex(&digest(&input)),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn streaming_matches_one_shot() {
+        let input = vec![b'x'; 1_000];
+        for chunk in [1usize, 7, 63, 64, 65, 128, 333] {
+            let mut hasher = Sha256::new();
+            for part in input.chunks(chunk) {
+                hasher.update(part);
+            }
+            assert_eq!(
+                to_hex(&hasher.finalize()),
+                to_hex(&digest(&input)),
+                "chunk size {chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_handles_padding_boundaries() {
+        for len in [0usize, 1, 55, 56, 57, 63, 64, 119, 120] {
+            let input = vec![b'q'; len];
+            let mut hasher = Sha256::new();
+            for byte in &input {
+                hasher.update(&[*byte]);
+            }
+            assert_eq!(
+                to_hex(&hasher.finalize()),
+                to_hex(&digest(&input)),
+                "len {len}"
+            );
+        }
     }
 }

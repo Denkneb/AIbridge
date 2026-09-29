@@ -260,8 +260,9 @@ open невозможен без полной согласованности sid
 `meta.runtime_owner` + schema v6.
 
 **Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** (Snapshot основного
-repository) начат: 4.7a (базовый снимок HEAD/status/index) завершён; следующий
-незавершённый шаг — **4.7b** (worktree manifest и `worktree_fingerprint`).
+repository) завершён: 4.7a (базовый снимок HEAD/status/index) и 4.7b (worktree
+manifest и `worktree_fingerprint`) готовы; следующий незавершённый шаг — **4.8**
+(multi-repository snapshots).
 
 ## Поток 4. Security и Git
 
@@ -481,7 +482,7 @@ repository) начат: 4.7a (базовый снимок HEAD/status/index) з�
 
 ### 4.7. Snapshot основного repository
 
-- **4.7a. Базовый снимок — завершено частично.** Новый workspace-crate
+- **4.7a. Базовый снимок — завершено.** Новый workspace-crate
   `bridge-git` (без зависимостей от других bridge-crates) реализует
   изолированный read-only слой для базового состояния одного Git worktree.
   Проверка worktree эквивалентна `git rev-parse --is-inside-work-tree`:
@@ -496,22 +497,54 @@ repository) начат: 4.7a (базовый снимок HEAD/status/index) з�
   дедуплицируется. `index_fingerprint` — SHA-256 от точных bytes
   `git ls-files --stage -z`, затем NUL separator, затем `git ls-files -v -z`
   (SHA-256 реализован внутри crate и сверен с FIPS 180-4 vectors, внешних
-  зависимостей нет). `RepositorySnapshot` содержит только HEAD, raw status/dirty
-  paths и index fingerprint; worktree fingerprint/manifest и фиктивные поля не
-  добавлены. Git command runner ограничен: фиксированный executable `git`,
-  stdin null, stderr отбрасывается (не попадает в ошибку), stdout читается как
-  raw bytes отдельным потоком (нет pipe deadlock), wall-clock timeout с
-  принудительным kill/reap; shell и Git write-команды отсутствуют. Узкий
-  payload-free `GitError` не раскрывает workspace, argv, stdout/stderr, Git
-  config, OS errors и secrets через `Display`/`Debug`. Тесты выполняются только
-  во временных synthetic repositories: clean, no commit, dirty tracked/untracked,
-  staged, intent-to-add, rename/copy parser, malformed porcelain, non-repository,
-  timeout/kill/reap, non-UTF-8 Unix paths и стабильность index fingerprint.
-  Manifest/хеширование файлов, executable-bit/symlink identity,
-  changed/committed paths, history ancestry, scope/policy violations,
-  external/multi-repository snapshots и worker/MCP integration не входят.
-  Существующие crates, их schema/public API и fixtures не менялись. Следующий
-  шаг — **4.7b** (worktree manifest и `worktree_fingerprint`).
+  зависимостей нет). `RepositorySnapshot` содержит HEAD, raw status/dirty
+  paths, index fingerprint, а с 4.7b — ещё manifest и worktree fingerprint;
+  фиктивные поля не добавлены. Git command runner ограничен: фиксированный
+  executable `git`, stdin null, stderr отбрасывается (не попадает в ошибку),
+  stdout читается как raw bytes отдельным потоком (нет pipe deadlock),
+  wall-clock timeout с принудительным kill/reap; shell и Git write-команды
+  отсутствуют. Узкий payload-free `GitError` не раскрывает workspace, argv,
+  stdout/stderr, Git config, OS errors и secrets через `Display`/`Debug`. Тесты
+  выполняются только во временных synthetic repositories: clean, no commit, dirty
+  tracked/untracked, staged, intent-to-add, rename/copy parser, malformed
+  porcelain, non-repository, timeout/kill/reap, non-UTF-8 Unix paths и
+  стабильность index fingerprint. Manifest/хеширование файлов и worktree
+  fingerprint реализованы в 4.7b; changed/committed paths, history ancestry,
+  scope/policy violations, external/multi-repository snapshots и worker/MCP
+  integration не входят. Существующие crates, их schema/public API и fixtures не
+  менялись.
+
+- **4.7b. Worktree manifest и `worktree_fingerprint` — завершено.** Тот же
+  `bridge-git` (внешних зависимостей по-прежнему нет) добавляет детерминированный
+  manifest рабочего дерева и стабильный SHA-256 fingerprint. `worktree_manifest`
+  берёт ровно релевантные Git-ом файлы: tracked из `git ls-files -z` и
+  non-ignored untracked из `git ls-files --others --exclude-standard -z` (ignored
+  entries исключает сам Git), а отсутствующий в worktree tracked путь (deletion)
+  не даёт entry. Пути — точные Unix `OsString` bytes без lossy UTF-8; entries
+  упорядочены ровно как Python `sorted()` над surrogateescape-decoded именами
+  (code point order, а не raw bytes: одиночный invalid byte `0xff` → `U+DCFF`
+  идёт перед supplementary `U+1F600`) и дедуплицируются, поэтому manifest
+  детерминирован и совпадает с reference для любого byte sequence.
+  Digest entry фиксирует тип, executable bit и symlink identity: обычный файл —
+  `sha256("file\0" || content)`, при любом executable bit — `sha256("exec\0" ||
+  content)`, symlink — `sha256("link\0" || raw target bytes)` (target-файл не
+  читается). `worktree_fingerprint` воспроизводит компактный digest reference
+  `verifier.fingerprint`: `sha256` по каждой entry в отсортированном порядке
+  (`path || 0x00 || lowercase hex digest || 0x00`), затем `b"status\0"` и raw
+  status bytes; сверен с Python reference на фиксированном synthetic repository.
+  Fail-closed расширение над reference: файловая ошибка даёт payload-free
+  `GitError::ManifestIo`, а listed entry, не являющийся обычным файлом или
+  symlink (directory, FIFO, socket, device), — `GitError::UnsupportedFileType`;
+  malformed `-z` framing — `MalformedOutput`. `RepositorySnapshot` получил
+  `manifest()`/`worktree_fingerprint()`, вычисляемые из тех же status bytes.
+  Focused tests во временных synthetic repositories покрывают stable clean
+  snapshot, tracked content change, staged/untracked, ignored exclusion,
+  executable-bit-only change, symlink retarget/dangling/ignored target,
+  non-UTF-8 paths, deterministic ordering (включая mixed supplementary-Unicode
+  и invalid-byte имена, сверенные с Python reference), deletion, fail-closed
+  directory/FIFO/unreadable cases и совпадение с Python reference. Multi-repository
+  snapshots (4.8), comparison/violations (4.9) и worker/MCP integration не входят;
+  Cargo manifests/dependencies не менялись.
 
 ### 4.8. Multi-repository snapshots
 

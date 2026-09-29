@@ -1,18 +1,17 @@
-//! Isolated read-only Git baseline snapshot layer (task 4.7a).
+//! Isolated read-only Git baseline snapshot layer (tasks 4.7a and 4.7b).
 //!
 //! This crate reproduces the read-only baseline primitives of the reference
 //! Python `git_snapshot` module
 //! (`/home/denis/Python/agent_bridge/src/agent_bridge/git_snapshot.py`):
 //! [`is_repository`] / [`check_repository`] (`is_repo`), [`head`],
 //! [`status_porcelain`], [`status_paths`], [`dirty_paths`],
-//! [`index_fingerprint`] and a minimal [`take_snapshot`]. It is intentionally
-//! narrow: this task (4.7a) covers the *base* snapshot of a single worktree
-//! only.
+//! [`index_fingerprint`], the deterministic [`worktree_manifest`] with its
+//! [`worktree_fingerprint`], and a [`take_snapshot`] that records all of them.
+//! It is intentionally narrow: it covers the *base* snapshot of a single
+//! worktree only.
 //!
 //! Deliberately out of scope for this crate (later tasks):
 //!
-//! - the worktree manifest, file hashing, executable-bit/symlink identity and
-//!   the `worktree_fingerprint` (4.7b);
 //! - `changed_paths` / `committed_paths` and history ancestry (4.9);
 //! - scope/policy violations, external or multi-repository snapshots and the
 //!   worker/MCP envelope (4.8, 4.9, 5.x).
@@ -32,7 +31,10 @@
 //!   [`GitError::Wait`], [`GitError::Timeout`], [`GitError::Io`],
 //!   [`GitError::MalformedOutput`]);
 //! - a failing `git status` / `git ls-files` yields
-//!   [`GitError::CommandFailed`].
+//!   [`GitError::CommandFailed`];
+//! - a manifest filesystem error yields [`GitError::ManifestIo`] and a listed
+//!   entry that is neither a regular file nor a symlink yields
+//!   [`GitError::UnsupportedFileType`].
 //!
 //! On Unix, repository-relative paths are carried as [`OsString`] bytes and are
 //! never decoded to a lossy `String`, so a non-UTF-8 path survives a snapshot
@@ -45,6 +47,11 @@
 
 mod runner;
 mod sha256;
+mod worktree;
+
+pub use worktree::{
+    ManifestEntry, WorktreeFingerprint, WorktreeManifest, worktree_fingerprint, worktree_manifest,
+};
 
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -85,6 +92,10 @@ pub enum GitError {
     Wait,
     /// The stdout pipe was unavailable or could not be read.
     Io,
+    /// A filesystem operation while hashing a listed worktree entry failed.
+    ManifestIo,
+    /// A listed worktree entry is neither a regular file nor a symlink.
+    UnsupportedFileType,
 }
 
 impl GitError {
@@ -99,6 +110,8 @@ impl GitError {
             Self::Spawn => "spawn_failed",
             Self::Wait => "wait_failed",
             Self::Io => "io_failed",
+            Self::ManifestIo => "manifest_io_failed",
+            Self::UnsupportedFileType => "unsupported_file_type",
         }
     }
 }
@@ -166,18 +179,19 @@ impl fmt::Display for IndexFingerprint {
     }
 }
 
-/// The base snapshot of a single Git worktree (task 4.7a).
+/// The base snapshot of a single Git worktree (tasks 4.7a and 4.7b).
 ///
 /// It records exactly the HEAD commit, the raw `git status --porcelain=v1 -z`
-/// bytes, the deduplicated and sorted dirty paths, and the index fingerprint.
-/// There is deliberately no worktree fingerprint or manifest: those belong to
-/// task 4.7b.
+/// bytes, the deduplicated and sorted dirty paths, the index fingerprint, the
+/// deterministic [`WorktreeManifest`] and the stable [`WorktreeFingerprint`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositorySnapshot {
     head: Option<CommitId>,
     status: Vec<u8>,
     dirty_paths: Vec<OsString>,
     index_fingerprint: IndexFingerprint,
+    manifest: WorktreeManifest,
+    worktree_fingerprint: WorktreeFingerprint,
 }
 
 impl RepositorySnapshot {
@@ -204,6 +218,18 @@ impl RepositorySnapshot {
     pub fn index_fingerprint(&self) -> &IndexFingerprint {
         &self.index_fingerprint
     }
+
+    /// Returns the deterministic worktree manifest.
+    #[must_use]
+    pub fn manifest(&self) -> &WorktreeManifest {
+        &self.manifest
+    }
+
+    /// Returns the stable worktree fingerprint.
+    #[must_use]
+    pub fn worktree_fingerprint(&self) -> &WorktreeFingerprint {
+        &self.worktree_fingerprint
+    }
 }
 
 /// Runs one read-only Git command with the production timeout.
@@ -213,7 +239,7 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<runner::GitOutput, GitErro
 }
 
 /// Runs one read-only Git command and fails closed on a non-zero exit.
-fn run_checked(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+pub(crate) fn run_checked(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
     let output = run_git(workspace, args)?;
     if output.status.success() {
         Ok(output.stdout)
@@ -238,14 +264,14 @@ fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
 
 /// Converts raw Unix path bytes into an [`OsString`] without lossy decoding.
 #[cfg(unix)]
-fn os_from_bytes(bytes: &[u8]) -> OsString {
+pub(crate) fn os_from_bytes(bytes: &[u8]) -> OsString {
     use std::os::unix::ffi::OsStringExt;
     OsString::from_vec(bytes.to_vec())
 }
 
 /// Converts raw path bytes into an [`OsString`] on non-Unix platforms.
 #[cfg(not(unix))]
-fn os_from_bytes(bytes: &[u8]) -> OsString {
+pub(crate) fn os_from_bytes(bytes: &[u8]) -> OsString {
     OsString::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
@@ -416,25 +442,32 @@ pub fn index_fingerprint(workspace: &Path) -> Result<IndexFingerprint, GitError>
 ///
 /// The worktree check runs first, so a plain directory is reported as
 /// [`GitError::NotRepository`] rather than as a failing subcommand. The
-/// snapshot records HEAD, the raw status bytes, the dirty paths and the index
-/// fingerprint.
+/// snapshot records HEAD, the raw status bytes, the dirty paths, the index
+/// fingerprint, the deterministic worktree manifest and the stable worktree
+/// fingerprint. The manifest and the fingerprint are derived from the same
+/// status bytes, so the recorded fingerprint always matches the recorded
+/// manifest.
 ///
 /// # Errors
 ///
 /// Returns [`GitError::NotRepository`] for a non-repository and the errors of
-/// [`head`], [`status_porcelain`], [`status_paths`] and
-/// [`index_fingerprint`] otherwise.
+/// [`head`], [`status_porcelain`], [`status_paths`], [`index_fingerprint`] and
+/// [`worktree_manifest`] otherwise.
 pub fn take_snapshot(workspace: &Path) -> Result<RepositorySnapshot, GitError> {
     check_repository(workspace)?;
     let status = status_porcelain(workspace)?;
     let head = head(workspace)?;
     let dirty_paths = status_paths(&status)?;
     let index_fingerprint = index_fingerprint(workspace)?;
+    let manifest = worktree_manifest(workspace)?;
+    let worktree_fingerprint = worktree::fingerprint_from(&manifest, &status);
     Ok(RepositorySnapshot {
         head,
         status,
         dirty_paths,
         index_fingerprint,
+        manifest,
+        worktree_fingerprint,
     })
 }
 
@@ -442,9 +475,9 @@ pub fn take_snapshot(workspace: &Path) -> Result<RepositorySnapshot, GitError> {
 mod tests {
     use super::{
         GitError, check_repository, dirty_paths, index_fingerprint, is_repository, parse_commit_id,
-        status_paths, take_snapshot,
+        status_paths, take_snapshot, worktree_fingerprint, worktree_manifest,
     };
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -527,6 +560,16 @@ mod tests {
 
     fn os(name: &str) -> OsString {
         OsString::from(name)
+    }
+
+    fn chmod_exec(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("set executable bit");
+    }
+
+    fn symlink(target: &str, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create symlink");
     }
 
     #[test]
@@ -754,6 +797,332 @@ mod tests {
     }
 
     #[test]
+    fn worktree_manifest_and_fingerprint_are_stable() {
+        let dir = TempDir::new("wt-stable");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let first = take_snapshot(dir.path()).expect("snapshot");
+        let second = take_snapshot(dir.path()).expect("snapshot");
+        assert_eq!(first.manifest(), second.manifest());
+        assert_eq!(first.worktree_fingerprint(), second.worktree_fingerprint());
+        assert_eq!(first.manifest().len(), 1);
+        assert_eq!(
+            first.manifest().entries()[0].path(),
+            OsStr::new("module.py")
+        );
+    }
+
+    #[test]
+    fn tracked_content_change_moves_worktree_fingerprint() {
+        let dir = TempDir::new("wt-content");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        write_file(dir.path(), "module.py", "x = 2\n");
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn untracked_file_enters_manifest() {
+        let dir = TempDir::new("wt-untracked");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        write_file(dir.path(), "new.py", "y = 1\n");
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        assert!(manifest.digest(OsStr::new("new.py")).is_some());
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn staged_content_is_reflected_by_manifest() {
+        let dir = TempDir::new("wt-staged");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let before = take_snapshot(dir.path()).expect("snapshot");
+        write_file(dir.path(), "module.py", "x = 2\n");
+        git(dir.path(), &["add", "--", "module.py"]);
+        let after = take_snapshot(dir.path()).expect("snapshot");
+
+        assert_ne!(before.worktree_fingerprint(), after.worktree_fingerprint());
+        assert_ne!(
+            before.manifest().digest(OsStr::new("module.py")),
+            after.manifest().digest(OsStr::new("module.py"))
+        );
+        assert_ne!(before.index_fingerprint(), after.index_fingerprint());
+    }
+
+    #[test]
+    fn ignored_file_is_excluded_from_manifest() {
+        let dir = TempDir::new("wt-ignored");
+        init_repo(dir.path());
+        write_file(dir.path(), ".gitignore", "*.log\n");
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &[".gitignore", "module.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        write_file(dir.path(), "debug.log", "noise\n");
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        assert!(manifest.digest(OsStr::new("debug.log")).is_none());
+        assert_eq!(
+            before,
+            worktree_fingerprint(dir.path()).expect("fingerprint")
+        );
+    }
+
+    #[test]
+    fn executable_bit_change_moves_worktree_fingerprint() {
+        let dir = TempDir::new("wt-exec");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        chmod_exec(&dir.path().join("module.py"));
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn symlink_retarget_moves_worktree_fingerprint() {
+        let dir = TempDir::new("wt-symlink");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.py", "same\n");
+        write_file(dir.path(), "b.py", "same\n");
+        symlink("a.py", &dir.path().join("link.py"));
+        commit(dir.path(), "init", &["a.py", "b.py", "link.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        std::fs::remove_file(dir.path().join("link.py")).expect("remove link");
+        symlink("b.py", &dir.path().join("link.py"));
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn dangling_symlink_is_identified_by_target() {
+        let dir = TempDir::new("wt-dangling");
+        init_repo(dir.path());
+        symlink("missing-a", &dir.path().join("broken"));
+        commit(dir.path(), "init", &["broken"]);
+
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        assert!(manifest.digest(OsStr::new("broken")).is_some());
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        std::fs::remove_file(dir.path().join("broken")).expect("remove link");
+        symlink("missing-b", &dir.path().join("broken"));
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn symlink_does_not_read_ignored_target() {
+        let dir = TempDir::new("wt-leak");
+        init_repo(dir.path());
+        write_file(dir.path(), ".gitignore", "secret.password\n");
+        write_file(dir.path(), "secret.password", "topsecret\n");
+        symlink("secret.password", &dir.path().join("leak"));
+        commit(dir.path(), "init", &[".gitignore", "leak"]);
+
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        assert!(manifest.digest(OsStr::new("leak")).is_some());
+        assert!(manifest.digest(OsStr::new("secret.password")).is_none());
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        write_file(dir.path(), "secret.password", "rotated\n");
+        let after = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn non_utf8_manifest_path_is_lossless_and_stable() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let dir = TempDir::new("wt-non-utf8");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let name = OsString::from_vec(vec![0xff, b'x', b'.', b'p', b'y']);
+        std::fs::write(dir.path().join(&name), b"data").expect("write non-utf8 file");
+
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        let entry = manifest
+            .entries()
+            .iter()
+            .find(|entry| entry.path().as_bytes() == name.as_os_str().as_bytes())
+            .expect("non-utf8 entry present");
+        assert_eq!(entry.path().as_bytes(), name.as_os_str().as_bytes());
+
+        let first = worktree_fingerprint(dir.path()).expect("fingerprint");
+        let second = worktree_fingerprint(dir.path()).expect("fingerprint");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn manifest_entries_are_sorted_by_path_bytes() {
+        let dir = TempDir::new("wt-order");
+        init_repo(dir.path());
+        write_file(dir.path(), "z.py", "z\n");
+        write_file(dir.path(), "a.py", "a\n");
+        write_file(dir.path(), "m/n.py", "n\n");
+
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        let paths: Vec<&OsStr> = manifest
+            .entries()
+            .iter()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![OsStr::new("a.py"), OsStr::new("m/n.py"), OsStr::new("z.py")]
+        );
+    }
+
+    #[test]
+    fn surrogateescape_order_matches_python_reference() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let dir = TempDir::new("wt-surrogate-order");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // Supplementary Unicode U+1F600 (UTF-8 f0 9f 98 80) and a lone invalid
+        // byte 0xff. Python surrogateescape sorts the invalid byte (U+DCFF)
+        // before the supplementary code point (U+1F600); raw-byte order would
+        // reverse them and change the fingerprint.
+        let emoji = OsString::from_vec(vec![0xf0, 0x9f, 0x98, 0x80]);
+        let invalid = OsString::from_vec(vec![0xff]);
+        std::fs::write(dir.path().join(&emoji), b"emoji\n").expect("write emoji file");
+        std::fs::write(dir.path().join(&invalid), b"bad\n").expect("write invalid-byte file");
+
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        let paths: Vec<&[u8]> = manifest
+            .entries()
+            .iter()
+            .map(|entry| entry.path().as_bytes())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                OsStr::new("module.py").as_bytes(),
+                invalid.as_os_str().as_bytes(),
+                emoji.as_os_str().as_bytes(),
+            ]
+        );
+
+        // Value produced by the reference `verifier.fingerprint` on the same
+        // synthetic repository (see task 4.7b review round 2).
+        assert_eq!(
+            worktree_fingerprint(dir.path())
+                .expect("fingerprint")
+                .to_hex(),
+            "aa8335a7ed78f5950243f4b336ce48ce7d053428035f44b617629afc37194935"
+        );
+    }
+
+    #[test]
+    fn deleted_tracked_file_is_omitted_from_manifest() {
+        let dir = TempDir::new("wt-deleted");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let before = worktree_fingerprint(dir.path()).expect("fingerprint");
+        std::fs::remove_file(dir.path().join("module.py")).expect("remove");
+        let manifest = worktree_manifest(dir.path()).expect("manifest");
+        assert!(manifest.digest(OsStr::new("module.py")).is_none());
+        assert_ne!(
+            before,
+            worktree_fingerprint(dir.path()).expect("fingerprint")
+        );
+    }
+
+    #[test]
+    fn directory_replacing_tracked_file_fails_closed() {
+        let dir = TempDir::new("wt-dir-type");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        std::fs::remove_file(dir.path().join("module.py")).expect("remove");
+        std::fs::create_dir(dir.path().join("module.py")).expect("create dir");
+        assert_eq!(
+            worktree_manifest(dir.path()),
+            Err(GitError::UnsupportedFileType)
+        );
+    }
+
+    #[test]
+    fn special_tracked_file_fails_closed() {
+        let dir = TempDir::new("wt-fifo");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        std::fs::remove_file(dir.path().join("module.py")).expect("remove");
+        let Ok(status) = Command::new("mkfifo")
+            .arg(dir.path().join("module.py"))
+            .status()
+        else {
+            return;
+        };
+        if !status.success() {
+            return;
+        }
+        assert_eq!(
+            worktree_manifest(dir.path()),
+            Err(GitError::UnsupportedFileType)
+        );
+    }
+
+    #[test]
+    fn unreadable_tracked_file_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("wt-unreadable");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let path = dir.path().join("module.py");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        // Running as root bypasses permission bits, so the case is not reproducible.
+        if std::fs::read(&path).is_ok() {
+            return;
+        }
+        assert_eq!(worktree_manifest(dir.path()), Err(GitError::ManifestIo));
+    }
+
+    #[test]
+    fn worktree_fingerprint_matches_python_reference() {
+        let dir = TempDir::new("wt-reference");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        write_file(dir.path(), "new.py", "y = 2\n");
+
+        assert_eq!(
+            worktree_fingerprint(dir.path())
+                .expect("fingerprint")
+                .to_hex(),
+            "8421363df472cbf0e094e3282a6c7e64d328b0ed354d4d6fac68bea4affb681e"
+        );
+    }
+
+    #[test]
     fn errors_are_payload_free() {
         for (error, debug, display) in [
             (GitError::NotRepository, "NotRepository", "not_a_git_repo"),
@@ -767,6 +1136,12 @@ mod tests {
             (GitError::Spawn, "Spawn", "spawn_failed"),
             (GitError::Wait, "Wait", "wait_failed"),
             (GitError::Io, "Io", "io_failed"),
+            (GitError::ManifestIo, "ManifestIo", "manifest_io_failed"),
+            (
+                GitError::UnsupportedFileType,
+                "UnsupportedFileType",
+                "unsupported_file_type",
+            ),
         ] {
             assert_eq!(format!("{error:?}"), debug);
             assert_eq!(format!("{error}"), display);

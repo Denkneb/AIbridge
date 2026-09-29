@@ -1,4 +1,4 @@
-//! Isolated read-only Git baseline snapshot layer (tasks 4.7a and 4.7b).
+//! Isolated read-only Git baseline snapshot layer (tasks 4.7 and 4.8).
 //!
 //! This crate reproduces the read-only baseline primitives of the reference
 //! Python `git_snapshot` module
@@ -7,14 +7,16 @@
 //! [`status_porcelain`], [`status_paths`], [`dirty_paths`],
 //! [`index_fingerprint`], the deterministic [`worktree_manifest`] with its
 //! [`worktree_fingerprint`], and a [`take_snapshot`] that records all of them.
-//! It is intentionally narrow: it covers the *base* snapshot of a single
-//! worktree only.
+//! The private `multi_repo` module builds on [`take_snapshot`] and on the
+//! repository buckets of `bridge-path-policy` to snapshot the main workspace
+//! plus every affected external repository (4.8); its public API is re-exported
+//! here.
 //!
 //! Deliberately out of scope for this crate (later tasks):
 //!
 //! - `changed_paths` / `committed_paths` and history ancestry (4.9);
-//! - scope/policy violations, external or multi-repository snapshots and the
-//!   worker/MCP envelope (4.8, 4.9, 5.x).
+//! - scope/policy violations, snapshot comparison and the worker/MCP envelope
+//!   (4.9, 5.x).
 //!
 //! Every Git command is read-only and runs through a bounded runner: a fixed
 //! `git` executable, closed standard input, discarded standard error, raw
@@ -45,10 +47,15 @@
 //! [`GitError`] carries no payload, so `Display`/`Debug` can never leak the
 //! workspace, argv, stdout/stderr, Git configuration, OS error text or secrets.
 
+mod multi_repo;
 mod runner;
 mod sha256;
 mod worktree;
 
+pub use multi_repo::{
+    MultiRepoError, MultiRepositorySnapshot, RepositoryGroupSnapshot,
+    take_multi_repository_snapshot,
+};
 pub use worktree::{
     ManifestEntry, WorktreeFingerprint, WorktreeManifest, worktree_fingerprint, worktree_manifest,
 };

@@ -374,11 +374,42 @@ endpoints. Rust всегда создаёт и использует собств
   synthetic repository, включая mixed supplementary-Unicode/invalid-byte пути. Fail-closed расширение: файловая ошибка —
   payload-free `ManifestIo`, listed entry не обычный файл/symlink —
   `UnsupportedFileType`. changed/committed paths, history ancestry, scope/policy
-  violations, external/multi-repository snapshots (4.8) и comparison/violations
-  (4.9), worker/MCP integration не входят; существующие crates и fixtures не
-  менялись.
-- **Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** завершён (4.7a и
-  4.7b), следующий незавершённый шаг — **4.8** (multi-repository snapshots).
+  violations и comparison/violations (4.9), worker/MCP integration не входят;
+  существующие crates и fixtures не менялись.
+- Завершён этап **4.8. Multi-repository snapshots**. `bridge-git` получил модуль
+  `multi_repo`, оркестрирующий read-only снимки основного workspace и затронутых
+  внешних репозиториев поверх `take_snapshot` (4.7) и типизированных bucket-ов
+  `bridge-path-policy::group_allowed_paths_by_repo` (4.6); добавлена локальная
+  dependency `bridge-path-policy` (сам crate не менялся). Узкий typed API —
+  `take_multi_repository_snapshot(main_workspace, &[AllowedPathGroup])`,
+  `MultiRepositorySnapshot`/`RepositoryGroupSnapshot` (`root()`,
+  `allowed_paths()`, `snapshot()`) и payload-free `MultiRepoError`. Контракт:
+  ровно один snapshot на каждый уникальный canonical repository root; main
+  repository всегда первый даже при пустом `allowed_paths`, внешние — в
+  детерминированном порядке по canonical root; каждый entry сохраняет canonical
+  root, raw allowed entries своего bucket-а и snapshot, поэтому одинаковые
+  relative пути в разных репозиториях не смешиваются. Перед snapshot bucket root
+  сверяется с фактическим canonical Git worktree root
+  (`git rev-parse --show-toplevel` + canonicalize + точное равенство), а
+  неканонизируемый/исчезнувший/дублирующийся/не-repository/подменённый или
+  вложенный root, как и любая Git/FS infrastructure-ошибка, завершаются fail
+  closed типизированной payload-free ошибкой (`workspace_resolution_failed`,
+  `repository_resolution_failed`, `missing_main_repository`,
+  `main_repository_mismatch`, `duplicate_repository_root`, `not_a_git_repo`,
+  `repository_root_mismatch`, `MultiRepoError::Git`). Ошибки не раскрывают roots,
+  allowed paths, Git output, argv, OS text и secrets; shell и Git write-команды
+  отсутствуют. Тесты во временных synthetic repositories покрывают main-only с
+  пустыми allowed paths, main + один/два внешних repository с детерминированным
+  порядком, repo root + child в одном snapshot, одинаковый relative filename в
+  разных repos без смешивания, независимые dirty/head/index/worktree состояния,
+  fail-closed duplicate/root-mismatch/disappeared/non-repository, payload-free
+  errors и regression 4.7. Семантика сверена с Python reference multi-repository
+  verifier flow и fixtures `docs/fixtures/path-policy-cases.json` /
+  `docs/fixtures/git-snapshot-cases.json`. 4.9 comparison/violations,
+  `changed_paths`/`committed_paths`, ancestry и worker/MCP integration не входят.
+- **Поток 3 завершён, поток 4 продолжается.** Шаги **4.7** (4.7a и 4.7b) и
+  **4.8** завершены, следующий незавершённый шаг — **4.9** (snapshot comparison
+  и violations).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

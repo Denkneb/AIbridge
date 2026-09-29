@@ -259,10 +259,10 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Поток 3 завершён, поток 4 продолжается.** Шаг **4.7** (Snapshot основного
-repository) завершён: 4.7a (базовый снимок HEAD/status/index) и 4.7b (worktree
-manifest и `worktree_fingerprint`) готовы; следующий незавершённый шаг — **4.8**
-(multi-repository snapshots).
+**Поток 3 завершён, поток 4 продолжается.** Шаги **4.7** (Snapshot основного
+repository: 4.7a базовый снимок и 4.7b worktree manifest/`worktree_fingerprint`)
+и **4.8** (multi-repository snapshots) завершены; следующий незавершённый шаг —
+**4.9** (snapshot comparison и violations).
 
 ## Поток 4. Security и Git
 
@@ -547,6 +547,48 @@ manifest и `worktree_fingerprint`) готовы; следующий незав�
   Cargo manifests/dependencies не менялись.
 
 ### 4.8. Multi-repository snapshots
+
+- **Завершено.** `bridge-git` получил новый модуль `multi_repo`, который
+  оркестрирует read-only снимки основного workspace и всех затронутых внешних
+  репозиториев поверх существующего `take_snapshot` (4.7) и типизированных
+  repository bucket-ов `bridge-path-policy::group_allowed_paths_by_repo` (4.6).
+  Crate получил локальную dependency `bridge-path-policy`; `bridge-path-policy`
+  не изменялся. Узкий typed API: `take_multi_repository_snapshot(main_workspace,
+  &[AllowedPathGroup])`, результат `MultiRepositorySnapshot` из
+  `RepositoryGroupSnapshot` (`root()`, `allowed_paths()`, `snapshot()`), плюс
+  payload-free `MultiRepoError`. Контракт: ровно один snapshot на каждый
+  уникальный canonical repository root; main repository всегда присутствует и
+  идёт первым даже при пустом `allowed_paths`; внешние репозитории следуют в
+  детерминированном порядке по возрастанию canonical root; каждый entry
+  сохраняет canonical root, исходные raw allowed entries своего bucket-а и
+  соответствующий snapshot, поэтому одинаковые relative пути в разных
+  репозиториях не смешиваются. Перед snapshot каждого repository bucket root
+  сверяется с фактическим canonical Git worktree root
+  (`git rev-parse --show-toplevel`, canonicalize, точное равенство). Fail closed
+  завершаются: неканонизируемый main workspace
+  (`workspace_resolution_failed`), неканонизируемый/исчезнувший bucket root
+  (`repository_resolution_failed`), пустой список bucket-ов
+  (`missing_main_repository`), первый bucket не main
+  (`main_repository_mismatch`), duplicate/conflicting canonical root
+  (`duplicate_repository_root`), не-Git-worktree (`not_a_git_repo`), подмена,
+  вложенный или иначе не-canonical root (`repository_root_mismatch`) и любая Git
+  infrastructure-ошибка probe/snapshot (`MultiRepoError::Git`). Ошибки не несут
+  payload и не раскрывают roots, allowed paths, Git output, argv, OS error text и
+  secrets в `Debug`/`Display`; shell и Git write-команды отсутствуют. Тесты во
+  временных synthetic repositories покрывают main-only с пустыми allowed paths,
+  main + один/два внешних репозитория с детерминированным порядком, repo
+  root + child в одном snapshot, одинаковый relative filename в разных
+  репозиториях без смешивания, независимые dirty/head/index/worktree состояния,
+  duplicate/root-mismatch/disappeared/non-repository fail closed, payload-free
+  errors и regression 4.7 (`take_snapshot` переиспользуется без изменений).
+  Observable semantics сверены с Python reference multi-repository verifier flow
+  (`git_snapshot.take_external_snapshots` + main snapshot в
+  `mcp_server.submit_task_impl`) и релевантными fixtures
+  `docs/fixtures/path-policy-cases.json` (group-* cases) и
+  `docs/fixtures/git-snapshot-cases.json`; 4.9 comparison/violations,
+  `changed_paths`/`committed_paths`, ancestry и worker/MCP integration не входят.
+  `Cargo.toml`/`Cargo.lock` изменились только добавлением локальной dependency
+  `bridge-path-policy` у `bridge-git`.
 
 ### 4.9. Snapshot comparison и violations
 

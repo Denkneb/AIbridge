@@ -1,4 +1,5 @@
-//! Minimal command-policy primitives for simple shell commands (tasks 4.1-4.3).
+//! Command-policy primitives for simple shell commands (tasks 4.1-4.3) and the
+//! verifier-level test-command validation built on them (task 5.1).
 //!
 //! This crate reproduces the tokenization and leading-assignment layer (task
 //! 4.1), the token-level forbidden-Git-write and wrapper layer (task 4.2) and
@@ -25,8 +26,13 @@
 //! `unprovable_glob_command`, and shell executables (`sh`, `bash`, `zsh`,
 //! `dash`, `ksh`, `fish`) are re-checked through `-c` or rejected as
 //! `unsafe_shell_invocation`/`shell_command_missing`. `eval` joins its arguments
-//! and re-checks them as a fresh pattern. Permission-policy envelopes (the
-//! `configured`/`missing_executable` split) remain outside this crate.
+//! and re-checks them as a fresh pattern. Task 5.1 adds the narrow string API
+//! [`validate_test_commands`]: each string is checked through
+//! [`bash_pattern_problem`], and a command left with an empty argv after its
+//! leading assignments is rejected as [`TestCommandReason::MissingExecutable`].
+//! Non-string/non-list verifier inputs belong to configuration/transport and
+//! remain outside this crate, as does the `permission`-context allow reason
+//! `configured`.
 //!
 //! Reference semantics are reproduced exactly, including two observable
 //! details: the raw scan happens before tokenization, so a metacharacter or glob
@@ -743,12 +749,119 @@ pub fn bash_pattern_decision(pattern: &str) -> PolicyDecision {
     }
 }
 
+/// Why a test command was rejected by verifier-level validation.
+///
+/// The reason carries no payload, so a rejected command never leaks its command
+/// text, argv, paths or secrets through `Debug`/`Display`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TestCommandReason {
+    /// The command failed the shared fail-closed bash/policy check; the wrapped
+    /// [`PolicyReason`] is the reference policy category.
+    Policy(PolicyReason),
+    /// The command is only leading `NAME=value` assignments with no executable
+    /// left for the verifier to run. Mirrors the reference category
+    /// `missing_executable`, which exists only in the `test_command` context.
+    MissingExecutable,
+}
+
+impl TestCommandReason {
+    /// Returns the stable reason identifier, matching the reference
+    /// `reason_category` strings for the categories implemented here.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Policy(reason) => reason.as_str(),
+            Self::MissingExecutable => "missing_executable",
+        }
+    }
+}
+
+impl fmt::Display for TestCommandReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Error for TestCommandReason {}
+
+/// One rejected test command: its position in the input list and a payload-free
+/// reason.
+///
+/// The problem carries only the index and a [`TestCommandReason`], never the
+/// command text, argv, paths or secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TestCommandProblem {
+    index: usize,
+    reason: TestCommandReason,
+}
+
+impl TestCommandProblem {
+    /// Returns the zero-based position of the rejected command.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.index
+    }
+
+    /// Returns the payload-free rejection reason.
+    #[must_use]
+    pub fn reason(self) -> TestCommandReason {
+        self.reason
+    }
+}
+
+/// Classifies one string test command, mirroring the per-command branch of the
+/// reference `verifier.validate_test_commands`.
+fn test_command_problem(command: &str) -> Option<TestCommandReason> {
+    if let Some(reason) = bash_pattern_problem(command) {
+        return Some(TestCommandReason::Policy(reason));
+    }
+    // The command already passed `bash_pattern_problem`, so tokenization cannot
+    // fail here; fall back fail closed if it ever does.
+    let tokens = match split_command(command) {
+        Ok(tokens) => tokens,
+        Err(_) => {
+            return Some(TestCommandReason::Policy(
+                PolicyReason::UnparsableBashPattern,
+            ));
+        }
+    };
+    let assignments = leading_assignments(&tokens);
+    if assignments.argv().is_empty() {
+        return Some(TestCommandReason::MissingExecutable);
+    }
+    None
+}
+
+/// Validates a list of test commands, mirroring the reference
+/// `verifier.validate_test_commands`.
+///
+/// An empty list is valid and returns an empty vector. Each command is first
+/// checked with the shared fail-closed [`bash_pattern_problem`]; a command that
+/// passes the policy but consists only of leading `NAME=value` assignments is
+/// rejected as [`TestCommandReason::MissingExecutable`]. Results keep the input
+/// order and carry the index of each rejected command.
+///
+/// The returned problems carry only the index and a payload-free reason, never
+/// the command text, argv, paths or secrets.
+#[must_use]
+pub fn validate_test_commands(commands: &[&str]) -> Vec<TestCommandProblem> {
+    commands
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| {
+            test_command_problem(command).map(|reason| TestCommandProblem { index, reason })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LeadingAssignments, PolicyDecision, PolicyReason, TokenizeError, basename,
-        bash_pattern_decision, bash_pattern_problem, crate_name, is_assignment,
-        leading_assignments, policy_decision, split_command, tokens_problem,
+        LeadingAssignments, PolicyDecision, PolicyReason, TestCommandProblem, TestCommandReason,
+        TokenizeError, basename, bash_pattern_decision, bash_pattern_problem, crate_name,
+        is_assignment, leading_assignments, policy_decision, split_command, tokens_problem,
+        validate_test_commands,
     };
 
     fn split(text: &str) -> Vec<String> {
@@ -1665,6 +1778,190 @@ mod tests {
                 Some(reason),
                 "{command:?} should be denied"
             );
+        }
+    }
+
+    /// Returns the single verifier-level problem reason for one command.
+    fn test_reason(command: &str) -> Option<TestCommandReason> {
+        validate_test_commands(&[command])
+            .into_iter()
+            .next()
+            .map(TestCommandProblem::reason)
+    }
+
+    #[test]
+    fn validate_test_commands_empty_list_is_valid() {
+        assert!(validate_test_commands(&[]).is_empty());
+    }
+
+    #[test]
+    fn validate_test_commands_accept_safe_test_command_cases() {
+        for command in [
+            "env -i git status",
+            "env FOO=bar git log",
+            "env -u FOO git status",
+            "env -C /repo git status",
+            "env -- git status",
+            "git -C /repo status --short",
+            "FOO=bar .venv/bin/pytest -q",
+            "A=1 B=two .venv/bin/pytest -q",
+            ".venv/bin/pytest -q",
+            "printf '%s\\n' 'a b'",
+            "echo 'a=b'",
+            "echo 'hello world'",
+            "grep -n 'foo bar' module.py",
+            "git status",
+            "git log --oneline -5",
+            "git diff --check",
+        ] {
+            assert!(
+                validate_test_commands(&[command]).is_empty(),
+                "{command:?} should be allowed"
+            );
+            assert_eq!(test_reason(command), None, "{command:?} should be allowed");
+        }
+    }
+
+    #[test]
+    fn validate_test_commands_deny_all_test_command_fixture_cases() {
+        let cases = [
+            ("git status && git commit -m x", "unprovable_shell_syntax"),
+            ("sleep 1 & git push", "unprovable_shell_syntax"),
+            ("echo `git push`", "unprovable_shell_syntax"),
+            ("bash -c 'echo `git push`'", "unprovable_shell_syntax"),
+            ("echo {a,b}", "unprovable_shell_syntax"),
+            ("{ git push; }", "unprovable_shell_syntax"),
+            ("echo $(git push)", "unprovable_shell_syntax"),
+            ("sh -c 'echo $(git push)'", "unprovable_shell_syntax"),
+            ("", "empty_bash_pattern"),
+            ("   ", "empty_bash_pattern"),
+            ("env -S 'git push'", "unprovable_wrapper_command"),
+            (
+                "env --split-string 'git add .'",
+                "unprovable_wrapper_command",
+            ),
+            ("env -Sgit push", "unprovable_wrapper_command"),
+            ("env -i -S 'git commit -m x'", "unprovable_wrapper_command"),
+            ("env FOO=bar -S 'git push'", "unprovable_wrapper_command"),
+            ("env -S 'git status'", "unprovable_wrapper_command"),
+            ("eval git push", "git_write_blocked"),
+            ("eval \"git push\"", "git_write_blocked"),
+            ("git commit -m x", "git_write_blocked"),
+            ("git *", "unprovable_git_glob"),
+            ("git ad*", "unprovable_git_glob"),
+            ("git push origin main", "git_write_blocked"),
+            ("/usr/bin/git add .", "git_write_blocked"),
+            ("./git commit -m x", "git_write_blocked"),
+            ("git -C /repo commit -m x", "git_write_blocked"),
+            ("git -c user.name=x push", "git_write_blocked"),
+            ("git --git-dir=/repo/.git push", "git_write_blocked"),
+            ("git --git-dir /repo/.git push", "git_write_blocked"),
+            ("git --work-tree=/repo push", "git_write_blocked"),
+            ("git --namespace=x push", "git_write_blocked"),
+            ("git -C /repo -c x=y commit -m z", "git_write_blocked"),
+            ("git    add .", "git_write_blocked"),
+            ("git commit -m 'fix thing'", "git_write_blocked"),
+            ("cat < file", "unprovable_shell_syntax"),
+            ("git status\ngit push", "unprovable_shell_syntax"),
+            ("git log || git push", "unprovable_shell_syntax"),
+            ("git push > /dev/null", "unprovable_shell_syntax"),
+            ("echo hi > out.txt", "unprovable_shell_syntax"),
+            ("cat x | git push", "unprovable_shell_syntax"),
+            ("git commit -m 'fix; thing'", "unprovable_shell_syntax"),
+            ("echo 'x*y'", "unprovable_glob_command"),
+            ("echo 'a;b'", "unprovable_shell_syntax"),
+            ("git status; git push", "unprovable_shell_syntax"),
+            ("echo a; echo b", "unprovable_shell_syntax"),
+            ("sh -c", "shell_command_missing"),
+            ("bash script.sh", "unsafe_shell_invocation"),
+            ("(git push)", "unprovable_shell_syntax"),
+            ("echo $HOME", "unprovable_shell_syntax"),
+            ("echo ${VAR}", "unprovable_shell_syntax"),
+            ("env git add .", "git_write_blocked"),
+        ];
+        for (command, category) in cases {
+            let problems = validate_test_commands(&[command]);
+            assert_eq!(problems.len(), 1, "{command:?} should be rejected");
+            assert_eq!(problems[0].index(), 0, "{command:?} index should be 0");
+            assert_eq!(
+                problems[0].reason().as_str(),
+                category,
+                "{command:?} should be denied with {category}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_test_commands_deny_assignment_only_as_missing_executable() {
+        for command in ["FOO=bar", "FOO=bar BAZ=qux"] {
+            let problems = validate_test_commands(&[command]);
+            assert_eq!(problems.len(), 1, "{command:?} should be rejected");
+            assert_eq!(problems[0].index(), 0);
+            assert_eq!(
+                problems[0].reason(),
+                TestCommandReason::MissingExecutable,
+                "{command:?} should be missing_executable"
+            );
+            assert_eq!(problems[0].reason().as_str(), "missing_executable");
+        }
+    }
+
+    #[test]
+    fn validate_test_commands_preserve_order_and_indices() {
+        let problems = validate_test_commands(&["git status", "FOO=bar", "git push", ""]);
+        let seen: Vec<(usize, &str)> = problems
+            .iter()
+            .map(|problem| (problem.index(), problem.reason().as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (1, "missing_executable"),
+                (2, "git_write_blocked"),
+                (3, "empty_bash_pattern"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_command_reason_strings_match_reference_categories() {
+        assert_eq!(
+            TestCommandReason::MissingExecutable.as_str(),
+            "missing_executable"
+        );
+        assert_eq!(
+            TestCommandReason::Policy(PolicyReason::GitWriteBlocked).as_str(),
+            "git_write_blocked"
+        );
+        assert_eq!(
+            TestCommandReason::MissingExecutable.to_string(),
+            "missing_executable"
+        );
+    }
+
+    #[test]
+    fn test_command_problems_do_not_reveal_input() {
+        let problems = validate_test_commands(&[
+            "git push super-secret-token",
+            "TOKEN=super-secret-value",
+            "echo secret; cat /etc/passwd",
+        ]);
+        assert_eq!(problems.len(), 3);
+        let rendered = format!("{problems:?}");
+        for needle in ["secret", "super", "push", "TOKEN", "passwd", "echo", "git"] {
+            assert!(
+                !rendered.contains(needle),
+                "Debug output leaked {needle:?}: {rendered}"
+            );
+        }
+        for problem in &problems {
+            let display = problem.reason().to_string();
+            for needle in ["secret", "super", "push", "TOKEN", "passwd"] {
+                assert!(
+                    !display.contains(needle),
+                    "Display output leaked {needle:?}: {display}"
+                );
+            }
         }
     }
 }

@@ -261,8 +261,8 @@ open невозможен без полной согласованности sid
 
 **Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
-violations) завершены; следующий незавершённый шаг — **5.1** (test command
-validation).
+violations) завершены; шаг **5.1** (test command validation) завершён;
+следующий незавершённый шаг — **5.2** (один command runner).
 
 ## Поток 4. Security и Git
 
@@ -620,6 +620,27 @@ validation).
 ## Поток 5. Verifier
 
 ### 5.1. Test command validation
+
+- **Завершено.** `bridge-command-policy` получает узкий verifier-level API поверх
+  существующих policy primitives: `validate_test_commands(commands: &[&str]) ->
+  Vec<TestCommandProblem>`, эквивалент Python
+  `verifier.validate_test_commands` для строковых входов. Пустой список валиден и
+  даёт пустой результат; каждая команда сначала проверяется существующей
+  fail-closed семантикой `bash_pattern_problem`, а команда, у которой после
+  ведущих `NAME=value` assignments остаётся пустой argv, отклоняется отдельной
+  стабильной причиной `missing_executable`. Порядок результатов и индексы
+  сохраняются как в Python `enumerate`. Типизированный `TestCommandReason`
+  (`Policy(PolicyReason)` / `MissingExecutable`) и `TestCommandProblem`
+  (`index`/`reason`) не несут command text, argv, пути и secrets;
+  `Debug`/`Display` содержат только индекс и статическую причину.
+  Не-строковые/не-list входы verifier относятся к configuration/transport и в
+  crate не входят, как и раньше. Table-driven тесты покрывают
+  все cases и variants `context=test_command` из
+  `docs/fixtures/command-policy-cases.json` (safe commands, policy denials,
+  assignment-only, пустой/whitespace вход), пустой список,
+  сохранение порядка/индексов и отсутствие утечки входа в `Debug`/`Display`;
+  существующие тесты 4.1–4.3 не регрессировали. Cargo.toml/Cargo.lock не
+  менялись.
 
 ### 5.2. Один command runner
 

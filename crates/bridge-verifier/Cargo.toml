@@ -1,0 +1,15 @@
+[package]
+name = "bridge-verifier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bridge-command-policy = { workspace = true }
+command-group = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
+[lints]
+workspace = true

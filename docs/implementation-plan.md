@@ -261,8 +261,9 @@ open невозможен без полной согласованности sid
 
 **Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
-violations) завершены; шаг **5.1** (test command validation) завершён;
-следующий незавершённый шаг — **5.2** (один command runner).
+violations) завершены; шаг **5.1** (test command validation) и шаг **5.2**
+(один command runner) завершены; следующий незавершённый шаг — **5.3**
+(последовательность команд).
 
 ## Поток 4. Security и Git
 
@@ -643,6 +644,71 @@ violations) завершены; шаг **5.1** (test command validation) зав�
   менялись.
 
 ### 5.2. Один command runner
+
+- **Завершено.** Новый workspace-crate `bridge-verifier` реализует ровно один
+  production-примитив: запуск одной заранее согласованной test command и
+  типизированный результат, совместимый по смыслу с per-command записью
+  reference `verifier.py:_run_command`. Публичный API —
+  `run_test_command(workspace: &Path, command: &str, timeout: Duration,
+  tail_bytes: usize) -> Result<CommandRunOutcome, CommandRunError>`, константа
+  `DEFAULT_TAIL_BYTES = 4000` и аксессоры `CommandRunOutcome`
+  (`exit_code`/`timed_out`/`duration`/`output_tail`/`succeeded`). Перед spawn
+  команда проверяется существующей fail-closed
+  `bridge_command_policy::validate_test_commands`: empty, assignment-only,
+  shell/glob/Git-write и прочие отклонённые команды дают
+  `CommandRunError::Rejected(TestCommandReason)` и никогда не доходят до ОС.
+  Валидная команда токенизируется `split_command`, ведущие `NAME=value`
+  assignments отделяются `leading_assignments`: argv передаётся процессу
+  отдельными OS arguments (без shell и интерполяции), а ведущие assignments
+  накладываются на унаследованное окружение процесса. Ребёнок запускается в
+  явно заданном `workspace` (cwd) лидером собственной process group через
+  безопасный API `command-group` (стандартный `process_group(0)`), stdin
+  закрыт, stdout и stderr — pipes. Команда считается завершённой только когда
+  прямой ребёнок reap-нут и оба pipe дошли до EOF: потомок, унаследовавший
+  pipes, удерживает команду до deadline, как reference
+  `communicate(timeout=...)`. При timeout или wait failure убивается вся
+  process group (`SIGKILL` с `killpg`-семантикой `command-group`), reap-ается
+  прямой ребёнок. Read-end каждого pipe на Unix переводится в non-blocking, а
+  reader-поток ограничен тем же deadline, поэтому он завершается и джойнится в
+  пределах одного poll-интервала даже тогда, когда потомок, создавший
+  собственную group/session, ускользнул от группового kill и всё ещё держит
+  унаследованный pipe: ни вечно заблокированный reader-поток, ни зависший
+  вызов не остаются. Reap-ается только прямой ребёнок; потомок, оставшийся в
+  process group, после группового kill reap-ается ОС — как и в reference
+  `killpg`, а сбежавший потомок переживает timeout так же, как и в
+  Python-референсе. Результат различает
+  успешный exit, ненулевой exit, timeout и spawn/wait failure: у реально
+  запущенной команды есть `duration` и `exit_code` (смерть от сигнала
+  кодируется отрицательным номером сигнала, как Python `returncode`), timeout
+  явно отмечен `timed_out`, а `output_tail` присутствует только у
+  failed-команды. Output дренируется отдельным потоком на каждый stream,
+  удерживаются только последние `tail_bytes` байт (без неограниченного
+  удержания вывода в памяти), а комбинированный tail (`stdout` + `\n` +
+  `stderr`, затем последние `tail_bytes` байт) детерминированно ограничен и по
+  байтам. `CommandRunError` (`Rejected`/`Spawn`/`Wait`) не несёт command text,
+  argv, environment, workspace path или output, и `Debug`/`Display` содержат
+  только статический идентификатор (для `Rejected` — payload-free policy
+  reason). Последовательность команд (5.3), HEAD/workspace fingerprints (5.4),
+  side-effect detection (5.5) и persist-once (5.6) не входят. Focused tests
+  покрывают exit 0, ненулевой exit с пустым tail, cwd, ведущие env
+  assignments, отклонение assignment-only/unsafe/git-write без запуска,
+  отсутствующий executable (spawn error), timeout с kill/reap (Linux-проверка
+  отсутствия процесса по `/proc/<pid>/cmdline`), group cleanup на команде с
+  долгоживущим потомком (`xargs -t ... sleep`: `xargs` — прямой ребёнок,
+  `sleep` — потомок в той же process group; проверяется, что после timeout
+  исчезли оба и что потомок реально запускался), bounded tail на
+  неограниченном потоке (`yes`), комбинированный stdout+stderr tail через
+  `sh -c 'ls ...'`, bounded возврат при потомке, сбежавшем в новую session
+  (`setsid sleep 3`; проверяется, что вызов возвращается по deadline, не
+  дожидаясь потомка), стабильные строки ошибок и отсутствие чувствительных
+  входов в `Debug`/`Display`. Тесты не пишут и не исполняют свежесозданные
+  executable-скрипты: это исключает наблюдавшийся при параллельном запуске
+  `ETXTBSY`/`ExecutableFileBusy` и делает набор детерминированным.
+  `Cargo.toml`/`Cargo.lock` менялись добавлением workspace-crate
+  `bridge-verifier`, безопасной обёртки над process group `command-group`
+  (транзитивно `nix`/`libc`) и Unix-only прямой зависимости `nix` (`fs`),
+  используемой для non-blocking pipe read; public contracts других crates,
+  schema и fixtures не менялись.
 
 ### 5.3. Последовательность команд
 

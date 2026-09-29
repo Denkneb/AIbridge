@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 bridge-command-policy = { workspace = true }
+bridge-git = { workspace = true }
 command-group = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

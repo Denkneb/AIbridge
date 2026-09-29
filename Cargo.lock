@@ -62,6 +62,7 @@ name = "bridge-verifier"
 version = "0.1.0"
 dependencies = [
  "bridge-command-policy",
+ "bridge-git",
  "command-group",
  "nix",
 ]

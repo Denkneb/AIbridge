@@ -1,17 +1,21 @@
-//! Verifier command runners (tasks 5.2-5.3).
+//! Verifier command runners and workspace fingerprints (tasks 5.2-5.4).
 //!
-//! This crate implements two narrow production primitives over the shared
-//! fail-closed command policy:
+//! This crate implements three narrow production primitives over the shared
+//! fail-closed command policy and the read-only Git snapshot layer:
 //!
 //! - [`run_test_command`] runs one already-agreed test command string and
 //!   returns a typed outcome compatible in meaning with the reference Python
 //!   verifier's per-command entry (`verifier.py:_run_command`);
 //! - [`run_test_command_sequence`] runs an agreed list of commands strictly in
 //!   order, stopping at the first failed command, and returns only the commands
-//!   that actually ran.
+//!   that actually ran;
+//! - [`run_test_command_sequence_fingerprinted`] wraps such a sequence with the
+//!   Git fingerprint of the workspace captured immediately before and after
+//!   it, reusing the read-only [`bridge_git::take_snapshot`] instead of
+//!   duplicating any Git snapshot or fingerprint logic.
 //!
-//! It deliberately does **not** capture Git fingerprints, detect side effects or
-//! persist anything; those are tasks 5.4-5.6.
+//! It deliberately does **not** detect side effects or persist anything; those
+//! are tasks 5.5-5.6.
 //!
 //! # Contract
 //!
@@ -71,6 +75,42 @@
 //! a command that passed validation but could not be spawned or waited on stops
 //! the sequence as [`CommandSequenceError::Run`].
 //!
+//! # Fingerprints
+//!
+//! [`run_test_command_sequence_fingerprinted`] reproduces the reference
+//! `verifier.run_round_verification` order exactly:
+//!
+//! 1. the **whole** list is validated up front; a rejected command anywhere
+//!    fails as [`FingerprintedSequenceError::Rejected`] before any fingerprint
+//!    is captured and before any command runs;
+//! 2. an empty list is valid and returns a successful outcome **without**
+//!    capturing any fingerprint (the reference returns before
+//!    fingerprinting);
+//! 3. the before fingerprint is captured through one read-only
+//!    [`bridge_git::take_snapshot`]; a Git failure fails closed as
+//!    [`FingerprintedSequenceError::BeforeSnapshot`] and guarantees that not a
+//!    single test command was spawned;
+//! 4. the commands run strictly in order through the same shared loop as the
+//!    task 5.3 sequence, with the same `timeout` and `tail_bytes`, so the
+//!    stop-at-the-first-failure semantics are exactly those of task 5.3. A
+//!    validated command that cannot be spawned or waited on is recorded in
+//!    the outcome like the reference `spawn_failed` command entry — the
+//!    commands that already ran and the typed
+//!    [`FingerprintedRunFailure`] are retained — and the loop stops;
+//! 5. the after fingerprint is captured for every non-empty list, including
+//!    failed, timed-out and spawn/wait-failed sequences. A Git failure there
+//!    does not discard the run: like the reference `error` variant with
+//!    reason `git_fingerprint_failed`, the outcome keeps the recorded
+//!    commands, the run failure and the before fingerprint while `after`
+//!    stays `None`, and the typed overall status
+//!    [`FingerprintedSequenceStatus::GitFingerprintFailed`] — which
+//!    [`FingerprintedSequenceOutcome::succeeded`] never reports as success —
+//!    exposes the failure.
+//!
+//! [`WorkspaceFingerprint`] records exactly the reference compact triple — the
+//! HEAD commit, the index fingerprint and the worktree fingerprint — taken from
+//! that single bridge-git snapshot and exposed through typed accessors.
+//!
 //! # Output bound
 //!
 //! Output is never accumulated without limit: each stream is drained on its own
@@ -80,12 +120,16 @@
 //!
 //! # Redaction
 //!
-//! [`CommandRunError`], [`CommandSequenceError`] and
-//! [`TestCommandSequenceOutcome`] carry no command text, argv, environment,
-//! workspace path or output, so `Debug`/`Display` can never leak a sensitive
-//! input. The sequence outcome exposes per-command output only through the
-//! explicit [`CommandRunOutcome::output_tail`] accessor, never through its
-//! `Debug` rendering.
+//! [`CommandRunError`], [`CommandSequenceError`],
+//! [`FingerprintedSequenceError`], [`FingerprintedRunFailure`],
+//! [`FingerprintedSequenceStatus`], [`TestCommandSequenceOutcome`] and
+//! [`FingerprintedSequenceOutcome`] carry no command text, argv, environment,
+//! workspace path, output or fingerprint values, so `Debug`/`Display` can never
+//! leak a sensitive input. The sequence outcome exposes per-command output only
+//! through the explicit [`CommandRunOutcome::output_tail`] accessor, never
+//! through its `Debug` rendering; the fingerprint values are likewise available
+//! only through the explicit [`WorkspaceFingerprint`] accessors, never through
+//! a `Debug` rendering of a verification result.
 
 use std::error::Error;
 use std::fmt;
@@ -100,6 +144,7 @@ use std::time::{Duration, Instant};
 use bridge_command_policy::{
     PolicyReason, TestCommandReason, leading_assignments, split_command, validate_test_commands,
 };
+use bridge_git::{CommitId, IndexFingerprint, WorktreeFingerprint};
 use command_group::CommandGroup;
 
 /// Default bounded output tail in bytes, matching the reference
@@ -507,6 +552,30 @@ pub fn run_test_command_sequence(
         });
     }
 
+    let (outcome, failure) =
+        run_commands_stopping_at_first_failure(workspace, commands, timeout, tail_bytes);
+    match failure {
+        Some((index, error)) => Err(CommandSequenceError::Run { index, error }),
+        None => Ok(outcome),
+    }
+}
+
+/// Runs already-validated `commands` strictly in order through
+/// [`run_test_command`], stopping at the first non-zero exit, timeout or
+/// spawn/wait failure, and returns the outcomes of the commands that actually
+/// ran plus, for a spawn/wait failure, its zero-based index and payload-free
+/// error.
+///
+/// This is the shared loop of the task 5.3 sequence primitive and the task
+/// 5.4 fingerprinted orchestration: the former maps the returned failure to
+/// [`CommandSequenceError::Run`], the latter records it in the outcome like
+/// the reference `spawn_failed` command entry.
+fn run_commands_stopping_at_first_failure(
+    workspace: &Path,
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+) -> (TestCommandSequenceOutcome, Option<(usize, CommandRunError)>) {
     let mut ran = Vec::with_capacity(commands.len());
     for (index, command) in commands.iter().enumerate() {
         match run_test_command(workspace, command, timeout, tail_bytes) {
@@ -517,10 +586,426 @@ pub fn run_test_command_sequence(
                     break;
                 }
             }
-            Err(error) => return Err(CommandSequenceError::Run { index, error }),
+            Err(error) => {
+                return (
+                    TestCommandSequenceOutcome { commands: ran },
+                    Some((index, error)),
+                );
+            }
         }
     }
-    Ok(TestCommandSequenceOutcome { commands: ran })
+    (TestCommandSequenceOutcome { commands: ran }, None)
+}
+
+/// The Git fingerprint of a workspace captured around a test command sequence.
+///
+/// The triple is exactly the reference `verifier.fingerprint` compact record:
+/// the HEAD commit, the index fingerprint and the worktree fingerprint. The
+/// values are taken from a single read-only [`bridge_git::take_snapshot`] and
+/// are never recomputed here, so this layer adds no Git logic of its own.
+///
+/// `Debug` renders only whether a HEAD commit exists; the exact commit id and
+/// the digests are available through the accessors, never through a debug
+/// rendering of a verification result.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WorkspaceFingerprint {
+    head: Option<CommitId>,
+    index_fingerprint: IndexFingerprint,
+    worktree_fingerprint: WorktreeFingerprint,
+}
+
+impl WorkspaceFingerprint {
+    /// Returns the HEAD commit, or `None` for a valid repository without
+    /// commits.
+    #[must_use]
+    pub fn head(&self) -> Option<&CommitId> {
+        self.head.as_ref()
+    }
+
+    /// Returns the fingerprint of the staged index.
+    #[must_use]
+    pub fn index_fingerprint(&self) -> &IndexFingerprint {
+        &self.index_fingerprint
+    }
+
+    /// Returns the fingerprint of the tracked/untracked worktree.
+    #[must_use]
+    pub fn worktree_fingerprint(&self) -> &WorktreeFingerprint {
+        &self.worktree_fingerprint
+    }
+}
+
+impl fmt::Debug for WorkspaceFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkspaceFingerprint")
+            .field("head", &self.head.is_some())
+            .finish()
+    }
+}
+
+/// Why a fingerprinted sequence of test commands did not produce a result.
+///
+/// Only failures that prevent the sequence from running at all are errors:
+/// everything that happens while the commands run — non-zero exits, timeouts,
+/// spawn/wait failures, even an after-fingerprint failure — is recorded in the
+/// returned [`FingerprintedSequenceOutcome`] instead. The error carries no
+/// command text, argv, environment, workspace path, output or fingerprint
+/// values; both `Debug` and `Display` render only an index and a static,
+/// payload-free identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FingerprintedSequenceError {
+    /// The **whole** list failed verifier validation before any fingerprint
+    /// was captured or any command spawned (the reference `unsafe` variant).
+    ///
+    /// Like [`CommandSequenceError::Rejected`], `index` is the zero-based
+    /// position of the first rejected command and `reason` is its payload-free
+    /// category.
+    Rejected {
+        /// Zero-based position of the first rejected command.
+        index: usize,
+        /// Payload-free rejection category.
+        reason: TestCommandReason,
+    },
+    /// The before Git snapshot failed, so no command ran (the reference
+    /// `error` variant with reason `git_fingerprint_failed`).
+    BeforeSnapshot,
+}
+
+impl FingerprintedSequenceError {
+    /// Returns the stable, payload-free identifier for this error.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rejected { reason, .. } => reason.as_str(),
+            Self::BeforeSnapshot => "git_fingerprint_failed",
+        }
+    }
+}
+
+impl fmt::Display for FingerprintedSequenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected { index, reason } => write!(f, "rejected command {index}: {reason}"),
+            Self::BeforeSnapshot => f.write_str("git_fingerprint_failed"),
+        }
+    }
+}
+
+impl Error for FingerprintedSequenceError {}
+
+/// A validated command that could not be spawned or waited on while a
+/// fingerprinted sequence was running.
+///
+/// The reference records such a failure as a failed command entry with
+/// `reason=spawn_failed` (or `wait_failed`); this typed pair carries the same
+/// information: the zero-based position of the command and the payload-free
+/// failure. The commands before it kept their outcomes, the loop stopped at
+/// it and the after fingerprint is still captured.
+///
+/// `Debug` and `Display` render only the index and a static, payload-free
+/// identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FingerprintedRunFailure {
+    index: usize,
+    error: CommandRunError,
+}
+
+impl FingerprintedRunFailure {
+    /// Returns the zero-based position of the command that could not run.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Returns the payload-free single-command failure.
+    #[must_use]
+    pub fn error(&self) -> CommandRunError {
+        self.error
+    }
+
+    /// Returns the stable, payload-free identifier for this failure.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        self.error.as_str()
+    }
+}
+
+impl fmt::Display for FingerprintedRunFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "command {} did not run: {}", self.index, self.error)
+    }
+}
+
+/// The typed overall status of a fingerprinted test command sequence,
+/// mirroring the overall result of the reference `run_round_verification`.
+///
+/// The variants are payload-free; `Debug` and `Display` render only the stable
+/// identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FingerprintedSequenceStatus {
+    /// Every command succeeded, none failed to spawn or be waited on, and
+    /// both fingerprints were captured. The status of an empty command list.
+    Succeeded,
+    /// A command failed: a non-zero exit, a timeout, or a spawn/wait failure
+    /// recorded by [`FingerprintedSequenceOutcome::run_failure`]. The after
+    /// fingerprint is still captured.
+    Failed,
+    /// The after Git snapshot failed after the commands ran: the reference
+    /// overwrites the overall status with `error` and reason
+    /// `git_fingerprint_failed`. The commands, any recorded run failure and
+    /// the `before` fingerprint stay recorded; the `after` fingerprint does
+    /// not.
+    GitFingerprintFailed,
+}
+
+impl FingerprintedSequenceStatus {
+    /// Returns the stable, payload-free identifier for this status.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::GitFingerprintFailed => "git_fingerprint_failed",
+        }
+    }
+}
+
+impl fmt::Display for FingerprintedSequenceStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The outcome of a fingerprinted sequence of test commands.
+///
+/// The result wraps the [`TestCommandSequenceOutcome`] of the commands that
+/// actually ran, an optional recorded run failure, and the Git fingerprints
+/// captured immediately before and after the sequence. Exactly like the
+/// reference `run_round_verification`:
+///
+/// - an empty command list is valid, successful and captures **no**
+///   fingerprints (`before` and `after` are both `None`);
+/// - a non-empty list always captures `before`; command failures (a non-zero
+///   exit, a timeout, or a spawn/wait failure recorded by
+///   [`run_failure`](Self::run_failure)) do not prevent the `after` capture;
+/// - an `after` that stays `None` after commands ran means the after Git
+///   snapshot itself failed — the reference `error` variant with reason
+///   `git_fingerprint_failed` — which
+///   [`after_snapshot_failed`](Self::after_snapshot_failed) reports while the
+///   commands, the recorded run failure and the `before` fingerprint stay
+///   recorded.
+///
+/// The overall result is [`status`](Self::status): the reference overwrites
+/// it with `error` (reason `git_fingerprint_failed`) when the after
+/// fingerprint fails, so [`succeeded`](Self::succeeded) is false then, no
+/// matter how the commands went.
+///
+/// `Debug` is redacting: it reports only the number of commands that ran and
+/// the typed overall status, never command output or fingerprint values.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FingerprintedSequenceOutcome {
+    sequence: TestCommandSequenceOutcome,
+    run_failure: Option<FingerprintedRunFailure>,
+    before: Option<WorkspaceFingerprint>,
+    after: Option<WorkspaceFingerprint>,
+    after_snapshot_failed: bool,
+}
+
+impl FingerprintedSequenceOutcome {
+    /// Returns the fingerprint captured immediately before the sequence, or
+    /// `None` when the command list was empty (no snapshot is taken then).
+    #[must_use]
+    pub fn before(&self) -> Option<&WorkspaceFingerprint> {
+        self.before.as_ref()
+    }
+
+    /// Returns the fingerprint captured immediately after the sequence.
+    ///
+    /// `None` when the command list was empty, or when the after Git snapshot
+    /// failed after the commands ran; the latter is reported by
+    /// [`after_snapshot_failed`](Self::after_snapshot_failed).
+    #[must_use]
+    pub fn after(&self) -> Option<&WorkspaceFingerprint> {
+        self.after.as_ref()
+    }
+
+    /// Returns whether the after Git snapshot failed after the commands ran.
+    ///
+    /// This is the reference `error` variant: the commands, any recorded run
+    /// failure and the `before` fingerprint are still recorded, the `after`
+    /// fingerprint is not, and the overall status is
+    /// [`FingerprintedSequenceStatus::GitFingerprintFailed`].
+    #[must_use]
+    pub fn after_snapshot_failed(&self) -> bool {
+        self.after_snapshot_failed
+    }
+
+    /// Returns the recorded failure of a validated command that could not be
+    /// spawned or waited on, if one stopped the sequence.
+    ///
+    /// This is the reference `spawn_failed`/`wait_failed` command entry: the
+    /// commands before it kept their outcomes, the loop stopped at it and the
+    /// after fingerprint was still captured.
+    #[must_use]
+    pub fn run_failure(&self) -> Option<FingerprintedRunFailure> {
+        self.run_failure
+    }
+
+    /// Returns the outcomes of the commands that actually ran, in order.
+    #[must_use]
+    pub fn commands(&self) -> &[CommandRunOutcome] {
+        self.sequence.commands()
+    }
+
+    /// Returns the typed overall status of the round.
+    ///
+    /// [`FingerprintedSequenceStatus::GitFingerprintFailed`] overwrites a
+    /// command failure, exactly like the reference overwrites the overall
+    /// status with `error` when the after fingerprint fails.
+    #[must_use]
+    pub fn status(&self) -> FingerprintedSequenceStatus {
+        if self.after_snapshot_failed {
+            FingerprintedSequenceStatus::GitFingerprintFailed
+        } else if self.run_failure.is_some() || !self.sequence.succeeded() {
+            FingerprintedSequenceStatus::Failed
+        } else {
+            FingerprintedSequenceStatus::Succeeded
+        }
+    }
+
+    /// Returns whether the whole verification round succeeded.
+    ///
+    /// True only for [`FingerprintedSequenceStatus::Succeeded`]: every
+    /// recorded command succeeded, no command failed to spawn or be waited
+    /// on, and the after fingerprint was captured. An after-fingerprint
+    /// infrastructure failure is the reference `error` with reason
+    /// `git_fingerprint_failed` and is never a success, even when every
+    /// command passed. An empty sequence is successful.
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        self.status() == FingerprintedSequenceStatus::Succeeded
+    }
+}
+
+impl fmt::Debug for FingerprintedSequenceOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FingerprintedSequenceOutcome")
+            .field("commands", &self.commands().len())
+            .field("status", &self.status().as_str())
+            .finish()
+    }
+}
+
+/// Runs an agreed list of test commands strictly in order in `workspace` and
+/// captures the Git fingerprint of `workspace` immediately before and after the
+/// sequence.
+///
+/// The reference order is preserved exactly:
+///
+/// 1. the **whole** list is validated first with the shared fail-closed
+///    verifier policy; a rejected command anywhere fails as
+///    [`FingerprintedSequenceError::Rejected`] before any fingerprint is
+///    captured and before any command runs;
+/// 2. an empty list is valid and returns a successful outcome **without**
+///    capturing any fingerprint, exactly like the reference early return;
+/// 3. the before fingerprint is captured through one read-only
+///    [`bridge_git::take_snapshot`]; a Git failure fails closed as
+///    [`FingerprintedSequenceError::BeforeSnapshot`] and **no** command runs;
+/// 4. the commands run strictly in order through the same shared loop as the
+///    task 5.3 sequence, with the same `timeout` and `tail_bytes`, so the
+///    stop-at-the-first-failure semantics are exactly those of task 5.3. A
+///    validated command that cannot be spawned or waited on is recorded in
+///    the outcome like the reference `spawn_failed` command entry — the
+///    commands that already ran and the typed
+///    [`FingerprintedRunFailure`] are retained — and the loop stops;
+/// 5. the after fingerprint is captured for every non-empty list, including
+///    failed, timed-out and spawn/wait-failed sequences. A Git failure here
+///    does **not** discard the run: the outcome keeps the commands, the run
+///    failure and the before fingerprint, leaves `after` as `None` and
+///    reports the failure through
+///    [`FingerprintedSequenceOutcome::after_snapshot_failed`] and the typed
+///    overall status
+///    [`FingerprintedSequenceStatus::GitFingerprintFailed`] — the reference
+///    `error` variant with reason `git_fingerprint_failed`, which
+///    [`FingerprintedSequenceOutcome::succeeded`] never reports as success.
+///
+/// # Errors
+///
+/// Returns [`FingerprintedSequenceError::Rejected`] when up-front validation
+/// rejects any command (before anything runs or is fingerprinted) and
+/// [`FingerprintedSequenceError::BeforeSnapshot`] when the before Git snapshot
+/// fails (no command runs). Everything that happens while the commands run is
+/// recorded in the returned outcome instead. No error carries command text,
+/// argv, environment, workspace path, output or fingerprint values.
+pub fn run_test_command_sequence_fingerprinted(
+    workspace: &Path,
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+) -> Result<FingerprintedSequenceOutcome, FingerprintedSequenceError> {
+    // The reference validates the entire list before the first fingerprint,
+    // so a rejected command can never leave a captured fingerprint or a
+    // partially run sequence behind.
+    let problems = validate_test_commands(commands);
+    if let Some(problem) = problems.first() {
+        return Err(FingerprintedSequenceError::Rejected {
+            index: problem.index(),
+            reason: problem.reason(),
+        });
+    }
+
+    // Fail closed before anything runs: a workspace that cannot be
+    // fingerprinted must not execute a single test command. The reference
+    // returns the empty list before fingerprinting, so no snapshot at all is
+    // taken for an empty command list.
+    let before = if commands.is_empty() {
+        None
+    } else {
+        Some(
+            capture_fingerprint(workspace)
+                .map_err(|_| FingerprintedSequenceError::BeforeSnapshot)?,
+        )
+    };
+
+    // A spawn/wait failure is recorded like the reference `spawn_failed`
+    // command entry — the run and the typed failure are retained — and the
+    // loop stops; the after fingerprint below is still captured.
+    let (sequence, run_failure) =
+        run_commands_stopping_at_first_failure(workspace, commands, timeout, tail_bytes);
+
+    // The after fingerprint is captured for every non-empty list, whatever
+    // happened to the commands; a Git failure here keeps the run and
+    // overwrites the overall status, exactly like the reference `error`
+    // variant with reason `git_fingerprint_failed`.
+    let (after, after_snapshot_failed) = if commands.is_empty() {
+        (None, false)
+    } else {
+        match capture_fingerprint(workspace) {
+            Ok(fingerprint) => (Some(fingerprint), false),
+            Err(_) => (None, true),
+        }
+    };
+
+    Ok(FingerprintedSequenceOutcome {
+        sequence,
+        run_failure: run_failure.map(|(index, error)| FingerprintedRunFailure { index, error }),
+        before,
+        after,
+        after_snapshot_failed,
+    })
+}
+
+/// Captures the workspace fingerprint through one read-only bridge-git
+/// snapshot; the Git logic itself is owned by `bridge-git`.
+fn capture_fingerprint(workspace: &Path) -> Result<WorkspaceFingerprint, bridge_git::GitError> {
+    let snapshot = bridge_git::take_snapshot(workspace)?;
+    Ok(WorkspaceFingerprint {
+        head: snapshot.head().cloned(),
+        index_fingerprint: *snapshot.index_fingerprint(),
+        worktree_fingerprint: *snapshot.worktree_fingerprint(),
+    })
 }
 
 /// Returns the exit code of `status`, mapping a signal death to its negated
@@ -678,10 +1163,13 @@ impl TailReader {
 mod tests {
     use super::{
         CommandRunError, CommandRunOutcome, CommandSequenceError, DEFAULT_TAIL_BYTES,
-        TestCommandSequenceOutcome, run_test_command, run_test_command_sequence,
+        FingerprintedRunFailure, FingerprintedSequenceError, FingerprintedSequenceOutcome,
+        FingerprintedSequenceStatus, TestCommandSequenceOutcome, capture_fingerprint,
+        run_test_command, run_test_command_sequence, run_test_command_sequence_fingerprinted,
     };
     use bridge_command_policy::{PolicyReason, TestCommandReason};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -754,6 +1242,79 @@ mod tests {
         tail_bytes: usize,
     ) -> Result<TestCommandSequenceOutcome, CommandSequenceError> {
         run_test_command_sequence(dir, commands, timeout, tail_bytes)
+    }
+
+    fn run_fingerprinted(
+        dir: &Path,
+        commands: &[&str],
+        timeout: Duration,
+        tail_bytes: usize,
+    ) -> Result<FingerprintedSequenceOutcome, FingerprintedSequenceError> {
+        run_test_command_sequence_fingerprinted(dir, commands, timeout, tail_bytes)
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("create repo dir");
+        git(dir, &["init", "-q"]);
+    }
+
+    fn write_file(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dir");
+        }
+        std::fs::write(path, content).expect("write file");
+    }
+
+    fn commit(dir: &Path, message: &str, add: &[&str]) {
+        for path in add {
+            git(dir, &["add", "--", path]);
+        }
+        git(
+            dir,
+            &[
+                "-c",
+                "user.email=bridge-verifier@example.invalid",
+                "-c",
+                "user.name=bridge-verifier",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        );
+    }
+
+    fn rev_parse_head(dir: &Path) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("run git rev-parse");
+        assert!(output.status.success(), "git rev-parse HEAD failed");
+        String::from_utf8(output.stdout)
+            .expect("decode HEAD")
+            .trim()
+            .to_owned()
     }
 
     #[test]
@@ -1312,6 +1873,550 @@ mod tests {
             }
             .as_str(),
             "spawn_failed"
+        );
+    }
+
+    #[test]
+    fn clean_sequence_captures_matching_fingerprints() {
+        let dir = TempDir::new("fp-clean");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // An independent read-only snapshot taken now must equal the captured
+        // before fingerprint: the values come from bridge-git, never from this
+        // crate.
+        let expected = bridge_git::take_snapshot(dir.path()).expect("snapshot the repo");
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Succeeded);
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome.after().expect("after fingerprint");
+        assert_eq!(before, after);
+        assert_eq!(before.head(), expected.head());
+        assert_eq!(before.index_fingerprint(), expected.index_fingerprint());
+        assert_eq!(
+            before.worktree_fingerprint(),
+            expected.worktree_fingerprint()
+        );
+        // The typed HEAD mapping is the exact commit id of the repository.
+        assert_eq!(
+            before.head().map(|commit| commit.as_str().to_owned()),
+            Some(rev_parse_head(dir.path()))
+        );
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[test]
+    fn worktree_change_makes_after_fingerprint_differ() {
+        let dir = TempDir::new("fp-worktree");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.txt", "one\n");
+        write_file(dir.path(), "b.txt", "two\n");
+        commit(dir.path(), "init", &["a.txt", "b.txt"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["cp a.txt b.txt", "touch untracked.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome.after().expect("after fingerprint");
+        assert_ne!(before, after);
+        // The tracked content change and the new untracked file are both
+        // visible in the worktree fingerprint.
+        assert_ne!(before.worktree_fingerprint(), after.worktree_fingerprint());
+        // Nothing was staged and no commit happened, so the index and HEAD
+        // stay stable.
+        assert_eq!(before.index_fingerprint(), after.index_fingerprint());
+        assert_eq!(before.head(), after.head());
+    }
+
+    #[test]
+    fn staged_change_updates_index_fingerprint() {
+        let dir = TempDir::new("fp-index");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.txt", "one\n");
+        write_file(dir.path(), "b.txt", "two\n");
+        commit(dir.path(), "init", &["a.txt", "b.txt"]);
+
+        // `git update-index` is not one of the Git write subcommands the
+        // frozen policy blocks (`add`/`commit`/`push`), so the command runs
+        // and stages the modified worktree content without creating a commit.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["cp a.txt b.txt", "git update-index b.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome.after().expect("after fingerprint");
+        assert_ne!(before.index_fingerprint(), after.index_fingerprint());
+        assert_ne!(before, after);
+        // A staged change creates no commit, so HEAD stays stable: no allowed
+        // command can move HEAD, because `git commit` is rejected by the
+        // unchanged policy.
+        assert_eq!(before.head(), after.head());
+    }
+
+    #[test]
+    fn repository_without_commits_reports_no_head() {
+        let dir = TempDir::new("fp-no-commit");
+        init_repo(dir.path());
+        write_file(dir.path(), "pending.txt", "pending\n");
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Succeeded);
+        // A valid repository without commits maps HEAD to `None`; the rest of
+        // the fingerprint is still captured.
+        assert_eq!(
+            outcome.before().and_then(|fingerprint| fingerprint.head()),
+            None
+        );
+        assert_eq!(
+            outcome.after().and_then(|fingerprint| fingerprint.head()),
+            None
+        );
+        assert!(outcome.before().is_some());
+        assert!(outcome.after().is_some());
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[test]
+    fn nonzero_failure_stops_the_sequence_and_still_captures_after() {
+        let dir = TempDir::new("fp-nonzero");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["touch ran.txt", "false", "touch never.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Failed);
+        assert_eq!(outcome.commands().len(), 2);
+        assert!(dir.path().join("ran.txt").is_file());
+        assert!(
+            !dir.path().join("never.txt").exists(),
+            "commands after the first failure must not run"
+        );
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome
+            .after()
+            .expect("after is captured for a failed sequence");
+        assert_ne!(
+            before, after,
+            "the untracked ran.txt must be visible in after"
+        );
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_still_captures_after() {
+        let dir = TempDir::new("fp-timeout");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["sleep 98765.4321"],
+            Duration::from_millis(200),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Failed);
+        assert!(outcome.commands()[0].timed_out());
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome
+            .after()
+            .expect("after is captured for a timed-out sequence");
+        assert_eq!(before, after);
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[test]
+    fn empty_sequence_captures_no_fingerprints() {
+        let dir = TempDir::new("fp-empty");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome =
+            run_fingerprinted(dir.path(), &[], Duration::from_secs(5), DEFAULT_TAIL_BYTES)
+                .expect("an empty list is valid");
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Succeeded);
+        assert!(outcome.commands().is_empty());
+        assert_eq!(outcome.before(), None);
+        assert_eq!(outcome.after(), None);
+        assert!(!outcome.after_snapshot_failed());
+
+        // The reference returns the empty list before fingerprinting, so
+        // even a non-repository must succeed: no snapshot is ever attempted.
+        let plain = TempDir::new("fp-empty-plain");
+        let outcome = run_fingerprinted(
+            plain.path(),
+            &[],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("an empty list never touches Git");
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.before(), None);
+        assert_eq!(outcome.after(), None);
+    }
+
+    #[test]
+    fn validation_happens_before_the_before_snapshot() {
+        // A non-repository would fail the before snapshot, so observing the
+        // policy rejection instead proves the reference order: the whole list
+        // is validated before any fingerprint is captured.
+        let plain = TempDir::new("fp-order");
+        let error = run_fingerprinted(
+            plain.path(),
+            &["touch marker.txt", "git push origin main"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect_err("a rejected command must fail the whole list");
+        assert_eq!(
+            error,
+            FingerprintedSequenceError::Rejected {
+                index: 1,
+                reason: TestCommandReason::Policy(PolicyReason::GitWriteBlocked),
+            }
+        );
+        assert!(
+            !plain.path().join("marker.txt").exists(),
+            "no command may run when the list is rejected up front"
+        );
+    }
+
+    #[test]
+    fn before_snapshot_failure_runs_no_command() {
+        let plain = TempDir::new("fp-before-failed");
+        let error = run_fingerprinted(
+            plain.path(),
+            &["touch marker.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect_err("a non-repository cannot be fingerprinted");
+        assert_eq!(error, FingerprintedSequenceError::BeforeSnapshot);
+        assert_eq!(error.as_str(), "git_fingerprint_failed");
+        assert_eq!(error.to_string(), "git_fingerprint_failed");
+        assert!(
+            !plain.path().join("marker.txt").exists(),
+            "a failed before snapshot must not run any command"
+        );
+    }
+
+    #[test]
+    fn after_snapshot_failure_overwrites_the_overall_status() {
+        let dir = TempDir::new("fp-after-failed");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // `rm` is a simple command without metacharacters, so the frozen
+        // policy allows it; deleting `.git` makes only the after snapshot fail
+        // while the sequence itself succeeds. The reference overwrites the
+        // overall status with `error` (reason `git_fingerprint_failed`)
+        // instead of reporting success, so the typed outcome must not be
+        // interpretable as an overall success either.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["rm -rf .git"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert_eq!(outcome.commands().len(), 1);
+        assert!(outcome.commands()[0].succeeded());
+        assert!(
+            !outcome.succeeded(),
+            "an after-fingerprint failure is never an overall success"
+        );
+        assert_eq!(
+            outcome.status(),
+            FingerprintedSequenceStatus::GitFingerprintFailed
+        );
+        assert_eq!(outcome.status().as_str(), "git_fingerprint_failed");
+        assert_eq!(outcome.status().to_string(), "git_fingerprint_failed");
+        // Reference semantics: the commands and the before fingerprint stay
+        // recorded, the after fingerprint is absent and the failure is
+        // reported (reference `error` + `git_fingerprint_failed`).
+        assert!(outcome.before().is_some());
+        assert_eq!(outcome.after(), None);
+        assert!(outcome.after_snapshot_failed());
+        assert_eq!(outcome.run_failure(), None);
+    }
+
+    #[test]
+    fn spawn_failure_retains_the_run_and_captures_after() {
+        let dir = TempDir::new("fp-spawn");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // The reference records a spawn failure as a failed command entry
+        // (`spawn_failed`) and still runs the after-fingerprint block, so the
+        // orchestration retains the commands that already ran, records the
+        // typed failure and captures the after fingerprint.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &[
+                "touch ran.txt",
+                "bridge-verifier-no-such-executable-2f7a",
+                "touch third.txt",
+            ],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the run and the failure are retained in the outcome");
+        let failure = outcome
+            .run_failure()
+            .expect("the spawn failure is recorded");
+        assert_eq!(failure.index(), 1);
+        assert_eq!(failure.error(), CommandRunError::Spawn);
+        assert_eq!(failure.as_str(), "spawn_failed");
+        assert_eq!(outcome.commands().len(), 1);
+        assert!(outcome.commands()[0].succeeded());
+        assert!(dir.path().join("ran.txt").is_file());
+        assert!(
+            !dir.path().join("third.txt").exists(),
+            "commands after the spawn failure must not run"
+        );
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Failed);
+        let before = outcome.before().expect("before fingerprint");
+        let after = outcome
+            .after()
+            .expect("after is captured after a spawn failure");
+        assert_ne!(
+            before, after,
+            "the untracked ran.txt must be visible in after"
+        );
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[test]
+    fn spawn_failure_with_after_snapshot_failure_reports_git_error() {
+        let dir = TempDir::new("fp-spawn-after-failed");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // The first command deletes `.git` and succeeds; the second cannot be
+        // spawned. The reference still runs the after-fingerprint block after
+        // the failed entry, so the block fails and overwrites the overall
+        // status with `git_fingerprint_failed` while the commands, the spawn
+        // failure and the before fingerprint stay recorded.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["rm -rf .git", "bridge-verifier-no-such-executable-2f7a"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the run and the failure are retained in the outcome");
+        assert_eq!(outcome.commands().len(), 1);
+        assert!(outcome.commands()[0].succeeded());
+        let failure = outcome
+            .run_failure()
+            .expect("the spawn failure is recorded");
+        assert_eq!(failure.index(), 1);
+        assert_eq!(failure.error(), CommandRunError::Spawn);
+        assert!(outcome.before().is_some());
+        assert_eq!(outcome.after(), None);
+        assert!(outcome.after_snapshot_failed());
+        assert_eq!(
+            outcome.status(),
+            FingerprintedSequenceStatus::GitFingerprintFailed
+        );
+        assert!(!outcome.succeeded());
+    }
+
+    #[test]
+    fn wait_failure_is_recorded_like_a_spawn_failure() {
+        // A wait failure goes through the same recording path as a spawn
+        // failure (both are the `Err` arm of the shared command loop), so its
+        // typed mapping is proven on the outcome shape itself: the failure is
+        // retained, the overall status is `failed` and `succeeded()` is false
+        // even though every recorded command succeeded.
+        let dir = TempDir::new("fp-wait");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let fingerprint = capture_fingerprint(dir.path()).expect("fingerprint");
+
+        let outcome = FingerprintedSequenceOutcome {
+            sequence: TestCommandSequenceOutcome {
+                commands: vec![CommandRunOutcome {
+                    exit_code: Some(0),
+                    timed_out: false,
+                    duration: Duration::from_secs(0),
+                    output_tail: None,
+                }],
+            },
+            run_failure: Some(FingerprintedRunFailure {
+                index: 1,
+                error: CommandRunError::Wait,
+            }),
+            before: Some(fingerprint.clone()),
+            after: Some(fingerprint),
+            after_snapshot_failed: false,
+        };
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Failed);
+        let failure = outcome.run_failure().expect("the wait failure is recorded");
+        assert_eq!(failure.index(), 1);
+        assert_eq!(failure.error(), CommandRunError::Wait);
+        assert_eq!(failure.as_str(), "wait_failed");
+        assert_eq!(failure.to_string(), "command 1 did not run: wait_failed");
+        assert!(!outcome.after_snapshot_failed());
+    }
+
+    #[test]
+    fn fingerprinted_errors_and_outcome_do_not_reveal_sensitive_inputs() {
+        let dir = TempDir::new("fp-redact");
+        init_repo(dir.path());
+        write_file(dir.path(), "SUPER_SECRET_OUTPUT_7a3f", "leaked\n");
+        commit(dir.path(), "init", &["SUPER_SECRET_OUTPUT_7a3f"]);
+
+        let error = run_fingerprinted(
+            dir.path(),
+            &["SUPER_SECRET_VALUE=leaked git push"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect_err("git push must be rejected");
+        let rendered = format!("{error:?} {error}");
+        assert!(!rendered.contains("SUPER_SECRET"));
+        assert!(!rendered.contains("leaked"));
+        assert!(!rendered.contains("push"));
+
+        let plain = TempDir::new("fp-redact-plain");
+        let error = run_fingerprinted(
+            plain.path(),
+            &["true"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect_err("a non-repository cannot be fingerprinted");
+        let rendered = format!("{error:?} {error}");
+        assert!(
+            !rendered.contains("tmp"),
+            "no workspace path may leak: {rendered}"
+        );
+        assert!(!rendered.contains(&plain.path().display().to_string()));
+
+        // A failed command's output is available through the explicit
+        // accessor but must never leak through the outcome's `Debug`, and the
+        // fingerprint values are available only through their accessors.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["cat SUPER_SECRET_OUTPUT_7a3f no-such-file-9f2c"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("cat should run");
+        assert!(!outcome.succeeded());
+        assert!(
+            outcome.commands()[0]
+                .output_tail()
+                .is_some_and(|tail| tail.contains("leaked")),
+            "the failure output should be captured by the single runner"
+        );
+        let rendered = format!("{outcome:?}");
+        assert!(!rendered.contains("SUPER_SECRET"));
+        assert!(!rendered.contains("leaked"));
+        assert!(!rendered.contains(&dir.path().display().to_string()));
+        let before = outcome.before().expect("before fingerprint");
+        assert!(!rendered.contains(&before.index_fingerprint().to_hex()));
+        assert!(!rendered.contains(&before.worktree_fingerprint().to_hex()));
+        assert!(!rendered.contains(before.head().expect("committed head").as_str()));
+
+        // The fingerprint's own `Debug` renders presence only, never the
+        // values.
+        let rendered = format!("{before:?}");
+        assert!(!rendered.contains(&before.index_fingerprint().to_hex()));
+        assert!(!rendered.contains(&before.worktree_fingerprint().to_hex()));
+        assert!(!rendered.contains(before.head().expect("committed head").as_str()));
+
+        // A spawn failure is retained in the outcome; neither the outcome nor
+        // the recorded failure may reveal the command text.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["bridge-verifier-secret-executable-9f2c"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the run failure is retained in the outcome");
+        let failure = outcome
+            .run_failure()
+            .expect("the spawn failure is recorded");
+        let rendered = format!("{outcome:?} {failure:?} {failure}");
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("executable-9f2c"));
+        assert!(!rendered.contains(&dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn fingerprinted_error_and_status_identifiers_are_stable() {
+        assert_eq!(
+            FingerprintedSequenceError::BeforeSnapshot.as_str(),
+            "git_fingerprint_failed"
+        );
+        assert_eq!(
+            FingerprintedSequenceError::Rejected {
+                index: 3,
+                reason: TestCommandReason::MissingExecutable,
+            }
+            .as_str(),
+            "missing_executable"
+        );
+        assert_eq!(
+            FingerprintedSequenceError::BeforeSnapshot.to_string(),
+            "git_fingerprint_failed"
+        );
+        assert_eq!(FingerprintedSequenceStatus::Succeeded.as_str(), "succeeded");
+        assert_eq!(FingerprintedSequenceStatus::Failed.as_str(), "failed");
+        assert_eq!(
+            FingerprintedSequenceStatus::GitFingerprintFailed.as_str(),
+            "git_fingerprint_failed"
+        );
+        assert_eq!(
+            FingerprintedSequenceStatus::GitFingerprintFailed.to_string(),
+            "git_fingerprint_failed"
+        );
+        assert_eq!(
+            FingerprintedSequenceStatus::Succeeded.to_string(),
+            "succeeded"
         );
     }
 }

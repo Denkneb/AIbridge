@@ -262,8 +262,9 @@ open невозможен без полной согласованности sid
 **Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
 violations) завершены; шаг **5.1** (test command validation), шаг **5.2**
-(один command runner) и шаг **5.3** (последовательность команд) завершены;
-следующий незавершённый шаг — **5.4** (HEAD/workspace fingerprints).
+(один command runner), шаг **5.3** (последовательность команд) и шаг **5.4**
+(HEAD/workspace fingerprints) завершены; следующий незавершённый шаг —
+**5.5** (side-effect detection).
 
 ## Поток 4. Security и Git
 
@@ -745,6 +746,66 @@ violations) завершены; шаг **5.1** (test command validation), шаг
   detection (5.5), persistence (5.6) и worker/MCP integration не входят.
 
 ### 5.4. HEAD/workspace fingerprints
+
+- **Завершено.** `bridge-verifier` расширен узкой typed-оркестрацией
+  `run_test_command_sequence_fingerprinted(workspace, commands, timeout,
+  tail_bytes) -> Result<FingerprintedSequenceOutcome,
+  FingerprintedSequenceError>` поверх общего с 5.3 внутреннего loop-примитива
+  (private-хелпер над `run_test_command`; публичный контракт 5.3
+  `run_test_command_sequence` сохранён без изменений) и read-only
+  `bridge_git::take_snapshot` (4.7): Git snapshot/fingerprint логика не
+  дублируется, crate получил только локальную dependency `bridge-git`
+  (Cargo.lock — только новая строка в зависимостях `bridge-verifier`).
+  `WorkspaceFingerprint` — typed представление точного reference-тройника
+  `verifier.fingerprint` (HEAD, `index_fingerprint`, `worktree_fingerprint`),
+  взятого из одного bridge-git snapshot, с доступорами `head()`/
+  `index_fingerprint()`/`worktree_fingerprint()` и редактированным `Debug`
+  (значения — только через accessors). Порядок воспроизводит reference
+  `run_round_verification` точно: сначала fail-closed pre-validation всего
+  списка (отклонение любой команды даёт `Rejected { index, reason }` до
+  любого fingerprint и любого spawn), затем пустой список возвращает успешный
+  результат **без** захвата fingerprint, затем before snapshot непосредственно
+  перед sequence, затем команды через общий loop (строгий порядок и
+  stop-on-first-failure/timeout сохранены), затем after snapshot — включая
+  failed/non-zero, timed-out и spawn/wait-failed исходы. Git failure до запуска
+  fail closed (`BeforeSnapshot`, стабильный идентификатор
+  `git_fingerprint_failed`) и гарантирует, что не запущена ни одна
+  test-команда. Spawn/wait failure валидной команды, как reference
+  `spawn_failed` command entry, записывается в outcome: сохраняются предыдущие
+  outcomes, typed `FingerprintedRunFailure` (`index()`/`error()`/`as_str()`:
+  `spawn_failed`/`wait_failed`) и before fingerprint, loop останавливается, а
+  after snapshot всё равно выполняется. Точная reference-семантика failure при
+  after-snapshot зафиксирована в typed API: команды, run failure и before
+  сохраняются в outcome, `after` отсутствует, `after_snapshot_failed()`
+  сообщает failure, а типизированный общий статус
+  `FingerprintedSequenceStatus` (`Succeeded`/`Failed`/`GitFingerprintFailed`,
+  доступоры `status()`/`succeeded()`, стабильные идентификаторы
+  `succeeded`/`failed`/`git_fingerprint_failed`) перезаписывается на
+   `GitFingerprintFailed` (reference `error` + `git_fingerprint_failed`),
+   поверх любого command-failure, поэтому `succeeded()` ложен и
+  after-fingerprint infrastructure failure невозможно интерпретировать как
+  общий успех. Ошибки payload-free; `Debug`/`Display` не раскрывают workspace
+  path, command text, Git output/config, OS errors, secrets и fingerprints;
+  `Debug` outcome редактирован (число команд, типизированный статус). Focused
+  tests во временных synthetic Git repositories покрывают clean sequence
+  (before == after, статус `succeeded`, совпадение с независимым bridge-git
+  snapshot и `git rev-parse HEAD`), tracked+untracked worktree изменение (after
+  отличается, index/HEAD стабильны), staged/index изменение (`git
+  update-index` разрешён замороженной policy и не меняет HEAD), стабильный
+  HEAD и typed mapping (repository без commit → `head` `None`), non-zero и
+  timeout с after (статус `failed`), empty sequence без fingerprint (в том
+  числе в non-repository — доказательство порядка), pre-validation до before
+  snapshot (отклонённый список в non-repository даёт `Rejected`, а не Git
+  failure), pre-snapshot failure без запуска команд, after-snapshot failure
+  согласно reference (`rm -rf .git`: статус перезаписывается на
+  `git_fingerprint_failed`, команды/before сохранены, `succeeded()` ложен),
+  spawn failure с сохранением run и захваченным after, spawn failure с
+  одновременно упавшим after snapshot (статус `git_fingerprint_failed`, run
+  failure и before сохранены), typed-mapping wait failure (тот же путь
+  записи) и redaction (включая recorded run failure). Side-effect
+  detection/сравнение before-after (5.5), persist-once (5.6),
+  multi-repository verifier integration, worker/MCP, schema/fixtures и
+  Git-policy changes не входят; public contracts других crates не менялись.
 
 ### 5.5. Side-effect detection
 

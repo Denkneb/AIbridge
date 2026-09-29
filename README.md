@@ -439,8 +439,27 @@ endpoints. Rust всегда создаёт и использует собств
   порядок, остановка на первом non-zero exit/timeout/spawn failure без запуска
   последующих команд, пустой список даёт пустой успешный результат, результат
   содержит только реально запущенные команды и payload-free `Debug`/`Display`.
-- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.3** завершены,
-  следующий незавершённый шаг — **5.4** (HEAD/workspace fingerprints).
+- Завершён этап **5.4. HEAD/workspace fingerprints**. `bridge-verifier`
+  предоставляет `run_test_command_sequence_fingerprinted(workspace, commands,
+  timeout, tail_bytes) -> Result<FingerprintedSequenceOutcome,
+  FingerprintedSequenceError>` поверх общего с 5.3 внутреннего loop-примитива
+  (публичный контракт 5.3 сохранён) и read-only `bridge_git::take_snapshot`
+  (без дублирования Git логики): reference-порядок (fail-closed pre-validation
+  всего списка → пустой список без fingerprint → before snapshot → sequence →
+  after snapshot даже при non-zero/timeout/spawn failure), typed
+  `WorkspaceFingerprint` с доступорами `head()`/`index_fingerprint()`/
+  `worktree_fingerprint()`, fail-closed `BeforeSnapshot`
+  (`git_fingerprint_failed`) без запуска ни одной команды, spawn/wait failure
+  как reference `spawn_failed` entry — сохранённый в outcome typed
+  `FingerprintedRunFailure` с предыдущими outcomes и всё равно захваченным
+  after, after-failure по reference (команды, run failure и before сохранены,
+  `after` отсутствует, `after_snapshot_failed()`, а typed общий статус
+  `FingerprintedSequenceStatus` перезаписывается на `git_fingerprint_failed`,
+  поэтому `succeeded()` ложен и infra-failure не интерпретируется как успех),
+  payload-free ошибки и редактированные `Debug`/`Display` без workspace path,
+  command text, Git output и fingerprints.
+- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.4** завершены,
+  следующий незавершённый шаг — **5.5** (side-effect detection).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

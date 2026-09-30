@@ -1,6 +1,7 @@
-//! Verifier command runners and workspace fingerprints (tasks 5.2-5.4).
+//! Verifier command runners, workspace fingerprints and side-effect detection
+//! (tasks 5.2-5.5).
 //!
-//! This crate implements three narrow production primitives over the shared
+//! This crate implements four narrow production primitives over the shared
 //! fail-closed command policy and the read-only Git snapshot layer:
 //!
 //! - [`run_test_command`] runs one already-agreed test command string and
@@ -12,10 +13,15 @@
 //! - [`run_test_command_sequence_fingerprinted`] wraps such a sequence with the
 //!   Git fingerprint of the workspace captured immediately before and after
 //!   it, reusing the read-only [`bridge_git::take_snapshot`] instead of
-//!   duplicating any Git snapshot or fingerprint logic.
+//!   duplicating any Git snapshot or fingerprint logic;
+//! - [`FingerprintedSequenceOutcome::side_effects`] compares the worktree
+//!   manifests captured by those two snapshots into a typed
+//!   [`WorkspaceSideEffects`] that lists the repository-relative paths created
+//!   or modified by the run, matching the frozen reference
+//!   `Verification.side_effects` contract without inferring paths from the
+//!   aggregate fingerprint digest.
 //!
-//! It deliberately does **not** detect side effects or persist anything; those
-//! are tasks 5.5-5.6.
+//! It deliberately does **not** persist anything; that is task 5.6.
 //!
 //! # Contract
 //!
@@ -111,6 +117,33 @@
 //! HEAD commit, the index fingerprint and the worktree fingerprint — taken from
 //! that single bridge-git snapshot and exposed through typed accessors.
 //!
+//! # Side effects
+//!
+//! [`FingerprintedSequenceOutcome::side_effects`] is exactly the frozen
+//! reference `Verification.side_effects`: the repository-relative paths created
+//! or modified by the run. It is computed from the before and after worktree
+//! manifests captured by [`bridge_git::take_snapshot`] — the same manifest data
+//! that feeds the worktree fingerprint — never from the aggregate fingerprint
+//! digest alone:
+//!
+//! - an entry whose after digest differs from its before digest is reported;
+//! - an entry that exists only after the run (created) is reported;
+//! - an entry that exists only before the run (deleted) is reported.
+//!
+//! The resulting paths are sorted and deduplicated and are carried as raw
+//! [`OsString`] bytes, so a non-UTF-8 repository-relative path survives
+//! unchanged (for example `.pytest_cache/v`). The comparison is independent of
+//! how the commands went: a non-zero exit, a timeout or a recorded spawn/wait
+//! failure still compares the captured snapshots.
+//!
+//! A clean non-empty run reports an empty [`WorkspaceSideEffects`] (`Some` with
+//! no paths). An empty command list captures no fingerprints and reports no
+//! side effects (`side_effects` is `None`). A failed after Git snapshot leaves
+//! the after fingerprint unavailable; it remains the infrastructure failure
+//! reported by [`FingerprintedSequenceOutcome::after_snapshot_failed`] and
+//! [`FingerprintedSequenceStatus::GitFingerprintFailed`], and `side_effects`
+//! stays `None` rather than being misclassified as a clean path result.
+//!
 //! # Output bound
 //!
 //! Output is never accumulated without limit: each stream is drained on its own
@@ -122,16 +155,21 @@
 //!
 //! [`CommandRunError`], [`CommandSequenceError`],
 //! [`FingerprintedSequenceError`], [`FingerprintedRunFailure`],
-//! [`FingerprintedSequenceStatus`], [`TestCommandSequenceOutcome`] and
-//! [`FingerprintedSequenceOutcome`] carry no command text, argv, environment,
-//! workspace path, output or fingerprint values, so `Debug`/`Display` can never
-//! leak a sensitive input. The sequence outcome exposes per-command output only
-//! through the explicit [`CommandRunOutcome::output_tail`] accessor, never
-//! through its `Debug` rendering; the fingerprint values are likewise available
-//! only through the explicit [`WorkspaceFingerprint`] accessors, never through
-//! a `Debug` rendering of a verification result.
+//! [`FingerprintedSequenceStatus`], [`TestCommandSequenceOutcome`],
+//! [`FingerprintedSequenceOutcome`] and [`WorkspaceSideEffects`] carry no
+//! command text, argv, environment, workspace path, output or fingerprint
+//! values, so `Debug`/`Display` can never leak a sensitive input. The sequence
+//! outcome exposes per-command output only through the explicit
+//! [`CommandRunOutcome::output_tail`] accessor, never through its `Debug`
+//! rendering; the fingerprint values are likewise available only through the
+//! explicit [`WorkspaceFingerprint`] accessors, never through a `Debug`
+//! rendering of a verification result. The exact side-effect paths are available
+//! only through the explicit [`WorkspaceSideEffects::paths`] accessor; their
+//! `Debug`/`Display` rendering reports only the number of paths.
 
+use std::collections::BTreeSet;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -144,7 +182,7 @@ use std::time::{Duration, Instant};
 use bridge_command_policy::{
     PolicyReason, TestCommandReason, leading_assignments, split_command, validate_test_commands,
 };
-use bridge_git::{CommitId, IndexFingerprint, WorktreeFingerprint};
+use bridge_git::{CommitId, IndexFingerprint, WorktreeFingerprint, WorktreeManifest};
 use command_group::CommandGroup;
 
 /// Default bounded output tail in bytes, matching the reference
@@ -601,8 +639,11 @@ fn run_commands_stopping_at_first_failure(
 ///
 /// The triple is exactly the reference `verifier.fingerprint` compact record:
 /// the HEAD commit, the index fingerprint and the worktree fingerprint. The
-/// values are taken from a single read-only [`bridge_git::take_snapshot`] and
-/// are never recomputed here, so this layer adds no Git logic of its own.
+/// values, together with the worktree manifest that produced the worktree
+/// fingerprint, are taken from a single read-only [`bridge_git::take_snapshot`]
+/// and are never recomputed here, so this layer adds no Git logic of its own.
+/// The manifest is retained privately so that [`WorkspaceSideEffects`] can list
+/// the exact changed paths instead of inferring them from the aggregate digest.
 ///
 /// `Debug` renders only whether a HEAD commit exists; the exact commit id and
 /// the digests are available through the accessors, never through a debug
@@ -612,6 +653,7 @@ pub struct WorkspaceFingerprint {
     head: Option<CommitId>,
     index_fingerprint: IndexFingerprint,
     worktree_fingerprint: WorktreeFingerprint,
+    manifest: WorktreeManifest,
 }
 
 impl WorkspaceFingerprint {
@@ -640,6 +682,86 @@ impl fmt::Debug for WorkspaceFingerprint {
         f.debug_struct("WorkspaceFingerprint")
             .field("head", &self.head.is_some())
             .finish()
+    }
+}
+
+/// Returns the sorted, deduplicated repository-relative paths whose worktree
+/// manifest entry changed between `before` and `after`.
+///
+/// This is exactly the reference `verifier._manifest_changes`: a path is
+/// reported when its after digest differs from its before digest, when it
+/// exists only in `after` (created) or when it exists only in `before`
+/// (deleted). The aggregate worktree fingerprint digest is never used to infer
+/// paths; the manifest entries are. Paths are raw [`OsString`] bytes and stay
+/// repository-relative.
+fn changed_paths(before: &WorktreeManifest, after: &WorktreeManifest) -> Vec<OsString> {
+    let mut paths = BTreeSet::new();
+    for entry in after.entries() {
+        if before.digest(entry.path()) != Some(entry.digest()) {
+            paths.insert(entry.path().to_os_string());
+        }
+    }
+    for entry in before.entries() {
+        if after.digest(entry.path()).is_none() {
+            paths.insert(entry.path().to_os_string());
+        }
+    }
+    paths.into_iter().collect()
+}
+
+/// The repository-relative paths created or modified by a fingerprinted command
+/// sequence.
+///
+/// This is exactly the frozen reference `Verification.side_effects`: the
+/// worktree manifest entries whose content or type changed between the before
+/// and after snapshots plus every entry that was deleted, sorted and
+/// deduplicated. Paths are repository-relative (for example `.pytest_cache/v`)
+/// and are carried as raw [`OsString`] bytes so a non-UTF-8 path is never
+/// decoded lossily.
+///
+/// The exact paths are exposed through [`paths`](Self::paths); `Debug` and
+/// `Display` are redacting and render only the number of paths, so a
+/// verification result can never leak workspace file names through its debug
+/// rendering.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WorkspaceSideEffects {
+    paths: Vec<OsString>,
+}
+
+impl WorkspaceSideEffects {
+    /// Returns the sorted, deduplicated repository-relative side-effect paths.
+    #[must_use]
+    pub fn paths(&self) -> &[OsString] {
+        &self.paths
+    }
+
+    /// Returns the number of side-effect paths.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// Returns whether the sequence produced no side effects.
+    ///
+    /// True exactly when no repository-relative path changed. A clean non-empty
+    /// run reports an empty result; no available result is `None` instead.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
+impl fmt::Debug for WorkspaceSideEffects {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkspaceSideEffects")
+            .field("paths", &self.paths.len())
+            .finish()
+    }
+}
+
+impl fmt::Display for WorkspaceSideEffects {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "side_effects={}", self.paths.len())
     }
 }
 
@@ -887,6 +1009,43 @@ impl FingerprintedSequenceOutcome {
     pub fn succeeded(&self) -> bool {
         self.status() == FingerprintedSequenceStatus::Succeeded
     }
+
+    /// Returns the repository-relative paths created or modified by the
+    /// sequence, or `None` when no result is available.
+    ///
+    /// This is exactly the frozen reference `Verification.side_effects`: the
+    /// worktree manifest entries whose content or type changed between the
+    /// before and after snapshots plus every entry that was deleted, sorted and
+    /// deduplicated. The paths are repository-relative (for example
+    /// `.pytest_cache/v`) and are computed from the manifests captured by the
+    /// two read-only snapshots, never inferred from the aggregate fingerprint
+    /// digest. The comparison is independent of how the commands went: a
+    /// non-zero exit, a timeout or a recorded spawn/wait failure still compares
+    /// the captured snapshots.
+    ///
+    /// `None` means no side-effect result is available, never "no changes":
+    ///
+    /// - an empty command list captures no fingerprints at all and reports no
+    ///   side effects;
+    /// - a failed after Git snapshot leaves [`after`](Self::after) unavailable.
+    ///   That remains the infrastructure failure reported by
+    ///   [`after_snapshot_failed`](Self::after_snapshot_failed) and
+    ///   [`status`](Self::status) ([`FingerprintedSequenceStatus::GitFingerprintFailed`])
+    ///   and is never misclassified as a clean path result.
+    ///
+    /// A clean non-empty run reports an empty [`WorkspaceSideEffects`]
+    /// (`Some` with no paths), which stays distinct from both `None` cases. The
+    /// result carries only repository-relative paths, never a commit id,
+    /// digest, command text or output.
+    #[must_use]
+    pub fn side_effects(&self) -> Option<WorkspaceSideEffects> {
+        match (self.before.as_ref(), self.after.as_ref()) {
+            (Some(before), Some(after)) => Some(WorkspaceSideEffects {
+                paths: changed_paths(&before.manifest, &after.manifest),
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for FingerprintedSequenceOutcome {
@@ -1005,6 +1164,7 @@ fn capture_fingerprint(workspace: &Path) -> Result<WorkspaceFingerprint, bridge_
         head: snapshot.head().cloned(),
         index_fingerprint: *snapshot.index_fingerprint(),
         worktree_fingerprint: *snapshot.worktree_fingerprint(),
+        manifest: snapshot.manifest().clone(),
     })
 }
 
@@ -1164,8 +1324,9 @@ mod tests {
     use super::{
         CommandRunError, CommandRunOutcome, CommandSequenceError, DEFAULT_TAIL_BYTES,
         FingerprintedRunFailure, FingerprintedSequenceError, FingerprintedSequenceOutcome,
-        FingerprintedSequenceStatus, TestCommandSequenceOutcome, capture_fingerprint,
-        run_test_command, run_test_command_sequence, run_test_command_sequence_fingerprinted,
+        FingerprintedSequenceStatus, TestCommandSequenceOutcome, WorkspaceSideEffects,
+        capture_fingerprint, run_test_command, run_test_command_sequence,
+        run_test_command_sequence_fingerprinted,
     };
     use bridge_command_policy::{PolicyReason, TestCommandReason};
     use std::path::{Path, PathBuf};
@@ -1315,6 +1476,15 @@ mod tests {
             .expect("decode HEAD")
             .trim()
             .to_owned()
+    }
+
+    /// Renders the exact side-effect paths for an assertion.
+    fn paths(effects: &WorkspaceSideEffects) -> Vec<String> {
+        effects
+            .paths()
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
@@ -2418,5 +2588,307 @@ mod tests {
             FingerprintedSequenceStatus::Succeeded.to_string(),
             "succeeded"
         );
+    }
+
+    #[test]
+    fn clean_sequence_reports_no_side_effect_paths() {
+        let dir = TempDir::new("se-clean");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
+        assert!(effects.paths().is_empty());
+    }
+
+    #[test]
+    fn side_effects_report_tracked_modification_and_untracked_creation() {
+        let dir = TempDir::new("se-paths");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.txt", "one\n");
+        write_file(dir.path(), "b.txt", "two\n");
+        commit(dir.path(), "init", &["a.txt", "b.txt"]);
+
+        // A tracked content change and a new untracked file are both reported as
+        // repository-relative paths; nothing is staged and no commit happens.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["cp a.txt b.txt", "touch untracked.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+        assert_eq!(
+            paths(&effects),
+            vec!["b.txt".to_owned(), "untracked.txt".to_owned()]
+        );
+    }
+
+    #[test]
+    fn side_effects_report_a_deleted_tracked_path() {
+        let dir = TempDir::new("se-delete");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.txt", "one\n");
+        write_file(dir.path(), "b.txt", "two\n");
+        commit(dir.path(), "init", &["a.txt", "b.txt"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["rm b.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+        assert_eq!(paths(&effects), vec!["b.txt".to_owned()]);
+    }
+
+    #[test]
+    fn side_effects_report_multiple_paths_sorted_and_deduplicated() {
+        let dir = TempDir::new("se-multi");
+        init_repo(dir.path());
+        write_file(dir.path(), "a.txt", "a\n");
+        write_file(dir.path(), "b.txt", "b\n");
+        write_file(dir.path(), "c.txt", "c\n");
+        commit(dir.path(), "init", &["a.txt", "b.txt", "c.txt"]);
+
+        // One tracked modification (`b.txt`), one untracked creation
+        // (`z_mod.txt`), another untracked creation (`z_new.txt`) and one
+        // deletion (`c.txt`), in input order that is deliberately not sorted.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &[
+                "cp a.txt b.txt",
+                "cp a.txt z_mod.txt",
+                "touch z_new.txt",
+                "rm c.txt",
+            ],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+        assert_eq!(
+            paths(&effects),
+            vec![
+                "b.txt".to_owned(),
+                "c.txt".to_owned(),
+                "z_mod.txt".to_owned(),
+                "z_new.txt".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_files_are_not_side_effects() {
+        let dir = TempDir::new("se-ignored");
+        init_repo(dir.path());
+        write_file(dir.path(), ".gitignore", "*.log\n");
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &[".gitignore", "module.py"]);
+
+        // An ignored file never enters the worktree manifest, so it is not a
+        // path side effect even though it was created by the run.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["touch debug.log"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+        assert!(
+            effects.is_empty(),
+            "an ignored file must not be reported as a side effect"
+        );
+    }
+
+    #[test]
+    fn side_effects_are_reported_for_a_nonzero_command_failure() {
+        let dir = TempDir::new("se-nonzero");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["touch ran.txt", "false", "touch never.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.status(), FingerprintedSequenceStatus::Failed);
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured for a failed sequence");
+        assert_eq!(paths(&effects), vec!["ran.txt".to_owned()]);
+        assert!(
+            !dir.path().join("never.txt").exists(),
+            "commands after the first failure must not run"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn side_effects_are_reported_after_a_timeout() {
+        let dir = TempDir::new("se-timeout");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["touch ran.txt", "sleep 98765.4321"],
+            Duration::from_millis(200),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(!outcome.succeeded());
+        assert!(outcome.commands()[1].timed_out());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured for a timed-out sequence");
+        assert_eq!(paths(&effects), vec!["ran.txt".to_owned()]);
+    }
+
+    #[test]
+    fn empty_sequence_reports_no_side_effects() {
+        let dir = TempDir::new("se-empty");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        let outcome =
+            run_fingerprinted(dir.path(), &[], Duration::from_secs(5), DEFAULT_TAIL_BYTES)
+                .expect("an empty list is valid");
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.before(), None);
+        assert_eq!(outcome.after(), None);
+        assert_eq!(
+            outcome.side_effects(),
+            None,
+            "an empty command list must not report side effects"
+        );
+    }
+
+    #[test]
+    fn before_snapshot_failure_reports_no_side_effects() {
+        let plain = TempDir::new("se-before-failed");
+        let error = run_fingerprinted(
+            plain.path(),
+            &["touch marker.txt"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect_err("a non-repository cannot be fingerprinted");
+        assert_eq!(error, FingerprintedSequenceError::BeforeSnapshot);
+        assert!(
+            !plain.path().join("marker.txt").exists(),
+            "a failed before snapshot must not run any command"
+        );
+    }
+
+    #[test]
+    fn after_snapshot_failure_is_not_misclassified_as_side_effects() {
+        let dir = TempDir::new("se-after-failed");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+
+        // Deleting `.git` makes only the after snapshot fail while the command
+        // succeeds. The unavailable after fingerprint stays an infrastructure
+        // failure and must never be reported as a clean path result.
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["rm -rf .git"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.commands()[0].succeeded());
+        assert!(outcome.after_snapshot_failed());
+        assert_eq!(outcome.after(), None);
+        assert_eq!(outcome.side_effects(), None);
+        assert_eq!(
+            outcome.status(),
+            FingerprintedSequenceStatus::GitFingerprintFailed
+        );
+        assert!(!outcome.succeeded());
+    }
+
+    #[test]
+    fn side_effects_do_not_reveal_sensitive_inputs() {
+        let dir = TempDir::new("se-redact");
+        init_repo(dir.path());
+        write_file(dir.path(), "SUPER_SECRET_OUTPUT_7a3f", "leaked\n");
+        commit(dir.path(), "init", &["SUPER_SECRET_OUTPUT_7a3f"]);
+
+        let outcome = run_fingerprinted(
+            dir.path(),
+            &["touch SUPER_SECRET_CREATED_5c1f"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .expect("the sequence should run");
+        assert!(outcome.succeeded());
+        let effects = outcome
+            .side_effects()
+            .expect("both fingerprints are captured");
+
+        // The exact repository-relative path is available only through the
+        // explicit accessor.
+        assert_eq!(
+            paths(&effects),
+            vec!["SUPER_SECRET_CREATED_5c1f".to_owned()]
+        );
+
+        // `Debug`/`Display` render only the number of paths, never the path
+        // itself, a fingerprint, command text, output or workspace path.
+        assert_eq!(format!("{effects:?}"), "WorkspaceSideEffects { paths: 1 }");
+        assert_eq!(format!("{effects}"), "side_effects=1");
+        let rendered = format!("{effects:?} {effects}");
+        assert!(!rendered.contains("SUPER_SECRET"));
+        assert!(!rendered.contains("leaked"));
+        assert!(!rendered.contains(&dir.path().display().to_string()));
+
+        let before = outcome.before().expect("before fingerprint");
+        assert!(!rendered.contains(&before.index_fingerprint().to_hex()));
+        assert!(!rendered.contains(&before.worktree_fingerprint().to_hex()));
+        assert!(!rendered.contains(before.head().expect("committed head").as_str()));
+
+        // The outcome's own `Debug` renders only the count and status, never the
+        // side-effect paths, output or fingerprints.
+        let rendered = format!("{outcome:?}");
+        assert!(!rendered.contains("SUPER_SECRET"));
+        assert!(!rendered.contains("leaked"));
+        assert!(!rendered.contains(&before.index_fingerprint().to_hex()));
+        assert!(!rendered.contains(&before.worktree_fingerprint().to_hex()));
+        assert!(!rendered.contains(before.head().expect("committed head").as_str()));
     }
 }

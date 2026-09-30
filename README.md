@@ -458,8 +458,26 @@ endpoints. Rust всегда создаёт и использует собств
   поэтому `succeeded()` ложен и infra-failure не интерпретируется как успех),
   payload-free ошибки и редактированные `Debug`/`Display` без workspace path,
   command text, Git output и fingerprints.
-- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.4** завершены,
-  следующий незавершённый шаг — **5.5** (side-effect detection).
+- Завершён этап **5.5. Side-effect detection** (path-based contract).
+  `FingerprintedSequenceOutcome::side_effects() -> Option<WorkspaceSideEffects>`
+  возвращает ровно frozen reference `Verification.side_effects`:
+  repository-relative пути, созданные или изменённые прогоном, — записи
+  worktree manifest (из тех же read-only `bridge_git::take_snapshot`, что дают
+  `workspace`-fingerprint), у которых изменился digest, плюс созданные и
+  удалённые пути; список отсортирован и дедуплицирован, пути хранятся как
+  `OsString` (например `.pytest_cache/v`). Пути не выводятся из агрегатного
+  fingerprint digest. Сравнение выполняется независимо от исхода команд
+  (non-zero, timeout, recorded spawn/wait failure). Clean non-empty прогон даёт
+  пустой `WorkspaceSideEffects` (`Some` без путей), пустой список команд не
+  захватывает fingerprints (`side_effects()` `None`), а недоступный after
+  fingerprint остаётся infrastructure failure (`side_effects()` `None`,
+  `after_snapshot_failed()` и статус `git_fingerprint_failed`,
+  `succeeded()==false`) и не мис-классифицируется как clean path result.
+  Точные пути доступны только через `paths()`; `Debug`/`Display` outcome и
+  side effects редактированы (только число путей) и не раскрывают пути,
+  commit id, digest, command text, output и secrets.
+- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.5** завершены,
+  следующий незавершённый шаг — **5.6** (persist-once semantics).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

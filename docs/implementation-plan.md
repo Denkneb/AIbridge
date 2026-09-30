@@ -262,9 +262,9 @@ open невозможен без полной согласованности sid
 **Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
 violations) завершены; шаг **5.1** (test command validation), шаг **5.2**
-(один command runner), шаг **5.3** (последовательность команд) и шаг **5.4**
-(HEAD/workspace fingerprints) завершены; следующий незавершённый шаг —
-**5.5** (side-effect detection).
+(один command runner), шаг **5.3** (последовательность команд), шаг **5.4**
+(HEAD/workspace fingerprints) и шаг **5.5** (side-effect detection) завершены;
+следующий незавершённый шаг — **5.6** (persist-once semantics).
 
 ## Поток 4. Security и Git
 
@@ -808,6 +808,43 @@ violations) завершены; шаг **5.1** (test command validation), шаг
   Git-policy changes не входят; public contracts других crates не менялись.
 
 ### 5.5. Side-effect detection
+
+- **Завершено (исправлено по ревью).** `bridge-verifier` расширен узким
+  typed-слоем path-based side effects поверх завершённого шага 5.4; Git-логика
+  не дублируется, новых зависимостей и публичных контрактов других crates не
+  добавлено. `WorkspaceFingerprint` сохраняет приватный `WorktreeManifest`
+  снимка, а
+  `FingerprintedSequenceOutcome::side_effects() -> Option<WorkspaceSideEffects>`
+  возвращает ровно frozen reference `Verification.side_effects`:
+  repository-relative пути, созданные или изменённые прогоном. Список
+  вычисляется из before/after manifest-записей, а не из агрегатного fingerprint
+  digest: путь попадает в результат, если его after digest отличается от before,
+  или он есть только в after (создание), или только в before (удаление); список
+  отсортирован и дедуплицирован, пути хранятся как `OsString` (например
+  `.pytest_cache/v`), поэтому non-UTF-8 путь не декодируется lossy. Сравнение
+  независимо от исхода команд (non-zero, timeout и recorded spawn/wait failure
+  всё равно сравнивают захваченные снимки). Clean non-empty прогон даёт пустой
+  `WorkspaceSideEffects` (`Some` без путей), пустой список команд не захватывает
+  fingerprints и не сообщает side effects (`None`), а недоступный after
+  fingerprint из-за Git failure остаётся инфраструктурной ошибкой:
+  `side_effects()` возвращает `None` (никогда не clean path result), а
+  `after_snapshot_failed()`/`status()` (`git_fingerprint_failed`) и
+  `succeeded()==false` сохраняются, поэтому clean run и infrastructure failure
+  не смешиваются. Точные пути доступны только через `paths()`; `Debug`/`Display`
+  outcome и side effects редактированы (side effects рендерят только число
+  путей) и не раскрывают пути, commit id, digest, command text, output или
+  secrets. Focused tests во временных synthetic repositories покрывают clean
+  sequence (пустой результат), tracked modification и untracked creation (точный
+  sorted список `b.txt`/`untracked.txt`), удаление tracked-файла, несколько путей
+  одновременно (сортировка и дедупликация), ignored-файл не является side
+  effect, non-zero и timeout с всё равно вычисленными путями, пустой список без
+  side effects, before-snapshot failure без запуска команд, after-snapshot
+  failure без мис-классификации (`side_effects()` `None`, статус
+  `git_fingerprint_failed`) и redaction (точный путь только через `paths()`,
+  редактированные `Debug`/`Display` без путей и fingerprint-значений).
+  Persist-once (5.6), persistence, multi-repository/worker/MCP integration,
+  schema/fixtures и Git-policy changes не входят; public contracts других crates
+  не менялись.
 
 ### 5.6. Persist-once semantics
 

@@ -1,8 +1,9 @@
-//! Verifier command runners, workspace fingerprints and side-effect detection
-//! (tasks 5.2-5.5).
+//! Verifier command runners, workspace fingerprints, side-effect detection and
+//! persist-once orchestration (tasks 5.2-5.6).
 //!
-//! This crate implements four narrow production primitives over the shared
-//! fail-closed command policy and the read-only Git snapshot layer:
+//! This crate implements five narrow production primitives over the shared
+//! fail-closed command policy, the read-only Git snapshot layer and the atomic
+//! storage verifier lifecycle:
 //!
 //! - [`run_test_command`] runs one already-agreed test command string and
 //!   returns a typed outcome compatible in meaning with the reference Python
@@ -19,9 +20,14 @@
 //!   [`WorkspaceSideEffects`] that lists the repository-relative paths created
 //!   or modified by the run, matching the frozen reference
 //!   `Verification.side_effects` contract without inferring paths from the
-//!   aggregate fingerprint digest.
-//!
-//! It deliberately does **not** persist anything; that is task 5.6.
+//!   aggregate fingerprint digest;
+//! - [`run_round_verification_persisted`] links that verification flow to the
+//!   existing atomic storage lifecycle ([`bridge_storage::StorageConnection::begin_verifier`]
+//!   and [`bridge_storage::StorageConnection::complete_verifier`]): a finished
+//!   persisted result is reused without spawning anything, and a fresh result is
+//!   converted into the compact [`bridge_domain::Verification`] and persisted
+//!   exactly once, so a concurrent or recovery replay is idempotent and a
+//!   conflicting result fails closed.
 //!
 //! # Contract
 //!
@@ -166,7 +172,45 @@
 //! rendering of a verification result. The exact side-effect paths are available
 //! only through the explicit [`WorkspaceSideEffects::paths`] accessor; their
 //! `Debug`/`Display` rendering reports only the number of paths.
-
+//!
+//! # Persist-once
+//!
+//! [`run_round_verification_persisted`] is the narrow orchestration boundary
+//! between the verifier flow above and the existing atomic storage lifecycle
+//! (task 3.9b). It neither re-implements command running or fingerprinting nor
+//! touches SQLite directly; it composes
+//! [`run_test_command_sequence_fingerprinted`] with
+//! [`bridge_storage::StorageConnection::begin_verifier`] and
+//! [`bridge_storage::StorageConnection::complete_verifier`]:
+//!
+//! 1. **begin first.** [`bridge_storage::StorageConnection::begin_verifier`] is
+//!    called before any command. When the round is already
+//!    [`bridge_domain::VerifierState::Done`], the stored
+//!    [`bridge_domain::Verification`] is reused and **no** test command is ever
+//!    spawned ([`PersistedVerificationOutcome::Reused`]);
+//! 2. **run and convert.** For a new or `running` verifier the exact reference
+//!    order of [`run_test_command_sequence_fingerprinted`] is preserved
+//!    (pre-validation of the whole list, before fingerprint, commands, after
+//!    fingerprint) and its typed outcome is converted into the compact
+//!    [`bridge_domain::Verification`]: `passed`/`failed`/`timed_out` for a run,
+//!    `unsafe` with `index`/`reason` for a rejected list and `error` with
+//!    `git_fingerprint_failed` for a failed fingerprint (a before-snapshot
+//!    failure keeps no commands/fingerprints, while an after-snapshot failure
+//!    keeps the commands that ran and the before fingerprint with `after`/
+//!    `side_effects` absent);
+//! 3. **persist once.** The converted verification is handed to
+//!    [`bridge_storage::StorageConnection::complete_verifier`], which persists
+//!    it exactly once. An identical already-persisted result is replayed
+//!    ([`PersistedVerificationOutcome::Replayed`]) and a **different** one fails
+//!    closed as [`PersistVerificationError::Conflict`] without overwriting the
+//!    stored result.
+//!
+//! The conversion only builds the compact persisted record; it never re-runs a
+//! command or recomputes a fingerprint. `Debug`/`Display` of
+//! [`PersistedVerification`], [`PersistedVerificationOutcome`] and
+//! [`PersistVerificationError`] are redacting: they never render task/project
+//! ids, commands, paths, output, fingerprints, SQL or secrets.
+//!
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::ffi::OsString;
@@ -182,12 +226,21 @@ use std::time::{Duration, Instant};
 use bridge_command_policy::{
     PolicyReason, TestCommandReason, leading_assignments, split_command, validate_test_commands,
 };
+use bridge_domain::{GitFingerprint, Verification, VerificationCommand, VerificationStatus};
 use bridge_git::{CommitId, IndexFingerprint, WorktreeFingerprint, WorktreeManifest};
+use bridge_storage::{
+    CompleteVerifierInput, RoundRef, RoundUpdateError, RoundUpdateOutcome, StorageConnection,
+    VerifierUpdateOutcome,
+};
 use command_group::CommandGroup;
 
 /// Default bounded output tail in bytes, matching the reference
 /// `DEFAULT_TAIL_BYTES`.
 pub const DEFAULT_TAIL_BYTES: usize = 4000;
+
+/// The stable reference reason persisted for a verifier Git fingerprint
+/// failure (`status=error`), matching the frozen Python contract.
+const GIT_FINGERPRINT_FAILED: &str = "git_fingerprint_failed";
 
 /// How often the parent polls a running child before its deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -1319,18 +1372,488 @@ impl TailReader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Persist-once orchestration (task 5.6).
+//
+// The orchestration composes the existing fingerprinted verifier flow with the
+// atomic storage verifier lifecycle (task 3.9b). It never runs a command or
+// touches SQLite itself: `begin_verifier` decides whether a finished result is
+// reused, the fingerprinted sequence produces the outcome, and
+// `complete_verifier` persists it exactly once.
+// ---------------------------------------------------------------------------
+
+/// How a persisted verifier result was obtained (task 5.6).
+///
+/// The variants are payload-free; `Debug`/`Display` render only the stable
+/// identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PersistedVerificationOutcome {
+    /// A finished (`done`) result was already persisted; it was reused and **no**
+    /// test command ran.
+    Reused,
+    /// This call ran the verification and persisted a new result for the first
+    /// time.
+    Persisted,
+    /// An identical result was already persisted by a concurrent writer; the
+    /// stored result was replayed without a write.
+    Replayed,
+}
+
+impl PersistedVerificationOutcome {
+    /// Returns the stable, payload-free identifier for this outcome.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Persisted => "persisted",
+            Self::Replayed => "replayed",
+        }
+    }
+}
+
+impl fmt::Display for PersistedVerificationOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The result of [`run_round_verification_persisted`].
+///
+/// The compact [`Verification`] is always the exact persisted value (the reused
+/// stored one, the newly written one or the replayed one) and the outcome
+/// records which of those happened. `Debug` is redacting: it renders only the
+/// outcome and the verification status, never command text, output,
+/// fingerprints or paths.
+#[derive(Clone, PartialEq)]
+pub struct PersistedVerification {
+    verification: Verification,
+    outcome: PersistedVerificationOutcome,
+}
+
+impl PersistedVerification {
+    /// Returns the persisted compact verification.
+    #[must_use]
+    pub fn verification(&self) -> &Verification {
+        &self.verification
+    }
+
+    /// Returns how the persisted result was obtained.
+    #[must_use]
+    pub fn outcome(&self) -> PersistedVerificationOutcome {
+        self.outcome
+    }
+
+    /// Returns whether a finished result was reused without running any command.
+    #[must_use]
+    pub fn reused(&self) -> bool {
+        self.outcome == PersistedVerificationOutcome::Reused
+    }
+
+    /// Returns whether this call persisted a new result.
+    #[must_use]
+    pub fn persisted(&self) -> bool {
+        self.outcome == PersistedVerificationOutcome::Persisted
+    }
+
+    /// Returns whether an identical already-persisted result was replayed.
+    #[must_use]
+    pub fn replayed(&self) -> bool {
+        self.outcome == PersistedVerificationOutcome::Replayed
+    }
+}
+
+impl fmt::Debug for PersistedVerification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistedVerification")
+            .field("outcome", &self.outcome.as_str())
+            .field("status", &self.verification.status.as_str())
+            .finish()
+    }
+}
+
+/// Why a persist-once verification round did not complete.
+///
+/// The error carries no task/project ids, commands, paths, output, fingerprints,
+/// SQL or secrets. Both `Debug` and `Display` render only a stable, payload-free
+/// identifier; the underlying storage error is reachable only through
+/// [`Error::source`].
+#[non_exhaustive]
+pub enum PersistVerificationError {
+    /// A storage lifecycle operation (`begin_verifier`/`complete_verifier`)
+    /// failed. The wrapped error is reachable through [`Error::source`] and is
+    /// never rendered by this type's `Debug`/`Display`.
+    Storage(RoundUpdateError),
+    /// A different verifier result is already persisted for the round; nothing
+    /// was overwritten.
+    Conflict,
+    /// The storage returned an outcome without a persisted verification for a
+    /// round that must have one.
+    InvalidState,
+}
+
+impl PersistVerificationError {
+    /// Returns the stable, payload-free identifier for this error.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Storage(_) => "storage_failed",
+            Self::Conflict => "verifier_result_conflict",
+            Self::InvalidState => "invalid_persisted_state",
+        }
+    }
+}
+
+impl fmt::Display for PersistVerificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for PersistVerificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("PersistVerificationError")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
+impl Error for PersistVerificationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Storage(error) => Some(error),
+            Self::Conflict | Self::InvalidState => None,
+        }
+    }
+}
+
+/// Runs a round verification and persists its compact result exactly once
+/// (task 5.6).
+///
+/// The orchestration composes the existing primitives without duplicating any
+/// command, fingerprint or storage logic:
+///
+/// 1. [`bridge_storage::StorageConnection::begin_verifier`] is called **before**
+///    any command. When the round is already `done`, the stored
+///    [`Verification`] is returned and **no** test command is spawned
+///    ([`PersistedVerificationOutcome::Reused`]);
+/// 2. for a new or `running` verifier the exact reference order of
+///    [`run_test_command_sequence_fingerprinted`] is preserved (whole-list
+///    pre-validation, before fingerprint, commands, after fingerprint). Its
+///    typed outcome is converted into the compact [`Verification`]:
+///    `passed`/`failed`/`timed_out` for a run, `unsafe` with `index`/`reason`
+///    for a rejected list and `error` with `git_fingerprint_failed` for a
+///    failed fingerprint. A **before**-snapshot failure fails closed with no
+///    commands or fingerprints; an **after**-snapshot failure keeps the
+///    commands that ran (including a recorded `spawn_failed`/`wait_failed`
+///    entry) and the `before` fingerprint, leaves `after`/`side_effects` absent
+///    and only overwrites the status, exactly like the frozen 5.4 contract. The
+///    log reference is the frozen `verification/<task_id>/round_<round_number>`;
+/// 3. the converted verification is handed to
+///    [`bridge_storage::StorageConnection::complete_verifier`], which persists
+///    it exactly once. An identical already-persisted result is replayed
+///    ([`PersistedVerificationOutcome::Replayed`]); a different one fails closed
+///    as [`PersistVerificationError::Conflict`] without overwriting the stored
+///    result.
+///
+/// A valid repository without commits has no HEAD; the compact persisted
+/// contract models `head` as a required string, so it is rendered as the empty
+/// string in [`GitFingerprint::head`]. Non-UTF-8 side-effect paths are rendered
+/// lossily in the string-typed compact contract.
+///
+/// # Errors
+///
+/// Returns [`PersistVerificationError::Storage`] when a storage lifecycle call
+/// fails, [`PersistVerificationError::Conflict`] when a different result is
+/// already persisted and [`PersistVerificationError::InvalidState`] when the
+/// storage reports an outcome without a persisted verification. No error
+/// carries task/project ids, commands, paths, output, fingerprints, SQL or
+/// secrets.
+pub fn run_round_verification_persisted(
+    storage: &mut StorageConnection,
+    round: RoundRef,
+    workspace: &Path,
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+) -> Result<PersistedVerification, PersistVerificationError> {
+    // Begin first: a finished result is reused without spawning anything.
+    let begun = storage
+        .begin_verifier(round.clone())
+        .map_err(map_storage_error)?;
+    if matches!(begun, VerifierUpdateOutcome::AlreadyDone(_)) {
+        return Ok(PersistedVerification {
+            verification: persisted_verification(begun.outcome())?,
+            outcome: PersistedVerificationOutcome::Reused,
+        });
+    }
+
+    // Run the existing fingerprinted flow and convert its outcome into the
+    // compact persisted contract; verifier-level failures become the reference
+    // `unsafe`/`error` verification variants instead of errors.
+    let verification =
+        match run_test_command_sequence_fingerprinted(workspace, commands, timeout, tail_bytes) {
+            Ok(outcome) => verification_from_outcome(&outcome, commands, &round),
+            Err(FingerprintedSequenceError::Rejected { index, reason }) => {
+                rejected_verification(index, reason, &round)
+            }
+            Err(FingerprintedSequenceError::BeforeSnapshot) => error_verification(&round),
+        };
+
+    // Persist exactly once; the storage rejects a conflicting result.
+    let completed = storage
+        .complete_verifier(CompleteVerifierInput {
+            round,
+            verification,
+        })
+        .map_err(map_storage_error)?;
+
+    let verification = persisted_verification(completed.outcome())?;
+    let outcome = match completed {
+        VerifierUpdateOutcome::Completed(_) => PersistedVerificationOutcome::Persisted,
+        VerifierUpdateOutcome::Replayed(_) | VerifierUpdateOutcome::AlreadyDone(_) => {
+            PersistedVerificationOutcome::Replayed
+        }
+        // `complete_verifier` never produces a running outcome; fail closed
+        // instead of panicking if the contract is ever violated.
+        VerifierUpdateOutcome::Started(_) | VerifierUpdateOutcome::AlreadyRunning(_) => {
+            return Err(PersistVerificationError::InvalidState);
+        }
+    };
+
+    Ok(PersistedVerification {
+        verification,
+        outcome,
+    })
+}
+
+/// Maps a storage lifecycle failure to the typed orchestration error, keeping
+/// the fail-closed conflict category distinct from other storage failures.
+fn map_storage_error(error: RoundUpdateError) -> PersistVerificationError {
+    match error {
+        RoundUpdateError::VerifierResultConflict => PersistVerificationError::Conflict,
+        other => PersistVerificationError::Storage(other),
+    }
+}
+
+/// Reads the persisted verification from a storage outcome, failing closed when
+/// the storage returned a round without one.
+fn persisted_verification(
+    outcome: &RoundUpdateOutcome,
+) -> Result<Verification, PersistVerificationError> {
+    outcome
+        .round
+        .verifier_json
+        .clone()
+        .ok_or(PersistVerificationError::InvalidState)
+}
+
+/// Converts a completed fingerprinted sequence into the compact persisted
+/// verification, preserving the reference `failed`/`timed_out`/`error`
+/// semantics.
+fn verification_from_outcome(
+    outcome: &FingerprintedSequenceOutcome,
+    commands: &[&str],
+    round: &RoundRef,
+) -> Verification {
+    match outcome.status() {
+        FingerprintedSequenceStatus::Succeeded => {
+            normal_verification(VerificationStatus::Passed, outcome, commands, round)
+        }
+        FingerprintedSequenceStatus::Failed => {
+            let status = if last_command_timed_out(outcome) {
+                VerificationStatus::TimedOut
+            } else {
+                VerificationStatus::Failed
+            };
+            normal_verification(status, outcome, commands, round)
+        }
+        FingerprintedSequenceStatus::GitFingerprintFailed => {
+            after_snapshot_error_verification(outcome, commands, round)
+        }
+    }
+}
+
+/// Returns whether the command that stopped the sequence timed out; a
+/// spawn/wait failure is reported as `failed`, never `timed_out`.
+fn last_command_timed_out(outcome: &FingerprintedSequenceOutcome) -> bool {
+    outcome
+        .commands()
+        .last()
+        .is_some_and(CommandRunOutcome::timed_out)
+}
+
+/// Builds the compact verification for a completed command run.
+fn normal_verification(
+    status: VerificationStatus,
+    outcome: &FingerprintedSequenceOutcome,
+    commands: &[&str],
+    round: &RoundRef,
+) -> Verification {
+    Verification {
+        status,
+        commands: Some(command_entries(outcome, commands)),
+        index: None,
+        reason: None,
+        log: verification_log_reference(round),
+        before: outcome.before().map(to_git_fingerprint),
+        after: outcome.after().map(to_git_fingerprint),
+        side_effects: side_effect_paths(outcome),
+    }
+}
+
+/// Builds the compact reference `unsafe` verification for a rejected list.
+fn rejected_verification(
+    index: usize,
+    reason: TestCommandReason,
+    round: &RoundRef,
+) -> Verification {
+    Verification {
+        status: VerificationStatus::Unsafe,
+        commands: None,
+        index: Some(index as i64),
+        reason: Some(reason.as_str().to_owned()),
+        log: verification_log_reference(round),
+        before: None,
+        after: None,
+        side_effects: None,
+    }
+}
+
+/// Builds the compact reference `error` verification for a Git fingerprint
+/// failure **before** the commands ran (`git_fingerprint_failed`).
+///
+/// The reference fails closed at the before snapshot: no command ran, so there
+/// is no command entry and no captured fingerprint to preserve.
+fn error_verification(round: &RoundRef) -> Verification {
+    Verification {
+        status: VerificationStatus::Error,
+        commands: None,
+        index: None,
+        reason: Some(GIT_FINGERPRINT_FAILED.to_owned()),
+        log: verification_log_reference(round),
+        before: None,
+        after: None,
+        side_effects: None,
+    }
+}
+
+/// Builds the compact reference `error` verification for a Git fingerprint
+/// failure **after** the commands ran (`git_fingerprint_failed`).
+///
+/// This is the frozen 5.4 contract: the after snapshot failed, so the overall
+/// status is `error` with reason `git_fingerprint_failed`, but the run is not
+/// discarded — the commands that actually ran (including a recorded
+/// `spawn_failed`/`wait_failed` entry) and the `before` fingerprint stay
+/// recorded, while `after` and `side_effects` are absent.
+fn after_snapshot_error_verification(
+    outcome: &FingerprintedSequenceOutcome,
+    commands: &[&str],
+    round: &RoundRef,
+) -> Verification {
+    Verification {
+        status: VerificationStatus::Error,
+        commands: Some(command_entries(outcome, commands)),
+        index: None,
+        reason: Some(GIT_FINGERPRINT_FAILED.to_owned()),
+        log: verification_log_reference(round),
+        before: outcome.before().map(to_git_fingerprint),
+        after: None,
+        side_effects: None,
+    }
+}
+
+/// Builds the per-command entries of the compact verification, preserving the
+/// reference key set: `duration`/`exit_code` for a run command, `timed_out`
+/// when it timed out, `output_tail` for a failed command and `reason` for a
+/// command that did not run.
+fn command_entries(
+    outcome: &FingerprintedSequenceOutcome,
+    commands: &[&str],
+) -> Vec<VerificationCommand> {
+    let mut entries: Vec<VerificationCommand> = outcome
+        .commands()
+        .iter()
+        .enumerate()
+        .map(|(index, command_outcome)| VerificationCommand {
+            command: commands.get(index).copied().unwrap_or_default().to_owned(),
+            timed_out: command_outcome.timed_out().then_some(true),
+            duration: Some(command_outcome.duration().as_secs_f64()),
+            exit_code: command_outcome.exit_code(),
+            output_tail: command_outcome.output_tail().map(str::to_owned),
+            reason: None,
+        })
+        .collect();
+
+    if let Some(failure) = outcome.run_failure() {
+        entries.push(VerificationCommand {
+            command: commands
+                .get(failure.index())
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
+            timed_out: None,
+            duration: None,
+            exit_code: None,
+            output_tail: None,
+            reason: Some(failure.as_str().to_owned()),
+        });
+    }
+
+    entries
+}
+
+/// Converts a captured workspace fingerprint into the compact persisted triple.
+fn to_git_fingerprint(fingerprint: &WorkspaceFingerprint) -> GitFingerprint {
+    GitFingerprint {
+        head: fingerprint
+            .head()
+            .map_or_else(String::new, |commit| commit.as_str().to_owned()),
+        index_fingerprint: fingerprint.index_fingerprint().to_hex(),
+        worktree_fingerprint: fingerprint.worktree_fingerprint().to_hex(),
+    }
+}
+
+/// Returns the sorted side-effect paths as strings, or `None` when there are no
+/// available side effects, matching the compact contract that omits an empty
+/// `side_effects` list.
+fn side_effect_paths(outcome: &FingerprintedSequenceOutcome) -> Option<Vec<String>> {
+    let effects = outcome.side_effects()?;
+    if effects.is_empty() {
+        return None;
+    }
+    Some(
+        effects
+            .paths()
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+    )
+}
+
+/// Builds the frozen relative verification log reference.
+fn verification_log_reference(round: &RoundRef) -> String {
+    let task_id = round.task_id;
+    let round_number = round.round_number;
+    format!("verification/{task_id}/round_{round_number}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CommandRunError, CommandRunOutcome, CommandSequenceError, DEFAULT_TAIL_BYTES,
         FingerprintedRunFailure, FingerprintedSequenceError, FingerprintedSequenceOutcome,
-        FingerprintedSequenceStatus, TestCommandSequenceOutcome, WorkspaceSideEffects,
-        capture_fingerprint, run_test_command, run_test_command_sequence,
-        run_test_command_sequence_fingerprinted,
+        FingerprintedSequenceStatus, PersistVerificationError, PersistedVerification,
+        PersistedVerificationOutcome, TestCommandSequenceOutcome, WorkspaceSideEffects,
+        capture_fingerprint, run_round_verification_persisted, run_test_command,
+        run_test_command_sequence, run_test_command_sequence_fingerprinted,
     };
     use bridge_command_policy::{PolicyReason, TestCommandReason};
+    use bridge_domain::{ProjectId, TaskId, VerificationStatus, VerifierState};
+    use bridge_storage::{CreateTaskInput, RoundRef, StorageConnection, VerifierUpdateOutcome};
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -2890,5 +3413,626 @@ mod tests {
         assert!(!rendered.contains(&before.index_fingerprint().to_hex()));
         assert!(!rendered.contains(&before.worktree_fingerprint().to_hex()));
         assert!(!rendered.contains(before.head().expect("committed head").as_str()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Persist-once orchestration (task 5.6).
+    // -----------------------------------------------------------------------
+
+    fn persist_task_id() -> TaskId {
+        TaskId::from_str("550e8400-e29b-41d4-a716-446655440000").expect("task id")
+    }
+
+    fn persist_project() -> ProjectId {
+        ProjectId::from_str("persist-project").expect("project id")
+    }
+
+    fn open_persist_storage(tag: &str) -> (TempDir, StorageConnection) {
+        let dir = TempDir::new(tag);
+        let path = dir.path().join("state.sqlite");
+        bridge_storage::initialize(&path).expect("initialize schema v6");
+        let storage = bridge_storage::connect(&path).expect("connect");
+        (dir, storage)
+    }
+
+    fn create_persist_round(storage: &mut StorageConnection, workspace: &Path) -> RoundRef {
+        let task_id = persist_task_id();
+        let project_id = persist_project();
+        storage
+            .create_task(CreateTaskInput {
+                task_id,
+                project_id: project_id.clone(),
+                workspace: workspace.display().to_string(),
+                task: "verify".to_owned(),
+                request_id: "req-persist-1".to_owned(),
+                payload_hash: "hash-persist-1".to_owned(),
+                base_head: None,
+                allowed_paths: vec![],
+                test_commands: vec![],
+                snapshot: None,
+            })
+            .expect("create task");
+        RoundRef {
+            task_id,
+            project_id,
+            round_number: 1,
+        }
+    }
+
+    fn persist_round(
+        storage: &mut StorageConnection,
+        round: &RoundRef,
+        workspace: &Path,
+        commands: &[&str],
+        timeout: Duration,
+    ) -> Result<PersistedVerification, PersistVerificationError> {
+        run_round_verification_persisted(
+            storage,
+            round.clone(),
+            workspace,
+            commands,
+            timeout,
+            DEFAULT_TAIL_BYTES,
+        )
+    }
+
+    /// Reads the persisted verifier result back through the storage API.
+    fn persisted_round_verification(
+        storage: &mut StorageConnection,
+        round: &RoundRef,
+    ) -> bridge_domain::Verification {
+        let outcome = storage
+            .begin_verifier(round.clone())
+            .expect("read verifier state");
+        let VerifierUpdateOutcome::AlreadyDone(inner) = outcome else {
+            panic!("the round must be verifier_state=done");
+        };
+        assert_eq!(inner.round.verifier_state, Some(VerifierState::Done));
+        inner
+            .round
+            .verifier_json
+            .expect("a done round carries a verification")
+    }
+
+    #[test]
+    fn first_run_persists_a_compact_passed_verification() {
+        let (dir, mut storage) = open_persist_storage("persist-first");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect("the first run must persist");
+        assert!(result.persisted());
+        assert_eq!(result.outcome(), PersistedVerificationOutcome::Persisted);
+        assert!(!result.reused());
+        assert!(!result.replayed());
+
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Passed);
+        let commands = verification
+            .commands
+            .as_ref()
+            .expect("commands are present");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command, "true");
+        assert_eq!(commands[0].exit_code, Some(0));
+        assert!(commands[0].duration.is_some());
+        assert_eq!(commands[0].timed_out, None);
+        assert_eq!(commands[0].output_tail, None);
+        assert_eq!(commands[0].reason, None);
+        // A clean run leaves no side effects, so the compact contract omits the
+        // key instead of writing an empty list.
+        assert_eq!(verification.side_effects, None);
+        assert_eq!(verification.index, None);
+        assert_eq!(verification.reason, None);
+        let before = verification.before.as_ref().expect("before fingerprint");
+        let after = verification.after.as_ref().expect("after fingerprint");
+        assert_eq!(before, after);
+        assert_eq!(
+            verification.log,
+            format!("verification/{}/round_1", persist_task_id())
+        );
+
+        // The exact persisted row carries the same compact verification.
+        assert_eq!(
+            persisted_round_verification(&mut storage, &round),
+            *verification
+        );
+    }
+
+    #[test]
+    fn repository_without_commits_persists_an_empty_head() {
+        let (dir, mut storage) = open_persist_storage("persist-no-commit");
+        init_repo(dir.path());
+        write_file(dir.path(), "pending.txt", "pending\n");
+        let round = create_persist_round(&mut storage, dir.path());
+
+        // A valid repository without commits has no HEAD; the compact persisted
+        // contract models `head` as a required string, so it is empty.
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect("the run persists");
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Passed);
+        let before = verification.before.as_ref().expect("before fingerprint");
+        assert_eq!(before.head, "");
+        assert_eq!(
+            before,
+            verification.after.as_ref().expect("after fingerprint")
+        );
+    }
+
+    #[test]
+    fn done_reuse_does_not_spawn_commands() {
+        let (dir, mut storage) = open_persist_storage("persist-reuse");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let first = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect("the first run must persist");
+        assert!(first.persisted());
+
+        // The second call must reuse the finished result and never run the
+        // (side-effecting) command.
+        let second = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch reuse-marker.txt"],
+            Duration::from_secs(5),
+        )
+        .expect("a finished result must be reused");
+        assert!(second.reused());
+        assert_eq!(second.outcome(), PersistedVerificationOutcome::Reused);
+        assert_eq!(second.verification(), first.verification());
+        assert!(
+            !dir.path().join("reuse-marker.txt").exists(),
+            "a done result must not spawn any test command"
+        );
+    }
+
+    #[test]
+    fn identical_inputs_are_idempotent() {
+        let (dir, mut storage) = open_persist_storage("persist-idempotent");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let first = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect("the first run must persist");
+        let second = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect("the identical call must be idempotent");
+        assert_eq!(second.verification(), first.verification());
+        assert!(second.reused() || second.replayed());
+    }
+
+    #[test]
+    fn running_verifier_recovery_reruns_and_persists() {
+        let (dir, mut storage) = open_persist_storage("persist-recovery");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        // Simulate an attempt that died mid-flight: the round is `running` but
+        // has no persisted result, so recovery must run the verification.
+        let started = storage.begin_verifier(round.clone()).expect("begin");
+        assert!(matches!(started, VerifierUpdateOutcome::Started(_)));
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch recovered.txt"],
+            Duration::from_secs(5),
+        )
+        .expect("a running verifier must be re-run");
+        assert!(result.persisted());
+        assert_eq!(result.verification().status, VerificationStatus::Passed);
+        assert!(
+            dir.path().join("recovered.txt").is_file(),
+            "a running verifier must actually run its commands"
+        );
+        assert_eq!(
+            persisted_round_verification(&mut storage, &round).status,
+            VerificationStatus::Passed
+        );
+    }
+
+    #[test]
+    fn conflicting_result_maps_to_a_typed_fail_closed_error() {
+        // The conflict is produced by the storage `complete_verifier`; the
+        // orchestration only maps it to its own typed category without
+        // overwriting anything. bridge-storage proves the concurrent behavior.
+        let error =
+            super::map_storage_error(bridge_storage::RoundUpdateError::VerifierResultConflict);
+        assert!(matches!(error, PersistVerificationError::Conflict));
+        assert_eq!(error.as_str(), "verifier_result_conflict");
+        assert_eq!(error.to_string(), "verifier_result_conflict");
+        assert_eq!(
+            format!("{error:?}"),
+            "PersistVerificationError(\"verifier_result_conflict\")"
+        );
+    }
+
+    #[test]
+    fn missing_task_is_a_typed_storage_failure() {
+        let (_dir, mut storage) = open_persist_storage("persist-missing");
+        let round = RoundRef {
+            task_id: TaskId::from_str("550e8400-e29b-41d4-a716-446655440099")
+                .expect("missing task id"),
+            project_id: persist_project(),
+            round_number: 1,
+        };
+        let error = persist_round(
+            &mut storage,
+            &round,
+            Path::new("/nonexistent-workspace-9f2c"),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect_err("a missing task must fail");
+        assert!(matches!(error, PersistVerificationError::Storage(_)));
+        assert_eq!(error.as_str(), "storage_failed");
+    }
+
+    #[test]
+    fn verifier_git_failure_persists_the_error_variant() {
+        let (dir, mut storage) = open_persist_storage("persist-git-error");
+        // A plain directory is not a Git repository, so the before snapshot
+        // fails; the orchestration persists the reference `error` variant
+        // instead of failing.
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch must-not-run.txt"],
+            Duration::from_secs(5),
+        )
+        .expect("a Git fingerprint failure is persisted as the error variant");
+        assert!(result.persisted());
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Error);
+        assert_eq!(
+            verification.reason.as_deref(),
+            Some("git_fingerprint_failed")
+        );
+        assert_eq!(verification.commands, None);
+        assert_eq!(verification.before, None);
+        assert_eq!(verification.after, None);
+        assert_eq!(verification.side_effects, None);
+        assert_eq!(verification.index, None);
+        assert!(
+            !dir.path().join("must-not-run.txt").exists(),
+            "a failed before snapshot must not run any command"
+        );
+    }
+
+    #[test]
+    fn after_snapshot_failure_persists_commands_and_before() {
+        let (dir, mut storage) = open_persist_storage("persist-after-error");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        // The command succeeds but deletes `.git`, so only the after snapshot
+        // fails. The reference keeps the run and the before fingerprint and
+        // only overwrites the overall status with `error`.
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["rm -rf .git"],
+            Duration::from_secs(5),
+        )
+        .expect("an after-snapshot failure is persisted as the error variant");
+        assert!(result.persisted());
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Error);
+        assert_eq!(
+            verification.reason.as_deref(),
+            Some("git_fingerprint_failed")
+        );
+        assert_eq!(verification.index, None);
+        assert_eq!(verification.after, None);
+        assert_eq!(verification.side_effects, None);
+
+        // The run is not discarded: the executed command and the before
+        // fingerprint stay recorded.
+        let commands = verification
+            .commands
+            .as_ref()
+            .expect("the executed command must be preserved");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command, "rm -rf .git");
+        assert_eq!(commands[0].exit_code, Some(0));
+        assert_eq!(commands[0].reason, None);
+        assert!(
+            verification.before.is_some(),
+            "the before fingerprint must be preserved"
+        );
+
+        // The persisted row carries the same compact verification.
+        assert_eq!(
+            persisted_round_verification(&mut storage, &round),
+            *verification
+        );
+    }
+
+    #[test]
+    fn spawn_failure_with_after_snapshot_failure_preserves_run_and_before() {
+        let (dir, mut storage) = open_persist_storage("persist-after-spawn");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        // A successful command removes `.git`, the next command fails to spawn
+        // and the after snapshot then fails too. The reference keeps every
+        // executed entry, the `spawn_failed` entry and the before fingerprint.
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &[
+                "true",
+                "rm -rf .git",
+                "bridge-verifier-no-such-executable-2f7a",
+            ],
+            Duration::from_secs(5),
+        )
+        .expect("the after-snapshot failure is persisted");
+        assert!(result.persisted());
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Error);
+        assert_eq!(
+            verification.reason.as_deref(),
+            Some("git_fingerprint_failed")
+        );
+        assert_eq!(verification.after, None);
+        assert_eq!(verification.side_effects, None);
+        assert!(
+            verification.before.is_some(),
+            "the before fingerprint must be preserved"
+        );
+
+        let commands = verification.commands.as_ref().expect("commands");
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0].command, "true");
+        assert_eq!(commands[0].exit_code, Some(0));
+        assert_eq!(commands[1].command, "rm -rf .git");
+        assert_eq!(commands[1].exit_code, Some(0));
+        assert_eq!(
+            commands[2].command,
+            "bridge-verifier-no-such-executable-2f7a"
+        );
+        assert_eq!(commands[2].reason.as_deref(), Some("spawn_failed"));
+        assert_eq!(commands[2].exit_code, None);
+        assert_eq!(commands[2].duration, None);
+    }
+
+    #[test]
+    fn rejected_command_persists_the_unsafe_variant() {
+        let (dir, mut storage) = open_persist_storage("persist-unsafe");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch ran.txt", "git push origin main"],
+            Duration::from_secs(5),
+        )
+        .expect("a rejected list is persisted as the unsafe variant");
+        assert!(result.persisted());
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Unsafe);
+        assert_eq!(verification.index, Some(1));
+        assert_eq!(verification.reason.as_deref(), Some("git_write_blocked"));
+        assert_eq!(verification.commands, None);
+        assert_eq!(verification.before, None);
+        assert_eq!(verification.after, None);
+        assert!(
+            !dir.path().join("ran.txt").exists(),
+            "no command may run when the whole list is rejected up front"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_command_persists_the_timed_out_status() {
+        let (dir, mut storage) = open_persist_storage("persist-timeout");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["sleep 98765.4321"],
+            Duration::from_millis(200),
+        )
+        .expect("a timeout is persisted");
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::TimedOut);
+        let command = &verification.commands.as_ref().expect("commands")[0];
+        assert_eq!(command.timed_out, Some(true));
+        assert_eq!(command.exit_code, Some(-9));
+        assert!(command.output_tail.is_some());
+        assert!(verification.before.is_some());
+        assert!(verification.after.is_some());
+    }
+
+    #[test]
+    fn nonzero_command_persists_the_failed_status_with_output_tail() {
+        let (dir, mut storage) = open_persist_storage("persist-failed");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["false"],
+            Duration::from_secs(5),
+        )
+        .expect("a non-zero exit is persisted");
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Failed);
+        let command = &verification.commands.as_ref().expect("commands")[0];
+        assert_eq!(command.exit_code, Some(1));
+        assert_eq!(command.output_tail.as_deref(), Some(""));
+        assert_eq!(command.timed_out, None);
+    }
+
+    #[test]
+    fn spawn_failure_is_recorded_as_a_reason_entry() {
+        let (dir, mut storage) = open_persist_storage("persist-spawn");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["true", "bridge-verifier-no-such-executable-2f7a"],
+            Duration::from_secs(5),
+        )
+        .expect("a spawn failure is recorded in the verification");
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Failed);
+        let commands = verification.commands.as_ref().expect("commands");
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].command, "true");
+        assert_eq!(commands[0].exit_code, Some(0));
+        assert_eq!(
+            commands[1].command,
+            "bridge-verifier-no-such-executable-2f7a"
+        );
+        assert_eq!(commands[1].reason.as_deref(), Some("spawn_failed"));
+        assert_eq!(commands[1].exit_code, None);
+        assert_eq!(commands[1].duration, None);
+        assert_eq!(commands[1].output_tail, None);
+    }
+
+    #[test]
+    fn side_effects_are_persisted_as_paths() {
+        let (dir, mut storage) = open_persist_storage("persist-side-effects");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch created.txt"],
+            Duration::from_secs(5),
+        )
+        .expect("side effects are persisted");
+        assert_eq!(
+            result.verification().side_effects.as_deref(),
+            Some(["created.txt".to_owned()].as_slice())
+        );
+    }
+
+    #[test]
+    fn persist_errors_and_debug_do_not_reveal_sensitive_inputs() {
+        let (dir, mut storage) = open_persist_storage("persist-redact");
+        init_repo(dir.path());
+        write_file(dir.path(), "module.py", "x = 1\n");
+        commit(dir.path(), "init", &["module.py"]);
+        let round = create_persist_round(&mut storage, dir.path());
+
+        // The outcome `Debug` renders only the outcome and status; command text,
+        // output, fingerprints and paths stay behind the explicit accessors.
+        let result = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch SUPER_SECRET_CREATED_5c1f"],
+            Duration::from_secs(5),
+        )
+        .expect("the run persists");
+        let rendered = format!("{result:?}");
+        assert!(!rendered.contains("SUPER_SECRET"));
+        assert!(!rendered.contains("touch"));
+        assert!(!rendered.contains(&dir.path().display().to_string()));
+        assert_eq!(
+            rendered,
+            "PersistedVerification { outcome: \"persisted\", status: \"passed\" }"
+        );
+
+        // A storage failure carries no id, path or SQL in `Debug`/`Display`.
+        let missing = RoundRef {
+            task_id: TaskId::from_str("550e8400-e29b-41d4-a716-446655440099")
+                .expect("missing task id"),
+            project_id: persist_project(),
+            round_number: 7,
+        };
+        let error = persist_round(
+            &mut storage,
+            &missing,
+            dir.path(),
+            &["true"],
+            Duration::from_secs(5),
+        )
+        .expect_err("a missing task must fail");
+        let rendered = format!("{error:?} {error}");
+        assert!(!rendered.contains("550e8400"));
+        assert!(!rendered.contains("persist-project"));
+        assert!(!rendered.contains("SELECT"));
+        assert!(!rendered.contains(&dir.path().display().to_string()));
+        assert_eq!(
+            rendered,
+            "PersistVerificationError(\"storage_failed\") storage_failed"
+        );
     }
 }

@@ -22,6 +22,7 @@ bridge-config = { path = "crates/bridge-config" }
 bridge-domain = { path = "crates/bridge-domain" }
 bridge-git = { path = "crates/bridge-git" }
 bridge-path-policy = { path = "crates/bridge-path-policy" }
+bridge-storage = { path = "crates/bridge-storage" }
 command-group = "5"
 nix = { version = "0.27", default-features = false, features = ["fs"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

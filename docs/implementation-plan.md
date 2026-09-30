@@ -259,12 +259,13 @@ Python- и Rust-state изолированы: Rust ведёт собственн
 open невозможен без полной согласованности sidecar + namespace +
 `meta.runtime_owner` + schema v6.
 
-**Потоки 3 и 4 завершены.** Шаги **4.7** (snapshot основного repository),
+**Потоки 3, 4 и 5 завершены.** Шаги **4.7** (snapshot основного repository),
 **4.8** (multi-repository snapshots) и **4.9** (snapshot comparison и
 violations) завершены; шаг **5.1** (test command validation), шаг **5.2**
 (один command runner), шаг **5.3** (последовательность команд), шаг **5.4**
-(HEAD/workspace fingerprints) и шаг **5.5** (side-effect detection) завершены;
-следующий незавершённый шаг — **5.6** (persist-once semantics).
+(HEAD/workspace fingerprints), шаг **5.5** (side-effect detection) и шаг
+**5.6** (persist-once semantics) завершены. Следующий незавершённый шаг —
+**6.1** (HTTP transport и basic auth).
 
 ## Поток 4. Security и Git
 
@@ -847,6 +848,63 @@ violations) завершены; шаг **5.1** (test command validation), шаг
   не менялись.
 
 ### 5.6. Persist-once semantics
+
+- **Завершено.** `bridge-verifier` получает узкий typed orchestration API
+  `run_round_verification_persisted(storage: &mut StorageConnection,
+  round: RoundRef, workspace: &Path, commands: &[&str], timeout: Duration,
+  tail_bytes: usize) -> Result<PersistedVerification,
+  PersistVerificationError>`, который связывает завершённый verifier flow
+  (5.1–5.5) с атомарным storage lifecycle 3.9b, не дублируя command,
+  fingerprint или storage logic: `bridge-verifier` получил только локальные
+  dependencies `bridge-domain` и `bridge-storage`. Crate `bridge-storage`
+  добавился в `[workspace.dependencies]`. Порядок reference сохранён точно:
+  сначала `begin_verifier` (до любого spawn), затем существующий
+  `run_test_command_sequence_fingerprinted` (fail-closed pre-validation всего
+  списка → before snapshot → commands → after snapshot), затем однократный
+  `complete_verifier`. Если round уже `verifier_state=done`, сохранённая
+  `Verification` переиспользуется и **ни одна** test command не запускается
+  (`PersistedVerificationOutcome::Reused`). Для нового или `running` verifier
+  typed outcome конвертируется в компактный `bridge_domain::Verification`:
+  `passed`/`failed`/`timed_out` для прогона (per-command `duration`/`exit_code`,
+  `timed_out`, `output_tail` только у failed, `reason` только у команды,
+  которая не запустилась), `unsafe` с `index`/`reason` для отклонённого списка
+  и `error` с `git_fingerprint_failed` для упавшего fingerprint. Различаются
+  две точки отказа Git: **before-snapshot failure** (5.4 `BeforeSnapshot`) —
+  fail closed до любого spawn, компактный `error` без `commands`/`before`/
+  `after`/`side_effects`; **after-snapshot failure** (5.4
+  `GitFingerprintFailed`) — `status=error`, `reason=git_fingerprint_failed`, но
+  `commands` содержат фактически выполненные команды и recorded
+  `spawn_failed`/`wait_failed` entry, `before` сохраняется, `after`/`side_effects`
+  отсутствуют. `before`/`after` — точный compact triple (`head`,
+  `index_fingerprint`, `worktree_fingerprint`) из того же snapshot,
+  `side_effects` — отсортированные пути (ключ опускается при пустом списке), а
+  `log` — frozen reference `verification/<task_id>/round_<round_number>`. Первый
+  результат фиксируется
+  ровно один раз через `complete_verifier`: идентичный уже сохранённый
+  результат даёт `Replayed` без записи, а отличающийся завершается fail closed
+  typed `PersistVerificationError::Conflict` (`verifier_result_conflict`) без
+  перезаписи. Storage failures дают `PersistVerificationError::Storage`, а
+  отсутствие persisted verification в успешном storage outcome —
+  `InvalidState`. `Debug`/`Display` `PersistedVerification`,
+  `PersistedVerificationOutcome` и `PersistVerificationError` редактированы и не
+  раскрывают task/project ids, команды, пути, output, fingerprints, SQL и
+  secrets; `PersistVerificationError` не рендерит вложенную storage-ошибку
+  (доступна только через `Error::source`). Focused tests покрывают первый запуск
+  и persistence (compact passed, команды/fingerprints/log, совпадение с
+  persisted row), `done` reuse без spawn (side-effecting команда не
+  запускается), идемпотентный повтор идентичного входа, recovery из `running`
+  (команды реально запускаются), typed conflict mapping, missing-task storage
+  failure, persistence `error`-варианта при before-snapshot Git fingerprint
+  failure (без команд/`before`), сохранение выполненных команд/`before` при
+  after-snapshot failure (в том числе вместе со `spawn_failed` entry),
+  `unsafe`-варианта при отклонённой команде, `timed_out`/`failed`/`spawn_failed`
+  статусы и reason-entry, persistence side-effect путей и redaction
+  `Debug`/`Display`. Concurrency persist-once доказана storage-тестами 3.9b и не
+  дублируется; orchestration boundary проверен через `done` reuse и typed
+  conflict mapping. SQLite schema/version/fixtures, Python state/history,
+  worker/MCP integration, Git/path/command policies и public API других crates
+  не менялись; `Cargo.toml`/`Cargo.lock` изменились только добавлением локальных
+  dependencies `bridge-domain`/`bridge-storage` у `bridge-verifier`.
 
 **Готовность потока:** verifier fixtures эквивалентны Python.
 

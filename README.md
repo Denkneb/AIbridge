@@ -476,8 +476,45 @@ endpoints. Rust всегда создаёт и использует собств
   Точные пути доступны только через `paths()`; `Debug`/`Display` outcome и
   side effects редактированы (только число путей) и не раскрывают пути,
   commit id, digest, command text, output и secrets.
-- **Потоки 3 и 4 завершены; поток 5 в работе.** Шаги **5.1–5.5** завершены,
-  следующий незавершённый шаг — **5.6** (persist-once semantics).
+- Завершён этап **5.6. Persist-once semantics** (поток 5 закрыт).
+  `bridge-verifier` предоставляет узкий typed orchestration API
+  `run_round_verification_persisted(storage, round, workspace, commands,
+  timeout, tail_bytes) -> Result<PersistedVerification,
+  PersistVerificationError>`, который связывает завершённый verifier flow
+  (5.1–5.5) с атомарным storage lifecycle 3.9b, не дублируя command,
+  fingerprint или storage logic. Порядок reference сохранён точно: сначала
+  `begin_verifier` (до любого spawn), затем существующий
+  `run_test_command_sequence_fingerprinted` (fail-closed pre-validation всего
+  списка → before snapshot → commands → after snapshot), затем однократный
+  `complete_verifier`. Если round уже `verifier_state=done`, сохранённая
+  `Verification` переиспользуется и **ни одна** test command не запускается
+  (`PersistedVerificationOutcome::Reused`). Для нового или `running` verifier
+  outcome конвертируется в компактный `bridge_domain::Verification`
+  (`passed`/`failed`/`timed_out` для прогона с per-command
+  `duration`/`exit_code`/`timed_out`/`output_tail`/`reason`, `unsafe` с
+  `index`/`reason` для отклонённого списка и `error` с
+  `git_fingerprint_failed` для упавшего fingerprint — причём before-snapshot
+  failure не сохраняет ни команд, ни fingerprint (fail closed до любого
+  spawn), а after-snapshot failure сохраняет фактически выполненные команды
+  (включая recorded `spawn_failed`/`wait_failed` entry) и `before`, оставляя
+  `after`/`side_effects` отсутствующими и перезаписывая лишь общий статус;
+  `before`/`after` — compact triple из того же snapshot, `side_effects` —
+  отсортированные пути без пустого ключа, `log` — frozen reference
+  `verification/<task_id>/round_<round_number>`). Первый результат
+  фиксируется ровно один раз: идентичный уже сохранённый результат даёт
+  `Replayed` без записи, отличающийся завершается fail closed typed
+  `PersistVerificationError::Conflict` (`verifier_result_conflict`) без
+  перезаписи, storage failures дают `Storage`, а отсутствие persisted
+  verification — `InvalidState`. `Debug`/`Display` редактированы и не
+  раскрывают task/project ids, команды, пути, output, fingerprints, SQL и
+  secrets. Focused tests покрывают первый запуск и persistence, `done` reuse
+  без spawn, идемпотентный повтор, recovery из `running`, typed conflict
+  mapping, storage/verifier failures, статусы `unsafe`/`error`/`timed_out`/
+  `failed`/`spawn_failed`, сохранение команд/`before` при after-snapshot failure
+  (в том числе вместе со `spawn_failed` entry), persistence side effects и
+  redaction.
+- **Потоки 3, 4 и 5 завершены.** Шаги **5.1–5.6** завершены, следующий
+  незавершённый шаг — **6.1** (HTTP transport и basic auth).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

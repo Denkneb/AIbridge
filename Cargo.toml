@@ -6,6 +6,7 @@ members = [
     "crates/bridge-config",
     "crates/bridge-domain",
     "crates/bridge-git",
+    "crates/bridge-opencode",
     "crates/bridge-path-policy",
     "crates/bridge-storage",
     "crates/bridge-verifier",
@@ -21,6 +22,7 @@ bridge-command-policy = { path = "crates/bridge-command-policy" }
 bridge-config = { path = "crates/bridge-config" }
 bridge-domain = { path = "crates/bridge-domain" }
 bridge-git = { path = "crates/bridge-git" }
+bridge-opencode = { path = "crates/bridge-opencode" }
 bridge-path-policy = { path = "crates/bridge-path-policy" }
 bridge-storage = { path = "crates/bridge-storage" }
 command-group = "5"

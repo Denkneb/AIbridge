@@ -513,8 +513,301 @@ endpoints. Rust всегда создаёт и использует собств
   `failed`/`spawn_failed`, сохранение команд/`before` при after-snapshot failure
   (в том числе вместе со `spawn_failed` entry), persistence side effects и
   redaction.
-- **Потоки 3, 4 и 5 завершены.** Шаги **5.1–5.6** завершены, следующий
-  незавершённый шаг — **6.1** (HTTP transport и basic auth).
+- Завершён этап **6.1. HTTP transport и basic auth**. Новый workspace-crate
+  `bridge-opencode` реализует минимальный переиспользуемый HTTP/1.1 transport к
+  уже валидированному OpenCode endpoint поверх типизированных значений
+  `bridge-config` (`Endpoint`/`Secret`): конфигурационная валидация не
+  дублируется. `BasicAuth::new(Secret)` формирует
+  `Authorization: Basic base64("opencode:<password>")` с константным username
+  `opencode`, как reference `credentials.USERNAME`; `BasicAuth::from_project`
+  переиспользует `ProjectEntry::read_password` и отображает ошибку чтения
+  credential в `TransportError::InvalidAuth`. `HttpTransport::new(endpoint,
+  auth, timeout)` и `request(&HttpRequest)` выполняют один запрос по свежему
+  `TcpStream` с `Connection: close`, ограниченный общим deadline
+  (`DEFAULT_TIMEOUT = 30s`, как reference). Deadline охватывает connect, запись
+  и чтение: перед каждой частичной записью и каждым чтением remaining
+  пересчитывается, поэтому медленно читающий или вовсе не читающий peer не
+  продлевает запрос; `Ok(0)` (WriteZero) трактуется как разрыв сокета, а
+  `Interrupted` повторяется под тем же deadline, и успешный `2xx` не
+  возвращается после истечения deadline. Тело ответа фреймится по
+  `Transfer-Encoding: chunked`/`Content-Length`/EOF; успешный `204` без
+  `Content-Length` распознаётся как bodyless до framing и возвращает пустой
+  body, не дожидаясь закрытия соединения, а `304` остаётся non-success ошибкой
+  `HttpStatus(304)` и его body не читается. Статус-строка парсится строго:
+  поддерживаются только `HTTP/1.0`/`HTTP/1.1`, код — ровно три ASCII-цифры в
+  диапазоне `100..=599`, иначе `TransportError::Protocol`. Типизированный `TransportError` различает
+  timeout, connection/transport failure, invalid auth setup, HTTP 401
+  (`Unauthorized`), 404 (`NotFound`), прочие non-success (`HttpStatus`),
+  malformed request и malformed response; успехом считается только `2xx`, тело
+  non-success ответа не читается. Пароль, `Authorization`, path/query, тело
+  ответа, workspace-пути и OS-детали редактированы в `Debug`/`Display` и
+  публичных типах. OpenAPI compatibility (6.3), session/message APIs (6.4+),
+  worker/MCP wiring и public API других crates не входят. Focused tests с
+  локальным loopback mock server (без внешней сети) покрывают Base64-векторы,
+  точный Basic-header, `InvalidAuth`, GET/POST construction, timeout, connection
+  failure, mapping статусов, chunked/EOF body, `204` без `Content-Length` при
+  открытом соединении, большой POST к медленному/не читающему peer в пределах
+  deadline, детерминированный write-loop тест на остановку по общему deadline
+  при успешных частичных записях, strict status parser, malformed
+  request/response, zero-timeout fail-closed и redaction.
+- Завершён этап **6.2. Health и workspace identity**. Типизированный
+  `OpenCodeClient` связывает transport 6.1 с одним каноническим workspace.
+  `OpenCodeClient::from_project(&ProjectEntry, timeout)` берёт endpoint,
+  credential и workspace из уже валидированного `bridge-config`;
+  `health()` отправляет `GET /global/health?directory=<workspace>` (reference
+  scoped-запрос) и считает сервер здоровым только при литеральном boolean
+  `true` в `healthy`, как reference `health().get("healthy") is True`
+  (отсутствующее/небулево значение — не здоров; не-объект/невалидный JSON —
+  `HealthError::Malformed`). `verify_workspace()` отправляет `GET /path`
+  **без** `directory`: scoped `/path` лишь отражает workspace вызывающего,
+  поэтому identity доказывается только собственным root сервера. Поле
+  `directory` извлекается типизированно (отсутствие —
+  `IdentityError::MissingDirectory`, не-строка — `Malformed`) и разрешается по
+  семантике Python `Path.resolve(strict=False)`: существующие symlink-компоненты
+  следуются (абсолютный target перезапускает разрешение от корня FS,
+  относительный разрешается от родителя ссылки, `.`/`..` внутри target
+  сворачиваются), а отсутствующий компонент присоединяется без остановки обхода,
+  поэтому `..` после missing всё ещё сворачивается относительно
+  symlink-разрешённого префикса. Лексического shortcut нет: reported принимается
+  только когда его resolved-форма равна каноническому workspace, даже если он
+  лишь лексически «складывается» в него. Несовпадение, отсутствующие/некорректные
+  поля, невалидный JSON, встроенный NUL (Python `ValueError`), symlink loop и
+  любая non-`NotFound` FS-ошибка (permission/not-a-directory/нечитаемая ссылка)
+  дают fail-closed (`IdentityError::Mismatch`/`Malformed`/`MissingDirectory`).
+  Транспортные
+  сбои сохраняются (`HealthError::Transport`/`IdentityError::Transport`:
+  timeout, unavailable, 401, 404, прочие HTTP, protocol). `OpenCodeClient` не
+  рендерит workspace, `Health` — `version`, а новые ошибки — только static
+  label и вложенный `TransportError`. Focused loopback tests покрывают успешные
+  health/identity, игнорирование scoped echo, чужие root, malformed/missing
+  поля, правила сравнения пути (trailing slash, `.`/`..`, symlink alias,
+  regression symlink+missing+`../..` false-positive, `..` после symlink,
+  escaped NUL), HTTP/auth failure, timeout/unavailable и redaction.
+- Завершён этап **6.3. OpenAPI compatibility**. `OpenCodeClient::
+  check_compatibility()` отправляет `GET /doc?directory=<workspace>` (reference
+  `get_doc` использует `scoped=True`) и возвращает типизированный
+  `DocCompatibility`; HTTP/auth/timeout/protocol категории сохраняются как
+  `DocError::Transport`, невалидный JSON — `DocError::Malformed`, а валидный
+  JSON-не-объект — несовместимость `DocumentNotObject`. Чистая
+  `openapi_problems(&Value, require_prompt_model)` повторяет reference
+  `opencode_client.py::openapi_problems`: обязательные routes/methods
+  (`GET`/`POST /session`, `GET /session/status`, `GET /permission`, `POST
+  /permission/{}/reply`, `GET /question`, health/path/session message/
+  prompt_async), нормализация имён path-параметров (`{id}`/`{sessionID}` → `{}`),
+  обязательные schema properties `Path`/`Session`/`AssistantMessage` и вложенный
+  `AssistantMessage.time.completed`, JSON `prompt_async` body
+  (`messageID`/`parts`, и `model` только при `require_prompt_model=true`),
+  permission-reply body/поле `reply`/enum `once`/`always`/`reject`. Локальные
+  `$ref` chains разрешаются с защитой от циклов; unresolvable ref (non-string,
+  external, cyclic, broken) даёт пустой узел, поэтому sibling-properties не
+  доказывают обязательную структуру, а non-object `time.properties` также fail
+  closed. Конфликт двух spelling'ов, нормализующихся в один path, разрешается
+  first-wins в порядке JSON insertion order (`serde_json` собран с feature
+  `preserve_order`), как reference `setdefault`, поэтому конфликт не даёт
+  ложного `compatible`. Malformed JSON/не-объект/неверные nested types/пустые
+  paths/loops завершаются fail closed без panic и ложного `compatible`.
+  `OpenCodeClient::from_project` выводит `require_prompt_model` из
+  `ProjectEntry::opencode_model`, поэтому project без model совместим с
+  документом без `model`, а project с model отвергает тот же документ; это
+  проверка наличия поля `model`, а не конкретной provider/model на сервере.
+  `CompatibilityProblem` несёт только стабильные категории и имена обязательных
+  контрактных полей; произвольные path/schema/`$ref`/doc-значения, credentials,
+  workspace и query не утекают в `Debug`/`Display`. Focused loopback tests
+  покрывают reference fixtures, missing routes/wrong methods, path renaming,
+  first-wins конфликт нормализованных paths в обеих очередностях raw JSON (pure
+  и loopback), required properties/time.completed (включая non-object
+  `properties`), inline/chained refs, cyclic/broken/external/non-string refs с
+  sibling-properties (включая body/time/permission schemas), malformed nested
+  containers, prompt body/conditional model, permission schema/enum, end-to-end
+  `GET /doc` (точный scoped query), compatible/incompatible/malformed/non-object,
+  HTTP/auth errors и redaction; тесты 6.1–6.2 не регрессировали.
+- Завершён этап **6.4. Session create/list/get**. `OpenCodeClient` получил три
+  типизированные session-операции reference `opencode_client.py`, все scoped с
+  `directory`-query и через общий transport с Basic auth:
+  `list_sessions()` → `GET /session` (список), `create_session(title)` →
+  `POST /session` с компактным JSON `{"title": <title>}` (как httpx,
+  UTF-8 без ASCII-escaping), `get_session(id)` → `GET /session/<id>`. Session id
+  кодируется как один RFC 3986 path-сегмент (percent-encoding); для обычных
+  alphanumeric `ses...` id это байт-в-байт no-op, но `%2F`/`%3F`/`%23`/пробел и
+  любые другие байты (включая literal `%` и Unicode) больше не могут изменить
+  request target или внедрить query. Transport принимает percent-encoded пути
+  только как полный triplet `%` HEXDIG HEXDIG: bare/truncated/non-hex escapes
+  (`%`, `%2`, `%GG`) отклоняются как `TransportError::InvalidRequest` до
+  открытия сокета, а raw whitespace/`?`/`#`/control остаются запрещены. Пустой
+  id и голые dot-сегменты `.`/`..` отклоняются fail closed как
+  `SessionError::InvalidSessionId` до отправки — это единственное намеренное
+  отклонение от reference, который подставляет id дословно. Типизированный
+  `Session` отдаёт `id`/`title`/`directory` как `Option<&str>` (пермиссивно, как
+  reference `session.get(...)`); невалидный JSON или неверный top-level shape
+  (не объект для create/get, не массив для list) — `SessionError::Malformed`, а
+  не-объектный элемент списка пропускается ровно как reference
+  `isinstance(session, dict)`. Транспортные категории (timeout, unavailable, 401,
+  404, прочие HTTP, protocol) сохраняются как `SessionError::Transport`.
+  `Session`/`SessionError` редактированы: id/title/directory, workspace,
+  credential и тела ответов не попадают в `Debug`/`Display`. Focused loopback
+  tests используют mock server с управляемым lifecycle (RAII-хэндл
+  останавливает accept-loop и join'ит поток при drop, без внешних сервисов) и
+  покрывают успешные list/create/get с точным request (method/path/query/body/
+  auth), percent-encoding id, literal `%`/Unicode id, verbatim plain id,
+  fail-closed unusable id, приём валидных encoded путей и отклонение
+  malformed percent escapes до отправки, transport errors, malformed
+  list/create/get и redaction; тесты 6.1–6.3 не регрессировали.
+- Завершён этап **6.5. Message list и parsing**. `OpenCodeClient` получил
+  `list_messages(session_id)` → `GET /session/<id>/message`, scoped с
+  `directory`-query и существующим Basic auth, как reference
+  `opencode_client.py::list_messages`. Session id валидируется и
+  percent-encode'ится общим с 6.4 механизмом: пустой id и голые `.`/`..`
+  отклоняются до отправки как `MessageError::InvalidSessionId`, literal `%`,
+  `/`, `?`, `#`, пробел и Unicode не меняют request target, а действующая
+  percent-triplet validation transport не ослаблена. Типизированный `Message`
+  (`MessageInfo` + `Vec<MessagePart>`) переносит parsing, который читают
+  reference consumers (`worker.py`, `usage.py`), не реализуя worker:
+  identity (`id`/`role`/`parentID`/`sessionID`), assistant lifecycle
+  (`time.completed` присутствует и не `null`; `finish`; truthy `error`),
+  provider/model (`model()` требует непустые `providerID`/`modelID`) и
+  нормализованный token/cost `Usage` (`_number`: только JSON-числа,
+  missing/bool/negative/non-finite → `0.0`). `MessagePart` отдаёт text
+  (`type`/`text`/`ignored`) и tool lifecycle (`tool`, `state.status`,
+  `state.error`, `metadata.providerExecuted`, `state.metadata.interrupted`);
+  `Message::text()` повторяет reference `_text_of` (join непустых не-ignored
+  text-частей через `\n` и Python `str.strip()` whitespace, т.е. Rust
+  `is_whitespace` плюс U+001C..U+001F), `Message::has_pending_tool_parts()` —
+  reference `_has_tool_parts`. Parsing пермиссивен как `message.get(...)` для
+  скалярных полей (отсутствующее/неверно типизированное → `None`/`false`/zero)
+  и для отсутствующих `info`/`parts` (reference defaults `{}`/`[]`), но
+  present-но-неверно-типизированные lifecycle-контейнеры и элементы
+  message/parts отклоняются fail-closed как `MessageError::Malformed`:
+  не-объектный message, не-объектный `info`, не-массив `parts`, не-объектная
+  часть, truthy не-объектные `time`/`state`/`metadata`/`state.metadata` и
+  truthy не-string `text` text-части (reference упал бы с `AttributeError`/
+  `TypeError`). Поэтому malformed структура не вызывает panic, не даёт ложного
+  `completed`/успеха и не может спрятать более позднюю незавершённую запись за
+  старой завершённой; невалидный JSON или не-массив top-level — тоже
+  `MessageError::Malformed`. Транспортные категории
+  (timeout, unavailable, 401, 404, прочие HTTP, protocol) сохраняются как
+  `MessageError::Transport`. `Message`/`MessageInfo`/`MessagePart` рендерят
+  только presence/lifecycle флаги и счётчики, `Usage` — accounting-числа,
+  `MessageError` — static label; credential, workspace, id, text, error и тела
+  ответов не утекают. Focused loopback tests (mock server с управляемым
+  lifecycle) покрывают точный method/path/query/auth, reference fixture,
+  percent-encoding и fail-closed id без запроса, transport errors, malformed
+  body, fail-closed malformed message/part/lifecycle (в т.ч. завершённый
+  assistant с повреждёнными parts и malformed trailing entry), lifecycle/
+  completion/error, usage/model normalization, Python-whitespace text и
+  tool-part lifecycle, redaction; тесты 6.1–6.4 не регрессировали.
+- Завершён этап **6.6. Async prompt delivery**. `OpenCodeClient` получил
+  `send_prompt_async(session_id, message_id, text)` →
+  `POST /session/<id>/prompt_async`, scoped с `directory`-query и существующим
+  Basic auth/transport, как reference
+  `opencode_client.py::send_prompt_async`. Session id валидируется и
+  percent-encode'ится общим с 6.4/6.5 механизмом: пустой id и голые `.`/`..`
+  отклоняются до отправки как `PromptError::InvalidSessionId`, literal `%`,
+  `/`, `?`, `#`, пробел и Unicode не меняют request target, а действующая
+  percent-triplet validation transport не ослаблена. Тело запроса — ровно
+  компактный UTF-8 JSON reference httpx (`ensure_ascii=False`,
+  `separators=(",", ":")`):
+  `{"messageID": <id>, "parts": [{"type": "text", "text": <text>}]}`, а
+  `"model": {"providerID": ..., "modelID": ...}` добавляется последним полем
+  только когда клиент построен из проекта с валидированным
+  `ProjectEntry::opencode_model` (`from_project`); клиент без модели не
+  отправляет `model` вовсе, как reference `config.opencode_model is None`.
+   `messageID` и `text` едут внутри JSON и экранируются сериализатором
+   (UTF-8 без ASCII-escaping), а не подставляются в path. Успех — любой `2xx`,
+   включая bodyless `204`; транспорт читает и фреймит тело успешного ответа по
+   HTTP framing (кроме bodyless `204`) прежде чем вернуть `HttpResponse` —
+   ровно как reference `_request`, где httpx тоже читает тело, — но
+   `send_prompt_async` не интерпретирует и не парсит его как JSON (reference
+   `_request`, не `_json`), поэтому у `PromptError` нет `Malformed`-варианта.
+   Reference `_request` принимает любой статус `< 400`, включая `3xx`, а
+   существующий transport сохраняет политику только `2xx`, поэтому `3xx`
+   намеренно возвращается как `TransportError::HttpStatus` (политика transport
+   ради документации не ослабляется); транспортные категории (timeout,
+   unavailable, 401, 404, прочие HTTP, protocol) сохраняются как
+   `PromptError::Transport`. Успешный
+  вызов означает только принятие POST и намеренно не утверждает завершение
+  assistant-хода; автоматического retry неидемпотентной отправки нет, а
+  транспортная ошибка после записи запроса оставляет исход доставки
+  неопределённым, а не гарантирует отсутствие отправки. Redaction соблюдён:
+  `OpenCodeClient` не рендерит workspace и model, `PromptError` — только static
+  label и вложенный `TransportError`; session/message id, text, model, body,
+  credential и `Authorization` не утекают в `Debug`/`Display`. `Cargo.toml`/
+   `Cargo.lock`, schema и fixtures не менялись. Focused loopback tests (mock
+   server с управляемым lifecycle `ServerCapture` stop/join, без внешней сети)
+   покрывают точный method/path/query/auth/body без модели, добавление model из
+   валидированного project entry последним полем, UTF-8 и JSON-escaping,
+   bodyless `204`, игнорирование 2xx-тела, percent-encoding id, fail-closed
+   unusable id и zero-timeout без отправки, transport errors 401/404/500, 3xx
+   как `HttpStatus` (намеренное отклонение), timeout и unavailable, а также
+   неопределённый исход после полной отправки (mock получает и фиксирует POST
+   body, затем не отвечает до истечения client deadline: ожидается
+   `TransportError::Timeout`, ровно один POST, без retry), redaction; тесты
+   6.1–6.5 не регрессировали.
+- Завершён этап **6.7. Permissions list/reply**. `OpenCodeClient` получил
+  `list_permissions()` → `GET /permission` и
+  `reply_permission(request_id, reply, message)` → `POST /permission/<id>/reply`,
+  оба scoped с `directory`-query и существующим Basic auth, как reference
+  `opencode_client.py::list_permissions`/`reply_permission`. `reply`
+  типизирован enum `PermissionReply::{Once,Always,Reject}` (`once`/`always`/
+  `reject`), поэтому unsupported reply неотправляем (reference бросает
+  `OpenCodeError`). Тело reply — ровно компактный UTF-8 JSON reference httpx:
+  `{"reply": <reply>}`, а `"message"` добавляется последним полем только когда
+  message передан; отсутствующий message (`None`) не отправляет поле, а пустой
+  (`Some("")`) отправляет `"message": ""`, сохраняя различие reference
+  `message is not None`. Request id валидируется и percent-encode'ится как один
+  RFC 3986 path-сегмент общим с 6.4–6.6 `encode_session_segment`/
+  `encode_path_segment`, пустой id и голые `.`/`..` отклоняются до отправки как
+  `PermissionError::InvalidRequestId`, literal `%`, `/`, `?`, `#`, пробел и
+  Unicode не меняют request target, а percent-triplet validation transport не
+  ослаблена (намеренное fail-closed hardening над reference, который
+  подставляет id дословно). `reply_permission` следует reference `_request`
+  (не `_json`): успех — любой `2xx`, включая bodyless `204`, тело успешного
+  ответа фреймится транспортом, но не парсится как JSON, поэтому для reply нет
+  `Malformed`; reference `_request` принимает `< 400` включая `3xx`, тогда как
+  transport сохраняет политику только `2xx`, поэтому `3xx` — намеренно
+  `TransportError::HttpStatus`. Автоматического retry нет, а транспортная ошибка
+  после записи оставляет исход reply неопределённым. Типизированный
+  `Permission` сохраняет реальные reference поля `PermissionRequest` (OpenCode
+  SDK): `id`/`sessionID`/`permission` (`Option<String>`), `patterns`/`always`
+  (`Vec<String>`), `metadata` (raw JSON только за явным
+  `Permission::metadata()` accessor, `[redacted]` в rendering) и optional
+  `tool: {messageID, callID}` (`PermissionTool`), которые читают будущие
+  permission consumers, без реализации consumers. Parsing явно разграничивает
+  required SDK-поля, absent/null optional defaults и malformed: `id`,
+  `sessionID`, `permission` и `patterns` обязательны по SDK-shape, поэтому их
+  отсутствие/`null`/неверный тип → `PermissionError::Malformed` (не `None` и не
+  пустой список), чтобы повреждённый pending request нельзя было принять за
+  отсутствующий (например, молча отфильтровать по `sessionID`) или разрешить;
+  валидный пустой `patterns: []` остаётся допустимым и отличимым. Необязательные
+  `always`/`metadata`/`tool` сохраняют reference defaults: absent/`null` →
+  пусто/пустой объект/`None`. Present-но-неверно-типизированное значение
+  (включая required identity/patterns), не-объектный элемент массива и
+  не-массив top-level → `PermissionError::Malformed`, поэтому повреждённый
+  request не пропускается молча и список не может выглядеть пустым или
+  разрешённым. Транспортные
+  категории (timeout, unavailable, 401, 404, прочие HTTP, protocol)
+  сохраняются как `PermissionError::Transport`. Redaction соблюдён:
+  `Permission`/`PermissionTool` рендерят только presence-флаги и счётчики,
+  `metadata` — `[redacted]`, `PermissionError` — static label и вложенный
+  `TransportError`; credential, `Authorization`, workspace, id, sessionID,
+  permission name, patterns, commands, metadata, tool ids, message и тела
+  ответов не утекают в `Debug`/`Display`. `Cargo.toml`/`Cargo.lock`, schema и
+  fixtures не менялись. Focused loopback tests (mock server с управляемым
+  lifecycle `ServerCapture` stop/join, без внешней сети) покрывают точный
+  method/path/scoped query/auth для обоих endpoints, reference-compatible
+  `PermissionRequest` fixture, валидный пустой `patterns: []` и optional
+  defaults, отсутствие/`null` required identity (`id`/`sessionID`/`permission`)
+  и `patterns`, malformed request между двумя валидными (вся операция
+  `Malformed`), malformed top-level/element/полей, transport errors, каждый
+  `once`/`always`/`reject`,
+  optional message (отсутствующий vs пустой), compact UTF-8 body,
+  percent-encoding и fail-closed unusable id без отправки, bodyless `204` и
+  игнорирование 2xx-тела, `3xx` как `HttpStatus`, protocol error, а также
+  неопределённый исход после полной отправки reply (mock получает и фиксирует
+  POST body, затем не отвечает до истечения client deadline: Timeout, ровно
+  один POST, без retry) и redaction; тесты 6.1–6.6 не регрессировали.
+- **Потоки 3, 4 и 5 завершены.** Шаги **5.1–5.6**, **6.1**, **6.2**, **6.3**,
+  **6.4**, **6.5**, **6.6** и **6.7** завершены, следующий незавершённый шаг —
+  **6.8** (Questions и blockers).
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

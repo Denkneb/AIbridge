@@ -1,7 +1,8 @@
 //! Minimal OpenCode HTTP transport, Basic authentication (task 6.1),
 //! health/workspace identity probing (task 6.2), OpenAPI compatibility (task
 //! 6.3), session create/list/get (task 6.4), session message list/parsing (task
-//! 6.5), async prompt delivery (task 6.6) and permissions list/reply (task 6.7).
+//! 6.5), async prompt delivery (task 6.6), permissions list/reply (task 6.7)
+//! and questions/blockers (task 6.8).
 //!
 //! This crate implements the first steps of the OpenCode adapter stream: a
 //! small, reusable HTTP/1.1 transport that talks to an already validated
@@ -11,9 +12,10 @@
 //! touched, plus the OpenAPI compatibility check (6.3) that validates the
 //! installed `/doc` document against the mandatory operations and schemas, plus
 //! the typed session operations (6.4), the typed session message list and
-//! message/parts parsing (6.5), the typed async prompt delivery (6.6) and the
-//! typed permission list/reply operations (6.7). It deliberately stops before
-//! questions and blockers (6.8+) are implemented here.
+//! message/parts parsing (6.5), the typed async prompt delivery (6.6), the
+//! typed permission list/reply operations (6.7) and the typed question list
+//! plus the minimal session-scoped permission/question blocker detection (6.8).
+//! It deliberately stops before the worker/MCP/runtime wiring (task 7.1+).
 //!
 //! # Endpoint and auth material
 //!
@@ -734,6 +736,14 @@ const REQUIRED_OPERATIONS: &[(&str, &[HttpMethod])] = &[
 /// The reference permission-collection endpoint (task 6.7), scoped with the
 /// workspace `directory` query.
 const PERMISSION_PATH: &str = "/permission";
+
+/// The reference question-collection endpoint (task 6.8), scoped with the
+/// workspace `directory` query (reference `list_questions`).
+const QUESTION_PATH: &str = "/question";
+
+/// The reference `worker.py::_pending_questions` truncation of the first
+/// question's text (`text[:300]`, counted in Unicode code points like Python).
+const QUESTION_BLOCKER_TEXT_LIMIT: usize = 300;
 
 /// The normalized path whose JSON request body carries the prompt parts.
 const PROMPT_ASYNC_PATH: &str = "/session/{}/prompt_async";
@@ -1809,6 +1819,37 @@ impl OpenCodeClient {
             .with_query("directory", self.workspace.to_string_lossy().into_owned());
         self.transport.request(&request)?;
         Ok(())
+    }
+
+    /// Lists the pending questions with `GET /question` scoped with the
+    /// workspace `directory` (reference `list_questions`).
+    ///
+    /// The reference returns the raw JSON array of the installed
+    /// `QuestionRequest` shape; this method maps every object element to a
+    /// typed [`Question`] and preserves the real reference fields the future
+    /// question consumers read (`id`, `sessionID`, `questions[]` with
+    /// `question`/`header`/`options` and the optional `multiple`/`custom`, plus
+    /// the optional `tool` envelope). Parsing is fail closed: the required
+    /// identity (`id`, `sessionID`) and `questions` must be present with the
+    /// right JSON type, and every nested `QuestionInfo`/`QuestionOption`
+    /// required field must too, so a missing, `null` or wrongly typed required
+    /// field makes the whole operation [`QuestionError::Malformed`] rather than
+    /// a silently skipped entry. A damaged response can therefore never look
+    /// like an empty question list, and a valid empty `questions: []` stays
+    /// valid and distinguishable from the damaged case.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuestionError::Transport`] for a timeout, unavailable
+    /// endpoint, rejected credential, HTTP 404 or other HTTP failure, and
+    /// [`QuestionError::Malformed`] when the successful body is not valid JSON,
+    /// is not a JSON array, or contains a non-object element or a malformed
+    /// field. The response body of an unsuccessful status is never read.
+    pub fn list_questions(&self) -> Result<Vec<Question>, QuestionError> {
+        let request = HttpRequest::get(QUESTION_PATH)
+            .with_query("directory", self.workspace.to_string_lossy().into_owned());
+        let response = self.transport.request(&request)?;
+        parse_question_list(response.body())
     }
 }
 
@@ -2928,6 +2969,17 @@ impl Permission {
     pub const fn tool(&self) -> Option<&PermissionTool> {
         self.tool.as_ref()
     }
+
+    /// Returns `true` when this request's `sessionID` is exactly `session_id`.
+    ///
+    /// This is the reference `worker.py::_pending_permissions` /
+    /// `mcp_server.py::_blockers_present` session filter. Parsing guarantees
+    /// `sessionID` is a present string, so a damaged request can never match a
+    /// session filter (nor be silently dropped as if it were absent).
+    #[must_use]
+    pub fn belongs_to_session(&self, session_id: &str) -> bool {
+        self.session_id.as_deref() == Some(session_id)
+    }
 }
 
 impl fmt::Debug for Permission {
@@ -3088,8 +3140,8 @@ fn permission_from_value(value: &serde_json::Value) -> Result<Permission, Permis
     let tool = match object.get("tool") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Object(tool)) => Some(PermissionTool {
-            message_id: tool_string(tool, "messageID")?,
-            call_id: tool_string(tool, "callID")?,
+            message_id: tool_string(tool, "messageID", PermissionError::Malformed)?,
+            call_id: tool_string(tool, "callID", PermissionError::Malformed)?,
         }),
         Some(_) => return Err(PermissionError::Malformed),
     };
@@ -3104,15 +3156,587 @@ fn permission_from_value(value: &serde_json::Value) -> Result<Permission, Permis
     })
 }
 
-/// Reads an optional string member of the tool envelope.
-fn tool_string(
+/// Reads an optional string member of a `{messageID, callID}` tool envelope,
+/// failing closed on a wrongly typed value with the caller's error variant.
+///
+/// Both the permission and question `tool` envelopes share this exact shape, so
+/// the helper is generic over the malformed variant ([`PermissionError`] or
+/// [`QuestionError`]) instead of duplicating the fail-closed mapping.
+fn tool_string<E>(
     tool: &serde_json::Map<String, serde_json::Value>,
     name: &str,
-) -> Result<Option<String>, PermissionError> {
+    malformed: E,
+) -> Result<Option<String>, E> {
     match tool.get(name) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
-        Some(_) => Err(PermissionError::Malformed),
+        Some(_) => Err(malformed),
+    }
+}
+
+/// The optional `tool` envelope of a question request (task 6.8).
+///
+/// OpenCode's `QuestionRequest` carries the same optional
+/// `tool: {messageID, callID}` pair as `PermissionRequest`, used to correlate a
+/// question with the assistant tool call that raised it. Both fields are
+/// exposed as `Option` and an absent or `null` envelope is `None`. The
+/// [`fmt::Debug`]/[`fmt::Display`] representations render only presence flags,
+/// never the message or call ids.
+#[derive(Clone, PartialEq, Eq)]
+pub struct QuestionTool {
+    message_id: Option<String>,
+    call_id: Option<String>,
+}
+
+impl QuestionTool {
+    /// Returns the tool `messageID`, when the server reported a JSON string.
+    #[must_use]
+    pub fn message_id(&self) -> Option<&str> {
+        self.message_id.as_deref()
+    }
+
+    /// Returns the tool `callID`, when the server reported a JSON string.
+    #[must_use]
+    pub fn call_id(&self) -> Option<&str> {
+        self.call_id.as_deref()
+    }
+}
+
+impl fmt::Debug for QuestionTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuestionTool")
+            .field(
+                "message_id",
+                &self.message_id.as_ref().map(|_| "[redacted]"),
+            )
+            .field("call_id", &self.call_id.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
+impl fmt::Display for QuestionTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "OpenCode question tool (message present: {}, call present: {})",
+            self.message_id.is_some(),
+            self.call_id.is_some()
+        )
+    }
+}
+
+/// One selectable answer of a [`QuestionInfo`] (task 6.8, OpenCode SDK
+/// `QuestionOption`).
+///
+/// Both `label` and `description` are required strings in the SDK shape, so
+/// parsing rejects a missing, `null` or wrongly typed value as
+/// [`QuestionError::Malformed`]. The [`fmt::Debug`]/[`fmt::Display`]
+/// representations render only presence flags, never the label or description.
+#[derive(Clone, PartialEq, Eq)]
+pub struct QuestionOption {
+    label: String,
+    description: String,
+}
+
+impl QuestionOption {
+    /// Returns the option label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Returns the option description.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+impl fmt::Debug for QuestionOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuestionOption")
+            .field("label", &"[redacted]")
+            .field("description", &"[redacted]")
+            .finish()
+    }
+}
+
+impl fmt::Display for QuestionOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OpenCode question option")
+    }
+}
+
+/// One question inside a [`Question`] request (task 6.8, OpenCode SDK
+/// `QuestionInfo`).
+///
+/// The SDK marks `question`, `header` and `options` required, so parsing
+/// rejects a missing, `null` or wrongly typed value as
+/// [`QuestionError::Malformed`]; a valid empty `options: []` stays valid and
+/// distinguishable from the damaged case. The optional `multiple`/`custom`
+/// flags keep the reference default of `None` when absent or `null`, and any
+/// other wrongly typed value is malformed. The [`fmt::Debug`]/[`fmt::Display`]
+/// representations render only presence flags and the option count, never the
+/// question, header or option content.
+#[derive(Clone, PartialEq, Eq)]
+pub struct QuestionInfo {
+    question: String,
+    header: String,
+    options: Vec<QuestionOption>,
+    multiple: Option<bool>,
+    custom: Option<bool>,
+}
+
+impl QuestionInfo {
+    /// Returns the complete question text.
+    #[must_use]
+    pub fn question(&self) -> &str {
+        &self.question
+    }
+
+    /// Returns the short header label.
+    #[must_use]
+    pub fn header(&self) -> &str {
+        &self.header
+    }
+
+    /// Returns the available answer options (empty when the server sent `[]`).
+    #[must_use]
+    pub fn options(&self) -> &[QuestionOption] {
+        &self.options
+    }
+
+    /// Returns the optional `multiple` flag.
+    #[must_use]
+    pub const fn multiple(&self) -> Option<bool> {
+        self.multiple
+    }
+
+    /// Returns the optional `custom` flag.
+    #[must_use]
+    pub const fn custom(&self) -> Option<bool> {
+        self.custom
+    }
+}
+
+impl fmt::Debug for QuestionInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuestionInfo")
+            .field("question", &"[redacted]")
+            .field("header", &"[redacted]")
+            .field("options", &self.options.len())
+            .field("multiple", &self.multiple)
+            .field("custom", &self.custom)
+            .finish()
+    }
+}
+
+impl fmt::Display for QuestionInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "OpenCode question (options: {}, multiple: {:?}, custom: {:?})",
+            self.options.len(),
+            self.multiple,
+            self.custom
+        )
+    }
+}
+
+/// A typed OpenCode question request (task 6.8).
+///
+/// The reference `list_questions` returns the raw JSON array of the installed
+/// `/question` operation, whose `QuestionRequest` shape is
+/// `{id, sessionID, questions, tool?}` (OpenCode SDK). This type preserves the
+/// fields the reference consumers read (`worker.py::_pending_questions`,
+/// `mcp_server.py::_blockers_present`): [`Question::id`],
+/// [`Question::session_id`], the nested [`Question::questions`] and the
+/// optional [`Question::tool`].
+///
+/// Parsing distinguishes the required SDK fields from absent optional defaults
+/// and from malformed values. `id`, `sessionID` and `questions` are required:
+/// a missing, `null` or wrongly typed identity is [`QuestionError::Malformed`],
+/// never `None`/an empty list, so a damaged pending question cannot be mistaken
+/// for an absent one (for example, silently dropped by a future `sessionID`
+/// filter). Every nested [`QuestionInfo`] and [`QuestionOption`] required field
+/// is checked the same way. A genuine empty `questions: []` stays valid and
+/// distinguishable from the damaged case. A non-object element or a non-array
+/// top-level body is [`QuestionError::Malformed`] too, so a damaged request is
+/// never silently skipped and can never make the list look empty.
+///
+/// The [`fmt::Debug`]/[`fmt::Display`] representations render only presence
+/// flags and counts, never the id, session id, question text, header, options
+/// or tool ids.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Question {
+    id: Option<String>,
+    session_id: Option<String>,
+    questions: Vec<QuestionInfo>,
+    tool: Option<QuestionTool>,
+}
+
+impl Question {
+    /// Returns the request id.
+    ///
+    /// Parsing rejects a missing, `null` or wrongly typed `id` as
+    /// [`QuestionError::Malformed`], so every successfully parsed request
+    /// reports `Some` here.
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Returns the `sessionID`.
+    ///
+    /// Parsing rejects a missing, `null` or wrongly typed `sessionID` as
+    /// [`QuestionError::Malformed`], so a damaged request can never be silently
+    /// dropped by a session filter as if it were absent.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// Returns the nested questions (empty when the server sent `[]`).
+    #[must_use]
+    pub fn questions(&self) -> &[QuestionInfo] {
+        &self.questions
+    }
+
+    /// Returns the optional tool envelope.
+    #[must_use]
+    pub const fn tool(&self) -> Option<&QuestionTool> {
+        self.tool.as_ref()
+    }
+
+    /// Returns `true` when this request's `sessionID` is exactly `session_id`.
+    ///
+    /// This is the reference `worker.py::_pending_questions` /
+    /// `mcp_server.py::_blockers_present` session filter. Parsing guarantees
+    /// `sessionID` is a present string, so a damaged request can never match a
+    /// session filter (nor be silently dropped as if it were absent).
+    #[must_use]
+    pub fn belongs_to_session(&self, session_id: &str) -> bool {
+        self.session_id.as_deref() == Some(session_id)
+    }
+
+    /// Builds the reference `worker.py::_pending_questions` question blocker.
+    ///
+    /// The text is the first nested question's `question` string, truncated to
+    /// the reference 300-character limit. The reference reads
+    /// `str(question["questions"][0].get("question", ""))` only when `questions`
+    /// is a non-empty list, so an empty list yields the empty text; the
+    /// truncation counts Unicode code points exactly like Python string slicing.
+    #[must_use]
+    pub fn blocker(&self) -> QuestionBlocker {
+        let text = self.questions.first().map_or("", QuestionInfo::question);
+        QuestionBlocker {
+            text: text.chars().take(QUESTION_BLOCKER_TEXT_LIMIT).collect(),
+        }
+    }
+}
+
+impl fmt::Debug for Question {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Question")
+            .field("id", &self.id.as_ref().map(|_| "[redacted]"))
+            .field(
+                "session_id",
+                &self.session_id.as_ref().map(|_| "[redacted]"),
+            )
+            .field("questions", &self.questions.len())
+            .field("tool", &self.tool)
+            .finish()
+    }
+}
+
+impl fmt::Display for Question {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "OpenCode question request (id present: {}, questions: {}, tool present: {})",
+            self.id.is_some(),
+            self.questions.len(),
+            self.tool.is_some()
+        )
+    }
+}
+
+/// A typed question-operation failure (task 6.8).
+///
+/// [`QuestionError::Transport`] preserves the underlying [`TransportError`]
+/// (timeout, unavailable, HTTP 401, HTTP 404, other non-success, protocol);
+/// [`QuestionError::Malformed`] means the successful `GET /question` body was
+/// not valid JSON, was not a JSON array, or carried a malformed element. There
+/// is no reply operation in this stage, so there is no invalid-id variant.
+/// Neither [`fmt::Debug`] nor [`fmt::Display`] renders the endpoint, the query,
+/// the request/session id, the question content, the credential or the response
+/// body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QuestionError {
+    /// The transport itself failed.
+    Transport(TransportError),
+    /// The question-list response body was not a valid JSON array of objects.
+    Malformed,
+}
+
+impl From<TransportError> for QuestionError {
+    fn from(error: TransportError) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl fmt::Debug for QuestionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "Transport({error:?})"),
+            Self::Malformed => f.write_str("Malformed"),
+        }
+    }
+}
+
+impl fmt::Display for QuestionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "OpenCode question request failed: {error}"),
+            Self::Malformed => f.write_str("OpenCode question response is malformed"),
+        }
+    }
+}
+
+impl Error for QuestionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport(error) => Some(error),
+            Self::Malformed => None,
+        }
+    }
+}
+
+/// Parses a question-list body (`list_questions`).
+///
+/// The top level must be a JSON array; anything else is
+/// [`QuestionError::Malformed`]. Every element must be an object and is parsed
+/// fail-closed, so a non-object element or a malformed field is
+/// [`QuestionError::Malformed`] rather than a silently skipped entry: a damaged
+/// pending question must not disappear from the list.
+fn parse_question_list(body: &[u8]) -> Result<Vec<Question>, QuestionError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| QuestionError::Malformed)?;
+    let items = value.as_array().ok_or(QuestionError::Malformed)?;
+    items.iter().map(question_from_value).collect()
+}
+
+/// Maps one JSON value to a [`Question`], failing closed on a non-object.
+fn question_from_value(value: &serde_json::Value) -> Result<Question, QuestionError> {
+    let object = value.as_object().ok_or(QuestionError::Malformed)?;
+    // The SDK `QuestionRequest` marks `id` and `sessionID` as required strings.
+    // A missing, `null` or wrongly typed identity is
+    // [`QuestionError::Malformed`] rather than `None`, so a damaged pending
+    // question can never be mistaken for an absent one (for example, silently
+    // dropped by a future `sessionID` filter).
+    let required_string = |name: &str| match object.get(name) {
+        Some(serde_json::Value::String(text)) => Ok(text.clone()),
+        _ => Err(QuestionError::Malformed),
+    };
+    // `questions` is a required array in the SDK shape; an absent or `null`
+    // value is malformed and must not collapse to an empty vector, while a
+    // genuine `[]` is valid and stays distinguishable from the damaged case.
+    let questions = match object.get("questions") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(question_info_from_value)
+            .collect::<Result<Vec<QuestionInfo>, QuestionError>>(
+        )?,
+        _ => return Err(QuestionError::Malformed),
+    };
+    let tool = match object.get("tool") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(tool)) => Some(QuestionTool {
+            message_id: tool_string(tool, "messageID", QuestionError::Malformed)?,
+            call_id: tool_string(tool, "callID", QuestionError::Malformed)?,
+        }),
+        Some(_) => return Err(QuestionError::Malformed),
+    };
+    Ok(Question {
+        id: Some(required_string("id")?),
+        session_id: Some(required_string("sessionID")?),
+        questions,
+        tool,
+    })
+}
+
+/// Maps one JSON value to a [`QuestionInfo`], failing closed on a non-object.
+fn question_info_from_value(value: &serde_json::Value) -> Result<QuestionInfo, QuestionError> {
+    let object = value.as_object().ok_or(QuestionError::Malformed)?;
+    let required_string = |name: &str| match object.get(name) {
+        Some(serde_json::Value::String(text)) => Ok(text.clone()),
+        _ => Err(QuestionError::Malformed),
+    };
+    // `options` is a required array of `QuestionOption` in the SDK shape; an
+    // absent or `null` value is malformed, while a valid `[]` is preserved.
+    let options = match object.get("options") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(question_option_from_value)
+            .collect::<Result<Vec<QuestionOption>, QuestionError>>(
+        )?,
+        _ => return Err(QuestionError::Malformed),
+    };
+    Ok(QuestionInfo {
+        question: required_string("question")?,
+        header: required_string("header")?,
+        options,
+        multiple: optional_bool(object.get("multiple"))?,
+        custom: optional_bool(object.get("custom"))?,
+    })
+}
+
+/// Maps one JSON value to a [`QuestionOption`], failing closed on a non-object.
+fn question_option_from_value(value: &serde_json::Value) -> Result<QuestionOption, QuestionError> {
+    let object = value.as_object().ok_or(QuestionError::Malformed)?;
+    let required_string = |name: &str| match object.get(name) {
+        Some(serde_json::Value::String(text)) => Ok(text.clone()),
+        _ => Err(QuestionError::Malformed),
+    };
+    Ok(QuestionOption {
+        label: required_string("label")?,
+        description: required_string("description")?,
+    })
+}
+
+/// Reads an optional boolean member, failing closed on a wrongly typed value.
+///
+/// The optional `multiple`/`custom` flags keep the reference default of `None`
+/// when absent or `null`; a present value of any other JSON type is
+/// [`QuestionError::Malformed`].
+fn optional_bool(value: Option<&serde_json::Value>) -> Result<Option<bool>, QuestionError> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(flag)) => Ok(Some(*flag)),
+        Some(_) => Err(QuestionError::Malformed),
+    }
+}
+
+/// A pending question blocker for one session (task 6.8).
+///
+/// The reference `worker.py::_pending_questions` turns each matching question
+/// request into `{"type": "question", "text": ...}`, where `text` is the first
+/// `questions[].question` string truncated to 300 characters. This type carries
+/// exactly that text; the `type` discriminator is exposed through
+/// [`QuestionBlocker::kind`]. The [`fmt::Debug`]/[`fmt::Display`]
+/// representations render only the text length, never the text itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct QuestionBlocker {
+    text: String,
+}
+
+impl QuestionBlocker {
+    /// Returns the reference `"question"` blocker type discriminator.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        "question"
+    }
+
+    /// Returns the first question's text, truncated to 300 characters.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl fmt::Debug for QuestionBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuestionBlocker")
+            .field("kind", &self.kind())
+            .field("text", &self.text.chars().count())
+            .finish()
+    }
+}
+
+impl fmt::Display for QuestionBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "OpenCode question blocker (text chars: {})",
+            self.text.chars().count()
+        )
+    }
+}
+
+/// The pending permission and question blockers of one session (task 6.8).
+///
+/// A pure, reusable projection of the typed [`Permission`] and [`Question`]
+/// lists onto a single `sessionID`, mirroring the reference presence checks
+/// `worker.py::_pending_permissions`/`_pending_questions` and
+/// `mcp_server.py::_blockers_present` without implementing the worker state
+/// machine, auto-approval or any question reply API. It does not probe the
+/// endpoint itself, so a transport or malformed response stays visible to the
+/// caller (the reference consumers decide whether to swallow it or fail
+/// closed); this helper cannot hide an error.
+///
+/// For successfully fetched lists the reference `_blockers_present` is `true`
+/// exactly when at least one blocker is present, which is equivalent to
+/// `!SessionBlockers::is_empty()` (a `true` [`SessionBlockers::is_empty`] means
+/// the session has no blocker, the opposite of `_blockers_present`). The
+/// reference error policy — whether a transport or malformed response counts as
+/// a blocker — stays the caller's responsibility; this helper does not encode
+/// it.
+#[derive(Clone, Debug)]
+pub struct SessionBlockers {
+    permissions: Vec<Permission>,
+    questions: Vec<QuestionBlocker>,
+}
+
+impl SessionBlockers {
+    /// Filters `permissions` and `questions` to exactly `session_id`.
+    ///
+    /// The `sessionID` comparison is exact and byte-for-byte, so requests from
+    /// another session are never mixed in. The question blockers carry the
+    /// reference truncated text.
+    #[must_use]
+    pub fn detect(permissions: &[Permission], questions: &[Question], session_id: &str) -> Self {
+        Self {
+            permissions: permissions
+                .iter()
+                .filter(|permission| permission.belongs_to_session(session_id))
+                .cloned()
+                .collect(),
+            questions: questions
+                .iter()
+                .filter(|question| question.belongs_to_session(session_id))
+                .map(Question::blocker)
+                .collect(),
+        }
+    }
+
+    /// Returns `true` when the session has no pending permission or question.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.permissions.is_empty() && self.questions.is_empty()
+    }
+
+    /// Returns the session's pending permission requests.
+    #[must_use]
+    pub fn permissions(&self) -> &[Permission] {
+        &self.permissions
+    }
+
+    /// Returns the session's pending question blockers.
+    #[must_use]
+    pub fn questions(&self) -> &[QuestionBlocker] {
+        &self.questions
+    }
+}
+
+impl fmt::Display for SessionBlockers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "OpenCode session blockers (permissions: {}, questions: {})",
+            self.permissions.len(),
+            self.questions.len()
+        )
     }
 }
 
@@ -6977,16 +7601,15 @@ mod tests {
             .send_prompt_async(secret_id, secret_message, secret_text)
             .expect("delivery must succeed");
 
-        for rendered in [format!("{client:?}")] {
-            assert!(!rendered.contains(&workspace_text));
-            assert!(!rendered.contains("secret-provider"));
-            assert!(!rendered.contains("secret-model"));
-            assert!(!rendered.contains(secret_id));
-            assert!(!rendered.contains(secret_message));
-            assert!(!rendered.contains(secret_text));
-            assert!(!rendered.contains(PASSWORD));
-            assert!(!rendered.contains(PASSWORD_BASE64));
-        }
+        let rendered = format!("{client:?}");
+        assert!(!rendered.contains(&workspace_text));
+        assert!(!rendered.contains("secret-provider"));
+        assert!(!rendered.contains("secret-model"));
+        assert!(!rendered.contains(secret_id));
+        assert!(!rendered.contains(secret_message));
+        assert!(!rendered.contains(secret_text));
+        assert!(!rendered.contains(PASSWORD));
+        assert!(!rendered.contains(PASSWORD_BASE64));
         for error in [
             PromptError::InvalidSessionId,
             PromptError::Transport(TransportError::Unauthorized),
@@ -7502,6 +8125,394 @@ mod tests {
             let rendered = format!("{error} {error:?}");
             assert!(!rendered.contains(&workspace_text));
             assert!(!rendered.contains("per_secret"));
+            assert!(!rendered.contains(PASSWORD));
+            assert!(!rendered.contains(PASSWORD_BASE64));
+        }
+    }
+
+    // --- 6.8 questions and blockers ----------------------------------------
+
+    /// A reference-compatible `QuestionRequest` array (OpenCode SDK shape).
+    fn reference_question_fixture() -> serde_json::Value {
+        serde_json::json!([
+            {
+                "id": "que_1",
+                "sessionID": "ses_1",
+                "questions": [
+                    {
+                        "question": "Which database?",
+                        "header": "Database",
+                        "options": [
+                            {"label": "Postgres", "description": "Relational"},
+                            {"label": "SQLite", "description": "Embedded"}
+                        ],
+                        "multiple": false,
+                        "custom": true
+                    }
+                ],
+                "tool": {"messageID": "msg_1", "callID": "call_1"}
+            },
+            {
+                "id": "que_2",
+                "sessionID": "ses_2",
+                "questions": []
+            }
+        ])
+    }
+
+    #[test]
+    fn list_questions_success_is_scoped_and_parses_reference_fixture() {
+        let fixture = reference_question_fixture();
+        let (port, captured) = spawn_server(move |_request| ok_json_value(&fixture));
+        let (_dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+        let questions = client.list_questions().expect("list must parse");
+        assert_eq!(questions.len(), 2);
+
+        let first = &questions[0];
+        assert_eq!(first.id(), Some("que_1"));
+        assert_eq!(first.session_id(), Some("ses_1"));
+        assert!(first.belongs_to_session("ses_1"));
+        assert!(!first.belongs_to_session("ses_2"));
+        let info = &first.questions()[0];
+        assert_eq!(info.question(), "Which database?");
+        assert_eq!(info.header(), "Database");
+        assert_eq!(info.options().len(), 2);
+        assert_eq!(info.options()[0].label(), "Postgres");
+        assert_eq!(info.options()[0].description(), "Relational");
+        assert_eq!(info.multiple(), Some(false));
+        assert_eq!(info.custom(), Some(true));
+        let tool = first.tool().expect("tool must parse");
+        assert_eq!(tool.message_id(), Some("msg_1"));
+        assert_eq!(tool.call_id(), Some("call_1"));
+
+        let second = &questions[1];
+        assert_eq!(second.id(), Some("que_2"));
+        assert!(second.questions().is_empty());
+        assert!(second.tool().is_none());
+
+        let raw = captured.lock().expect("capture mutex").clone();
+        assert_eq!(
+            request_target(&raw),
+            "GET /question?directory=%2Ftmp%2Fws HTTP/1.1"
+        );
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains(&format!("authorization: Basic {PASSWORD_BASE64}\r\n")));
+        assert!(text.contains("accept: application/json\r\n"));
+    }
+
+    #[test]
+    fn list_questions_keeps_valid_empty_questions_and_optional_defaults() {
+        let questions =
+            parse_question_list(br#"[{"id":"que_1","sessionID":"ses_1","questions":[]}]"#)
+                .expect("a valid empty questions array must parse");
+        assert!(questions[0].questions().is_empty());
+        assert!(questions[0].tool().is_none());
+
+        let nulls = parse_question_list(
+            br#"[{"id":"que_2","sessionID":"ses_2","questions":[{"question":"q","header":"h","options":[],"multiple":null,"custom":null}],"tool":null}]"#,
+        )
+        .expect("null optional fields keep the reference defaults");
+        let info = &nulls[0].questions()[0];
+        assert!(info.options().is_empty());
+        assert_eq!(info.multiple(), None);
+        assert_eq!(info.custom(), None);
+        assert!(nulls[0].tool().is_none());
+
+        let absent = parse_question_list(
+            br#"[{"id":"que_3","sessionID":"ses_3","questions":[{"question":"q","header":"h","options":[]}]}]"#,
+        )
+        .expect("absent optional flags keep the reference defaults");
+        assert_eq!(absent[0].questions()[0].multiple(), None);
+        assert_eq!(absent[0].questions()[0].custom(), None);
+    }
+
+    #[test]
+    fn list_questions_valid_empty_top_level_list_succeeds_without_blockers() {
+        let (port, captured) = spawn_server(|_request| ok_json(b"[]"));
+        let (_dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+        let questions = client
+            .list_questions()
+            .expect("a valid empty top-level array must parse");
+        assert!(questions.is_empty());
+        assert!(SessionBlockers::detect(&[], &questions, "ses_1").is_empty());
+
+        let raw = captured.lock().expect("capture mutex").clone();
+        assert_eq!(
+            request_target(&raw),
+            "GET /question?directory=%2Ftmp%2Fws HTTP/1.1"
+        );
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains(&format!("authorization: Basic {PASSWORD_BASE64}\r\n")));
+    }
+
+    #[test]
+    fn list_questions_rejects_missing_or_null_required_identity_and_questions() {
+        let bodies: [&[u8]; 7] = [
+            br#"[{"sessionID":"ses_1","questions":[]}]"#,
+            br#"[{"id":null,"sessionID":"ses_1","questions":[]}]"#,
+            br#"[{"id":"que_1","questions":[]}]"#,
+            br#"[{"id":"que_1","sessionID":null,"questions":[]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1"}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":null}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":{}}]"#,
+        ];
+        for body in bodies {
+            assert_eq!(
+                parse_question_list(body).expect_err("must fail closed"),
+                QuestionError::Malformed,
+                "body {body:?} must be malformed rather than a missing/empty default"
+            );
+        }
+    }
+
+    #[test]
+    fn list_questions_does_not_skip_a_malformed_question_between_valid_ones() {
+        let body = br#"[
+            {"id":"que_1","sessionID":"ses_1","questions":[]},
+            {"id":"que_2","sessionID":"ses_2"},
+            {"id":"que_3","sessionID":"ses_3","questions":[]}
+        ]"#;
+        assert_eq!(
+            parse_question_list(body).expect_err("must not skip the damaged element"),
+            QuestionError::Malformed
+        );
+    }
+
+    #[test]
+    fn list_questions_malformed_response_fails_closed() {
+        let bodies: [&[u8]; 5] = [b"not-json", b"{}", b"null", b"\"x\"", b"1"];
+        for body in bodies {
+            let (port, _captured) = spawn_server(move |_request| ok_json(body));
+            let (_dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+            assert_eq!(
+                client.list_questions().expect_err("must fail closed"),
+                QuestionError::Malformed,
+                "body {body:?} must be malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn list_questions_fails_closed_on_malformed_elements_and_fields() {
+        let bodies: [&[u8]; 14] = [
+            br#"[42]"#,
+            br#"[{"id":42,"sessionID":"ses_1","questions":[]}]"#,
+            br#"[{"id":"que_1","sessionID":42,"questions":[]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[42]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"header":"h","options":[]}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","options":[]}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h"}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":null}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":[42]}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":[{"description":"d"}]}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":[{"label":"l"}]}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":[],"multiple":"yes"}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[{"question":"q","header":"h","options":[],"custom":1}]}]"#,
+            br#"[{"id":"que_1","sessionID":"ses_1","questions":[],"tool":"x"}]"#,
+        ];
+        for body in bodies {
+            assert_eq!(
+                parse_question_list(body).expect_err("must fail closed"),
+                QuestionError::Malformed,
+                "body {body:?} must be malformed rather than skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn list_questions_preserves_transport_errors() {
+        let cases = [
+            (401_u16, TransportError::Unauthorized),
+            (404, TransportError::NotFound),
+            (500, TransportError::HttpStatus(500)),
+        ];
+        for (status, expected) in cases {
+            let (port, _captured) = spawn_server(move |_request| error_response(status));
+            let (_dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+            assert_eq!(
+                client.list_questions().expect_err("must fail"),
+                QuestionError::Transport(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn list_questions_preserves_unavailable_and_timeout() {
+        let port = {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .expect("server must bind an ephemeral port");
+            listener
+                .local_addr()
+                .expect("bound address must be available")
+                .port()
+        };
+        let (_dir, endpoint, secret) = project_material(port);
+        let transport =
+            HttpTransport::new(endpoint, BasicAuth::new(secret), Duration::from_secs(2));
+        let client = OpenCodeClient::new(transport, PathBuf::from("/tmp/ws"));
+        assert_eq!(
+            client.list_questions().expect_err("must fail"),
+            QuestionError::Transport(TransportError::Unavailable)
+        );
+
+        let (port, captured) = spawn_server(|_request| ok_json(b"[]"));
+        let (_dir2, endpoint, secret) = project_material(port);
+        let transport = HttpTransport::new(endpoint, BasicAuth::new(secret), Duration::ZERO);
+        let client = OpenCodeClient::new(transport, PathBuf::from("/tmp/ws"));
+        assert_eq!(
+            client.list_questions().expect_err("must fail"),
+            QuestionError::Transport(TransportError::Timeout)
+        );
+        assert!(
+            captured.lock().expect("capture mutex").is_empty(),
+            "a zero timeout must fail before sending"
+        );
+    }
+
+    #[test]
+    fn session_blockers_filter_by_session_without_mixing() {
+        let permissions = parse_permission_list(
+            br#"[
+                {"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls"]},
+                {"id":"per_2","sessionID":"ses_2","permission":"read","patterns":[]}
+            ]"#,
+        )
+        .expect("permissions must parse");
+        let questions = parse_question_list(
+            br#"[
+                {"id":"que_1","sessionID":"ses_1","questions":[{"question":"Which db?","header":"h","options":[]}]},
+                {"id":"que_2","sessionID":"ses_2","questions":[{"question":"Other?","header":"h","options":[]}]},
+                {"id":"que_3","sessionID":"ses_3","questions":[]}
+            ]"#,
+        )
+        .expect("questions must parse");
+
+        let first = SessionBlockers::detect(&permissions, &questions, "ses_1");
+        assert!(!first.is_empty());
+        assert_eq!(first.permissions().len(), 1);
+        assert_eq!(first.permissions()[0].id(), Some("per_1"));
+        assert!(first.permissions()[0].belongs_to_session("ses_1"));
+        assert_eq!(first.questions().len(), 1);
+        assert_eq!(first.questions()[0].kind(), "question");
+        assert_eq!(first.questions()[0].text(), "Which db?");
+        assert_eq!(
+            first.to_string(),
+            "OpenCode session blockers (permissions: 1, questions: 1)"
+        );
+
+        let second = SessionBlockers::detect(&permissions, &questions, "ses_2");
+        assert_eq!(second.permissions().len(), 1);
+        assert_eq!(second.permissions()[0].id(), Some("per_2"));
+        assert_eq!(second.questions().len(), 1);
+        assert_eq!(second.questions()[0].text(), "Other?");
+
+        // A matching request is a blocker even when its nested `questions` is
+        // empty (reference `_pending_questions` appends the empty text), while
+        // an unknown session is empty: no cross-session mixing.
+        let third = SessionBlockers::detect(&permissions, &questions, "ses_3");
+        assert!(!third.is_empty());
+        assert!(third.permissions().is_empty());
+        assert_eq!(third.questions().len(), 1);
+        assert_eq!(third.questions()[0].text(), "");
+        assert!(SessionBlockers::detect(&permissions, &questions, "ses_unknown").is_empty());
+    }
+
+    #[test]
+    fn question_blocker_uses_first_question_and_truncates_like_reference() {
+        let long = "x".repeat(350);
+        let body = serde_json::json!([
+            {
+                "id": "que_1",
+                "sessionID": "ses_1",
+                "questions": [
+                    {"question": long, "header": "h", "options": []},
+                    {"question": "second", "header": "h", "options": []}
+                ]
+            }
+        ]);
+        let questions = parse_question_list(body.to_string().as_bytes()).expect("must parse");
+        let blocker = questions[0].blocker();
+        assert_eq!(blocker.text().len(), QUESTION_BLOCKER_TEXT_LIMIT);
+        assert_eq!(blocker.text().chars().count(), 300);
+        assert_eq!(blocker.text(), "x".repeat(300));
+
+        // The reference slices Python strings by code point, so a 301-character
+        // multi-byte string truncates to exactly 300 code points (600 bytes).
+        let unicode = "é".repeat(301);
+        let body = serde_json::json!([
+            {"id":"que_2","sessionID":"ses_2","questions":[{"question":unicode,"header":"h","options":[]}]}
+        ]);
+        let questions = parse_question_list(body.to_string().as_bytes()).expect("must parse");
+        let blocker = questions[0].blocker();
+        assert_eq!(blocker.text().chars().count(), 300);
+        assert_eq!(blocker.text().len(), 600);
+
+        // An empty nested question list yields the empty text, like the
+        // reference `text = ""` default.
+        let empty = parse_question_list(br#"[{"id":"que_3","sessionID":"ses_3","questions":[]}]"#)
+            .expect("must parse");
+        assert_eq!(empty[0].blocker().text(), "");
+    }
+
+    #[test]
+    fn question_and_blocker_types_never_render_content_workspace_or_credentials() {
+        let (port, _captured) = spawn_server(|_request| ok_json(b"[]"));
+        let (dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+        let workspace_text = client.workspace().to_string_lossy().into_owned();
+        let _keep = dir;
+
+        let questions = parse_question_list(
+            br#"[{"id":"que_secret","sessionID":"ses_secret","questions":[{"question":"secret-question","header":"secret-header","options":[{"label":"secret-label","description":"secret-description"}],"multiple":true,"custom":false}],"tool":{"messageID":"msg_secret","callID":"call_secret"}}]"#,
+        )
+        .expect("must parse");
+        let question = &questions[0];
+        let info = &question.questions()[0];
+        let option = &info.options()[0];
+        let tool = question.tool().expect("tool must parse");
+        let blocker = question.blocker();
+
+        for rendered in [
+            format!("{client:?}"),
+            format!("{question:?}"),
+            format!("{question}"),
+            format!("{info:?}"),
+            format!("{info}"),
+            format!("{option:?}"),
+            format!("{option}"),
+            format!("{tool:?}"),
+            format!("{tool}"),
+            format!("{blocker:?}"),
+            format!("{blocker}"),
+        ] {
+            assert!(!rendered.contains(&workspace_text));
+            assert!(!rendered.contains("que_secret"));
+            assert!(!rendered.contains("ses_secret"));
+            assert!(!rendered.contains("secret-question"));
+            assert!(!rendered.contains("secret-header"));
+            assert!(!rendered.contains("secret-label"));
+            assert!(!rendered.contains("secret-description"));
+            assert!(!rendered.contains("msg_secret"));
+            assert!(!rendered.contains("call_secret"));
+            assert!(!rendered.contains(PASSWORD));
+            assert!(!rendered.contains(PASSWORD_BASE64));
+        }
+
+        let blockers = SessionBlockers::detect(&[], &questions, "ses_secret");
+        for rendered in [format!("{blockers:?}"), format!("{blockers}")] {
+            assert!(!rendered.contains("secret-question"));
+            assert!(!rendered.contains(PASSWORD));
+            assert!(!rendered.contains(PASSWORD_BASE64));
+        }
+
+        for error in [
+            QuestionError::Malformed,
+            QuestionError::Transport(TransportError::Unauthorized),
+            QuestionError::Transport(TransportError::Timeout),
+            QuestionError::Transport(TransportError::Unavailable),
+        ] {
+            let rendered = format!("{error} {error:?}");
+            assert!(!rendered.contains(&workspace_text));
+            assert!(!rendered.contains("que_secret"));
             assert!(!rendered.contains(PASSWORD));
             assert!(!rendered.contains(PASSWORD_BASE64));
         }

@@ -7,11 +7,31 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
 CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
 добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
-Python и Rust никогда не делят рабочую БД или runtime state: у каждой реализации
-свои state root, SQLite, locks, PID/ownership records, token-файлы, логи и
-endpoints. Rust всегда создаёт и использует собственную пустую БД и отдельную
-историю задач; импорт, копирование или перенос Python state/history в Rust не
-поддерживается и не планируется.
+Python и Rust делят только канонический `projects.toml` для чтения (запись —
+от активной реализации при остановленном runtime). Рабочую БД и runtime state
+они не делят: у каждой реализации свои state root, SQLite, locks,
+PID/ownership records, token-файлы, логи и endpoints. Rust всегда создаёт и
+использует собственную пустую БД и отдельную историю задач; импорт, копирование
+или перенос Python state/history в Rust не поддерживается и не планируется.
+
+## Расхождение версий и ближайший шаг
+
+Источник истины — READ-ONLY Python-репозиторий `/home/denis/Python/agent_bridge`
+на HEAD `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a` (schema **v15**,
+`storage.py:41`). Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) построен
+на старом контракте **schema v6** (`docs/contract-manifest.json`,
+`docs/fixtures/sqlite/*-v6.sqlite`) и не является паритетом с современным
+Python. Возможности Python после v6 (structured findings, soft budgets,
+workflow/dependencies, per-round checkpoints, worktree execution, executor
+profiles, parallel writers, quarantine, delivery, diagnostics/hook, config
+migration) в Rust **не завершены**.
+
+Ближайший шаг — **Поток 0A: refresh contract manifest и config/MCP/SQLite/
+security/runtime fixtures до v15 ПЕРЕД 7.7**; затем schema/domain/config
+foundations и потребители (см.
+[docs/implementation-plan.md](docs/implementation-plan.md)). Новые возможности
+распределены по существующим потокам и выполняются после согласованного
+refresh; единого хвостового «когда-нибудь» нет.
 
 ## Статус миграции
 
@@ -805,9 +825,395 @@ endpoints. Rust всегда создаёт и использует собств
   неопределённый исход после полной отправки reply (mock получает и фиксирует
   POST body, затем не отвечает до истечения client deadline: Timeout, ровно
   один POST, без retry) и redaction; тесты 6.1–6.6 не регрессировали.
+- Завершён этап **6.8. Questions и blockers**. `OpenCodeClient` получил
+  `list_questions()` → `GET /question`, scoped с `directory`-query и
+  существующим Basic auth, как reference `opencode_client.py::list_questions`.
+  Типизированный `Question` сохраняет реальные reference поля
+  `QuestionRequest` (OpenCode SDK): `id`/`sessionID` (`Option<String>`),
+  `questions` (`Vec<QuestionInfo>`) и optional `tool: {messageID, callID}`
+  (`QuestionTool`); каждый `QuestionInfo` несёт `question`/`header`, `options`
+  (`QuestionOption` с `label`/`description`) и optional `multiple`/`custom`.
+  Parsing fail closed: `id`, `sessionID` и `questions` обязательны, required
+  поля `QuestionInfo`/`QuestionOption` проверяются так же, поэтому
+  отсутствие/`null`/неверный тип, не-объектный элемент и не-массив top-level →
+  `QuestionError::Malformed` (не `None` и не пустой список), чтобы повреждённый
+  question нельзя было молча отфильтровать по `sessionID`; валидные пустые
+  `questions: []`/`options: []` остаются допустимыми и отличимыми. Optional
+  `multiple`/`custom`/`tool` при absent/`null` дают `None`, при ином типе —
+  `Malformed`. Минимальная reusable логика определения blockers — чистый
+  `SessionBlockers::detect(&[Permission], &[Question], session_id)`, повторяющий
+  reference presence-проверки `worker.py::_pending_permissions`/
+  `_pending_questions` и `mcp_server.py::_blockers_present`: точное сравнение
+  `sessionID` не смешивает сессии, `Question::blocker()` повторяет reference
+  `{"type": "question", "text": ...}` (первый `questions[].question`, усечённый
+  до 300 Unicode code points, как Python `text[:300]`), а при успешно полученных
+  списках наличие blockers эквивалентно `!SessionBlockers::detect(...).is_empty()`
+  (reference `_blockers_present=True` означает наличие blocker, тогда как
+  `is_empty()=True` — отсутствие); хелпер не делает HTTP и не скрывает
+  transport/malformed, поэтому error policy reference остаётся обязанностью
+  caller. Намеренные fail-closed
+  отклонения: reference `_pending_questions` при `OpenCodeError` возвращает
+  `[]`, reference `_blockers_present` при ошибке возвращает `True`, reference
+  фильтрует сырые dict без проверки типов; здесь повреждённый ответ —
+  `QuestionError::Malformed`. Question reply API, automatic approval,
+  worker/MCP/runtime wiring, SQLite/schema и новые dependencies не входят.
+  Транспортные категории сохраняются как `QuestionError::Transport`, retry нет.
+  Redaction соблюдён: `Question`/`QuestionInfo`/`QuestionOption`/
+  `QuestionTool`/`QuestionBlocker` рендерят только presence-флаги, счётчики и
+  длину текста, `QuestionError` — static label и вложенный `TransportError`.
+  Focused loopback tests покрывают точный method/path/scoped query/auth,
+  reference-compatible fixture, валидные пустые коллекции и optional defaults,
+  отсутствие/`null` required полей, malformed request между валидными,
+  malformed top-level/element/полей, transport errors 401/404/500, unavailable
+  и zero-timeout, session filtering permission/question blockers без смешения
+  сессий, усечение текста до 300 code points (включая multi-byte) и redaction;
+  тесты 6.1–6.7 не регрессировали.
+- Завершён этап **7.1. Worker argv и spawn**. Новый узкий workspace-crate
+  `bridge-worker` строит типизированный argv и запускает отдельный worker
+  процесс, останавливаясь до lock/startup grace (7.2), session resolution,
+  worker state machine, MCP/runtime wiring и production CLI `worker`
+  subcommand (CLI пока placeholder). `WorkerInvocation` валидирует входы и
+  рендерит reference-порядок ровно как `worker.py::worker_argv`:
+  `<absolute-agent-bridge> worker --project ID --config PATH --state-root PATH
+  --task TASK_ID --round N`. Executable, config path и state root обязаны быть
+  абсолютными: production путь executable — `WorkerInvocation::from_current_exe`
+  (`std::env::current_exe`, тот же Rust binary), а caller резолвит
+  config/state против собственного cwd (reference config loader делает это
+  через `Path.absolute()`); явный абсолютный executable injection допустим для
+  коротких integration fixtures/будущего wiring. Требование абсолютных
+  `--config`/`--state-root` не даёт child, запущенному в workspace,
+  интерпретировать их относительно другого cwd и ломать config resolution и
+  state isolation. Аргументы — `OsString` и передаются напрямую в
+  `Command::args`, поэтому пробелы и Unicode сохраняются byte-for-byte,
+  shell/PATH-поиск/Python interpreter не используются; идентификаторы — domain
+  `ProjectId`/`TaskId`, а round — положительный `u32`, что совпадает с
+  persisted `round_number` `1..=u32::MAX` (`RoundRow`). `spawn_worker` до любых
+  FS side effects fail-closed проверяет state namespace: `invocation.state_root`
+  и `invocation.project_id` должны совпадать с `RustStateLayout`, а layout
+  должен быть уже инициализированным валидным Rust-owned state, что
+  доказывает существующий `RustStateLayout::open` (marker, format_version,
+  project namespace, normalized state root, `meta.runtime_owner` и schema v6).
+  Foreign, missing или mismatched state (например Python state или каталог без
+  Rust marker) отклоняется до создания каталога/chmod/log/spawn, поэтому чужой
+  state не изменяется. Только затем создаётся приватный project state dir по
+  `RustStateLayout` (mode `0o700` на Unix), stdout и stderr ребёнка
+  append-ятся в один Rust-owned `worker.log` (`RuntimeLog::Worker`), cwd =
+  workspace, stdin = `/dev/null`, а на Unix — новая session и process group
+  через safe `process-wrap::std::ProcessSession` (`setsid`, reference
+  `start_new_session=True`), а не только process group; `unsafe_code=forbid`
+  соблюдён. Новая минимальная dependency `process-wrap`
+  (default-features=false, features `std`+`process-session`) обоснована
+  отсутствием safe setsid API в std/`command-group`; Cargo.lock обновлён.
+  Caller не блокируется до завершения worker, drop `SpawnedWorker` не убивает
+  процесс, а `pid`/`try_wait`/`wait`/`kill` дают достаточный handle/outcome
+  контракт. Python state не читается, не копируется и не инициализируется,
+  runtime logs — только в Rust-owned namespace. Типизированный `WorkerError`
+  (InvalidExecutable, InvalidWorkspace, InvalidConfigPath, InvalidStateRoot,
+  InvalidRound, CurrentExecutable, StateRootMismatch, ProjectMismatch,
+  StateOwnership, StateDirectory, LogFile, Spawn) рендерит в `Display`/`Debug`
+  только static labels, не раскрывая executable, config/state paths,
+  project/task id и round; I/O причина доступна лишь через `Error::source`.
+  Focused tests покрывают точный argv, сохранение пробелов/Unicode без shell,
+  отклонение relative executable/config/state/workspace, пустых paths, round 0,
+  state root и project mismatch, `from_current_exe` с абсолютным argv[0],
+  typed/redacted spawn failure и fail-closed ownership regressions (foreign
+  marker, missing marker, state под другим root, project mismatch) с проверкой
+  неизменности чужого каталога/marker/log и отсутствия child. Meaningful
+  integration spawn короткоживущего локального helper-бинарника проверяет
+  реальный `setsid` (pid == pgrp == sid, sid != parent session), workspace cwd,
+  stdin EOF, 0700 state dir и stdout+stderr в логе, а bounded lifecycle tests с
+  `try_wait`-deadline и kill/reap доказывают return-before-exit и контракт
+  `try_wait`/`kill`; внешние сервисы/сеть не запускаются, после тестов
+  процессов не остаётся. Lock/startup grace (7.2), session resolution/round
+  execution, worker state machine, MCP wiring, auto-approval, verification
+  integration и process ownership CLI 9.6 не входят.
+- Завершён этап **7.2. Lock и startup grace**. `bridge-worker` получил
+  project-scoped non-blocking worker lock и reusable bounded startup grace,
+  останавливаясь до session resolution (7.3), round execution, worker state
+  machine, MCP/runtime wiring, auto-approval и verification integration.
+  `WorkerLock::try_acquire` открывает Rust-owned `worker.lock`
+  (`RustStateLayout::lock(RuntimeLock::Worker)`, `<root>/<project>/worker.lock`),
+  `O_RDWR | O_CREAT` mode `0o600`, и берёт **эксклюзивный неблокирующий** BSD
+  `flock` через safe `nix::fcntl::flock` (`LOCK_EX | LOCK_NB`), совместимый с
+  reference `worker.py::worker_lock`/`worker_lock_is_free`. Результат
+  типизирован: `WorkerLockOutcome::Acquired(WorkerLock)` / `Busy`; RAII guard
+  держит lock до drop, ядро освобождает его и при завершении процесса, поэтому
+  падение worker не оставляет stale lock. Разные проекты не блокируют друг
+  друга, наличие `worker.lock` не равно held lock (`WorkerLock::is_free`/
+  `is_held` реально пробят состояние), а существующий lock-файл не удаляется,
+  не пересоздаётся и не усекается (`.truncate(false)`, inode/содержимое
+  сохраняются). До любых действий с lock artifact layout fail-closed
+  проверяется production guard'ом `RustStateLayout::open` (marker,
+  format_version, namespace, normalized state root, `meta.runtime_owner`,
+  schema v6): missing/foreign/скопированный под другой root state даёт
+  `WorkerLockErrorKind::StateOwnership` без создания lock-файла/project dir,
+  чужой (в том числе Python) state не изменяется. Новая dependency `nix` под
+  `cfg(unix)` переиспользует workspace dependency (feature `fs`) и сохраняет
+  `unsafe_code=forbid`. `WorkerLockError` в `Display`/`Debug` раскрывает только
+  static labels, не показывая state root, project id, lock path и содержимое;
+  причина доступна лишь через `Error::source`. Reusable `StartupGrace` с
+  явными монотонными `Instant` и grace (`DEFAULT_STARTUP_GRACE` = reference 10
+  секунд) даёт `StartupObservation::{Pending, Held, Released, GraceExpired}`:
+  свободный lock сразу после spawn — `Pending`, а не завершение; первое held
+  наблюдение закрывает startup window, последующий free — `Released`; истечение
+  строго `elapsed > grace` (граница `== grace` ещё `Pending`); повторный spawn
+  (`restart`) сбрасывает часы/`seen_held`; `observe_lock` пробит
+  `WorkerLock::is_held`. Settled statuses и `failed` при удерживаемом lock
+  обрабатываются вызывающим раньше startup tracking — зафиксировано в docs
+  узкого API без MCP/state machine/автоспавна. Unit tests покрывают isolation,
+  ownership refusal без side effects, mode 0600, сохранение inode/содержимого,
+  redaction и детерминированные boundary-тесты на явных `Instant`;
+  integration tests через короткоживущий `worker_lock_fixture` — реальное
+  конкурирующее acquisition (`Busy`), release при kill/process exit/drop guard,
+  независимость проектов, delayed acquisition, bounded never-acquires и
+  early-exit с короткими deadlines; родитель не пробит lock до атомарного
+  `acquired`/`ready` evidence (bounded readiness handshake `--ready`/
+  `--wait-for`), а процессные lock-тесты сериализованы против fork-наследования
+  held lock-fd; без сети и с полным reap helper'ов. Регрессии 7.1 проходят.
+- Завершён этап **7.3. Session resolution** (narrow foundation). `bridge-worker`
+  получил reusable `resolve_round_session(client, layout: &RustStateLayout,
+  round) -> Result<ResolvedSession, SessionResolutionError>` поверх production
+  `OpenCodeClient::{list_sessions, create_session}` (scoped `directory`/Basic
+  auth) и атомарного `StorageConnection::bind_round_session`. Resolver
+  открывает переданный `RustStateLayout` через production ownership guard
+  `RustStateLayout::open` (sidecar marker, implementation/format version,
+  namespace, normalized state-root, `meta.runtime_owner='rust'`, schema v6) до
+  чтения task/round, HTTP и записи и сверяет `layout.project_id` с
+  `round.project_id`; unchecked `StorageConnection` injection отсутствует.
+  Unmarked schema-v6/Python-owned DB, foreign/missing marker и Rust state,
+  скопированный под другой root, отвергаются `StateOwnership`, project mismatch
+  — `TaskMismatch`, всё без HTTP/write. Детерминированный
+  title — ровно `agent-bridge {task_id} round {round_number}`; непустой
+  `rounds.session_id` выигрывает немедленно без list/create HTTP и без
+  rebinding (`tasks.session_id` и session прошлого round не используются). Иначе
+  `list_sessions`: transport/malformed — fail-closed `SessionUnknown` без
+  создания; больше одного точного byte-for-byte совпадения title —
+  `SessionAmbiguous` без выбора первого и без create; ровно одно совпадение
+  adopt-ится (id непустой и начинается с `ses`, без требования `ses_`), для
+  adoption `directory` обязателен и должен resolved-совпадать с workspace, иначе
+  `SessionDirectoryMismatch`, затем атомарный bind. Без совпадений
+  `create_session(title)` вызывается ровно один раз без parentID/fork/старой
+  session; HTTP ошибка/неверный id — `SessionUnknown`, отсутствующий/null
+  `directory` допустим совместимо с reference, non-string `directory`
+  сворачивается typed parser в `None` и тоже допустим — документированное
+  отличие от reference (там `Path(directory)` поднимает `TypeError`),
+  присутствующий string обязан resolved-совпадать, после чего обязателен
+  успешный bind. До любого HTTP проверяется согласованность task/round/project/
+  current round и workspace (`UnknownTask`/`TaskMismatch`/`StaleRound`/
+  `WorkspaceMismatch`), поэтому stale/mismatched вход не создаёт session для
+  чужой задачи. Storage failure — типизированный `Storage`, никогда не
+  resolved success; созданная до сбоя binding session на следующем вызове
+  adopt-ится по title, а не дублируется; create с неизвестной доставкой не
+  retry-ится автоматически. Сравнение `directory` fail-closed: relative, NUL,
+  missing/non-resolvable и чужой tree отвергаются (никакого lexical prefix),
+  symlink-алиасы существующего workspace принимаются; это документированное
+  отличие от reference `Path.resolve()`, чей результат зависел бы от cwd.
+  `ResolvedSession` (id/source `Existing`/`Adopted`/`Created`) и
+  `SessionResolutionError` редактированы и не раскрывают ids, title, directory,
+  HTTP body, credentials, SQL и пути. Concurrency precondition: caller держит
+  `WorkerLock` (из того же layout) на весь resolver. Focused loopback-mock HTTP
+  + fresh Rust-owned SQLite тесты покрывают persisted-session без HTTP/write,
+  exact title, adoption
+  без POST, ambiguous, невалидный id, отсутствие/mismatch directory, symlink
+  workspace alias, scoped GET/POST auth и body без parentID, persisted
+  round/task pointers, reuse без дубликата, created-but-not-bound orphan
+  recovery, storage rejection, transport/malformed fail-closed без unintended
+  POST/retry, table-driven invalid/missing/empty/non-string matched и created
+  session id, malformed create JSON/top-level, non-string create directory как
+  документированное отличие (Rust принимает, reference `TypeError`),
+  ownership-guard rejection (unmarked schema-v6, foreign/missing marker,
+  layout/round project mismatch, state copied under another root) до HTTP,
+  отсутствие fallback `tasks.session_id`/reuse между rounds и
+  redaction. Регрессии 7.1/7.2 и handshake/serialization process tests
+  сохранены. Initial/revision prompt, prompt_async, outbound ids, observation,
+  auto-approval, worker state machine/CLI/MCP wiring, полная CI matrix и внешние
+  сервисы не входят.
+- Завершён этап **7.4. Initial prompt happy path** (narrow foundation).
+  `bridge-worker` получил pure prompt builder `initial_prompt(task, workspace)` и
+  reusable production
+  `dispatch_initial_round(client, layout: &RustStateLayout, round) -> Result<DispatchedRound,
+  DispatchError>`. Dispatch до любых HTTP/write открывает переданный layout через
+  production ownership guard `RustStateLayout::open` (marker, implementation/format
+  version, namespace, normalized state-root, `meta.runtime_owner='rust'`, schema
+  v6) и проверяет layout/round project, существование task, согласованность
+  task/round/project, current (highest-numbered) round и resolved workspace;
+  task обязан быть `implementing` и без pending close request
+  (`TaskNotDispatchable` иначе), `implement`-round обязателен
+  (`RevisionNotSupported` иначе), а round должен быть `pending` и ещё не attempted
+  (`RoundNotDispatchable` иначе), поэтому stale/mismatched/foreign/revision/
+  non-pending/repeated/closed/close-requested вход отвергается до side effects.
+  Затем 7.3 resolver резолвит и атомарно bind-ит ровно одну session. Поскольку
+  resolution делает HTTP и binding-write, task/round перепроверяются сразу после
+  него (те же `TaskNotDispatchable`/`RoundNotDispatchable`/`RevisionNotSupported`
+  условия) до `prepare`/`mark_sent`/`send`: close request или мутация task/round,
+  попавшие во время resolution, наблюдается и не доходит до prompt POST.
+  Persisted task перечитывается, prompt рендерится byte-for-byte по reference
+  `prompts.INSTRUCTION_TEMPLATE` (`allowed_paths` через `", "`, `test_commands`
+  через `"; "`, `<none>` для пустых, baseline из `snapshot.dirty_paths` +
+  `external_repositories[].dirty_paths`, permissive/strict git rule по
+  `snapshot.allow_commit is True`), outbound id — reference `"msg_" +
+  uuid.uuid4().hex` (`msg_` + 32 lowercase hex), persisted через `prepare_round`
+  (уже persisted id переиспользуется), затем `mark_round_sent` фиксирует
+  `sent`/`attempted=1` **до** единственного `send_prompt_async`, а после успеха
+  `mark_round_observing` переводит round в `observing` (task остаётся
+  `implementing`, observation loop отсутствует). Ошибка storage/HTTP —
+  типизированный redacted `DispatchError`, не ложный success; при сбое доставки
+  round остаётся `sent`/`attempted` с persisted outbound id (delivery outcome
+  undefined) и не retry-ится автоматически, а повторный dispatch отвергается до
+  POST. `DispatchError`/`DispatchedRound` в `Display`/`Debug` не раскрывают
+  prompt, task text, project/task/session/message ids, workspace, HTTP body, SQL
+  и пути; причина — только через `Error::source`. Concurrency precondition:
+  caller держит `WorkerLock` (из того же layout) на весь dispatch; lock
+  сериализует worker'ов одного проекта, но намеренно **не** берётся
+  cooperative-close writer'ами `request_task_close`/`complete_requested_close`
+  (будущий MCP close path) и внешними писателями того же SQLite, поэтому
+  задокументирован remaining race: close request в окне между повторной
+  проверкой и `mark_round_sent` здесь не детектируется, его отказ — задача
+  cooperative-close lifecycle 7.12, которая в этот шаг не входит. Focused
+  loopback-mock HTTP + fresh Rust-owned SQLite тесты покрывают exact prompt/body,
+  outbound id/body и persistence `sent`/`attempted` до prompt POST (наблюдение из
+  handler'а), session binding, successful `observing` lifecycle, scoped
+  auth/query, отсутствие лишних POST, reuse persisted session/prepared outbound
+  id, fail-before-send для invalid/stale/foreign/revision/non-pending/repeated
+  входа, fail-before-HTTP для closed task (`request_task_close` +
+  `complete_requested_close`), существующего pending close и таблицы
+  non-`implementing` task statuses без binding/outbound/attempt мутаций, close
+  request из mock session handler'а во время resolution без prompt POST, typed
+  delivery failure без retry, session-resolution failure без prompt POST,
+  ownership-guard rejection, model-поле последним и redaction; регрессии
+  7.1/7.2/7.3 сохранены. Completion observation,
+  permission/question blockers, auto-approval, failed/delivery-unknown (7.9),
+  recovery (7.10), verification integration (7.11), cooperative close (7.12),
+  worker state machine/CLI/MCP wiring и внешние сервисы не входят.
+- Завершён этап **7.5. Revision round** (narrow foundation). `bridge-worker`
+  получил pure revision prompt builder
+  `revision_prompt(task, workspace, findings, round_number) -> String` и
+  reusable production
+  `dispatch_revision_round(client, layout, round) -> Result<DispatchedRound,
+  DispatchError>` поверх 7.3 resolver, `OpenCodeClient::send_prompt_async` и
+  атомарных `StorageConnection::{prepare_round, mark_round_sent,
+  mark_round_observing}`. Initial и revision пути разделяют один внутренний
+  pipeline (ownership guard, project/task/round/current/workspace проверки,
+  session resolution, повторная проверка, reuse prepared outbound id,
+  persist-before-send, `observing`-переход), различаясь только ожидаемым
+  `RoundKind`/`TaskStatus` и prompt builder'ом; публичный API 7.4 и его
+  ошибки/поведение сохранены. `revision_prompt` рендерит byte-for-byte
+  reference `prompts.REVISION_TEMPLATE`: task id, workspace,
+  `раунд {round_number}`, `allowed_paths` через `", "`, `test_commands` через
+  `"; "`, `<none>` для пустых, те же baseline/git rules, исходная задача и
+  findings; подстановка — один `format!`-проход, поэтому placeholder-looking
+  текст в task/findings не раскрывается повторно. Findings берутся только из
+  persisted current `rounds.findings` (`None -> ""`, как reference
+  `round_obj.findings or ""`), не из response/result/blocker полей и не из
+  caller-supplied текста. `dispatch_revision_round` до любых HTTP/write
+  открывает layout через production ownership guard `RustStateLayout::open` и
+  требует `round.kind == Revise`, `task.status == Revising`, отсутствие
+  `close_requested_at`, current `pending` unattempted round, согласованность
+  layout/project/task/round и resolved workspace; initial dispatch по-прежнему
+  требует `Implement`/`Implementing` и отвергает revision
+  (`RevisionNotSupported`), а revision dispatch отвергает implement
+  (`ImplementNotSupported`), неверный task.status/close-request —
+  `TaskNotDispatchable`, non-pending/attempted — `RoundNotDispatchable`,
+  stale/foreign/workspace/ownership — соответствующие типизированные категории,
+  все до side effects. 7.3 resolver даёт каждому round собственную независимую
+  session по детерминированному title текущего round без parentID/fork;
+  `create_revision_round` уже очистил `tasks.session_id`, поэтому session
+  прошлого round не переиспользуется. Так как resolution делает HTTP и
+  binding-write, task/round перепроверяются теми же условиями сразу после него
+  до `prepare`/`mark_sent`/`send`, поэтому close request или мутация во время
+  resolution не доходят до prompt POST. Prepared outbound id переиспользуется
+  без второго prepare; `mark_round_sent` фиксирует `sent`/`attempted=1` **до**
+  единственного `send_prompt_async`, а после успеха `mark_round_observing`
+  переводит round в `observing` (task остаётся `revising`, observation loop
+  отсутствует). Ошибка storage/HTTP — типизированный redacted `DispatchError`,
+  не ложный success; сбой доставки оставляет round `sent`/`attempted` с
+  persisted outbound id и не retry-ится автоматически, а повторный revision
+  dispatch отвергается до POST. `DispatchError`/`DispatchedRound` в
+  `Display`/`Debug` не раскрывают prompt, findings, task text,
+  project/task/session/message ids, workspace, HTTP body, SQL и пути; причина —
+  только через `Error::source`. Concurrency precondition тот же: caller держит
+  project `WorkerLock` на весь dispatch; lock намеренно **не** берётся
+  cooperative-close writer'ами и внешними писателями, поэтому задокументирован
+  remaining close race между повторной проверкой и `mark_round_sent`, отказ
+  которого — cooperative-close lifecycle 7.12 (в этот шаг не входит). Focused
+  loopback-mock HTTP + fresh Rust-owned SQLite тесты покрывают законченный
+  `implement round -> create_revision_round -> dispatch_revision_round`: exact
+  prompt/body и persisted findings, dedicated new session без использования
+  previous round session/title, persistence `sent`/`attempted`/outbound до
+  prompt POST, task `revising`/round `observing`, None findings как пустая
+  секция, prepared outbound reuse, повторный revision dispatch без HTTP,
+  cross-kind `ImplementNotSupported`/`RevisionNotSupported`, таблицу
+  non-`revising` task statuses, pending close и close request во время session
+  resolution без prompt POST, stale/foreign/unknown/zero/workspace и
+  ownership-guard ошибки до side effects, typed delivery failure без retry,
+  session-resolution failure без prompt POST, unmarked state без изменения
+  foreign DB/marker и redaction. Dispatch-level storage failures покрыты через
+  временный test-only SQLite trigger на свежей Rust-owned DB (production
+  schema/код не меняются): сбой `prepare_round` — typed `Storage`, ноль prompt
+  POST, `attempted=0` и outbound не записан; сбой `mark_round_sent` после
+  успешного prepare — typed `Storage`, ноль prompt POST, сохранён outbound,
+  round остаётся `pending`/`attempted=0`; сбой `mark_round_observing` после
+  успешного prompt POST — typed `Storage` вместо ложного success, ровно один
+  POST, persisted `sent`/`attempted=1`/outbound и повторный dispatch без второго
+  POST. Регрессии 7.1–7.4 сохранены. Completion
+  observation, permission/question blockers, auto-approval,
+  failed/delivery-unknown (7.9), recovery (7.10), verification integration
+  (7.11), cooperative close (7.12), worker state machine/CLI/MCP wiring и
+  внешние сервисы не входят. `Cargo.toml`/`Cargo.lock`,
+  bridge-opencode/transport, bridge-storage/schema/fixtures не менялись.
+- Завершён этап **7.6. Permission blocker** (narrow foundation). `bridge-worker`
+  получил reusable `handle_permission_blocker(client, layout, round) ->
+  Result<PermissionBlockerOutcome, PermissionBlockerError>` поверх
+  существующего `OpenCodeClient::list_permissions`, pure `round_session_title` и
+  атомарного `StorageConnection::finish_round`. До любых HTTP/write layout
+  открывается production ownership guard `RustStateLayout::open` и проверяются
+  `layout.project_id == round.project_id`, существование task, project/task/
+  current round, resolved workspace и отсутствие pending close (`CloseRequested`).
+  Round обязан быть `observing` (write) или уже `needs_user` (replay), task —
+  `implementing`/`revising` (write) или `needs_user` (replay), иначе
+  `RoundNotObservable`/`TaskNotObservable`; текущая session — только persisted
+  `rounds.session_id` текущего round, отсутствующая — `SessionUnknown`.
+  `list_permissions` вызывается один раз, permissions фильтруются по точному
+  текущему `sessionID`, поэтому чужая session не блокирует, а пустой/foreign-only
+  список — typed `NoBlocker` no-op без записей. Cooperative close writers не
+  берут `WorkerLock`, поэтому после HTTP round-trip persisted
+  task/round/session/status/pending close читаются повторно до любого outcome:
+  close во время GET даёт `CloseRequested`, а write/replay решение и
+  возвращаемые round/task не берутся из pre-HTTP snapshot. Релевантный permission
+  ровно один раз сохраняет `needs_user` через `finish_round`
+  (`error_code="needs_user"`, `result_json` с typed `blockers`); committed task из
+  `finish_round` авторитетен, поэтому close в последнем окне перед atomic write
+  даёт `CloseRequested`, а не ложный `Blocked`/`UserAction`. Успех возвращает
+  типизированные `PermissionBlocker`/`UserAction` (`open_project_console`,
+  message, session_id, детерминированный `session_title`, instructions; поля
+  `command`/`fallback_command` типизированы, но `None` в этом foundation, так как
+  ready-to-run builders принадлежат runtime CLI stream 9). Повтор при уже
+  `needs_user` round не пишет: второго event и сдвига `updated_at` нет.
+  Автоматическое разрешение запрещено — `reply_permission`/auto-approval не
+  вызываются, permission POST отсутствует. Fail-closed отличие от reference:
+  transport/malformed permission-list даёт типизированный `Permissions`, storage
+  failure — `Storage`, никогда не ложный success. Все типы в `Display`/`Debug`
+  редактированы и не раскрывают ids, title, permission name, patterns, HTTP body,
+  SQL, credentials и пути; caller держит project `WorkerLock` на весь вызов.
+  Focused loopback-mock HTTP + fresh Rust-owned SQLite тесты покрывают session
+  filtering, persisted `needs_user`/`user_action`, no-op, idempotent repeat,
+  guards/ошибки/redaction, отсутствие permission POST, close во время GET на
+  write/replay путях без ложного `Blocked`, close прямо во время `finish_round`
+  через outcome guard и test-only trigger с typed `Storage` и полным atomic
+  rollback. Question blocker (7.7),
+  auto-approval (7.8), failed/delivery-unknown (7.9), recovery (7.10),
+  verification integration (7.11), cooperative close (7.12), observation loop,
+  CLI/MCP/runtime wiring и внешние сервисы не входят.
+  `Cargo.toml`/`Cargo.lock`, bridge-opencode/transport,
+  bridge-storage/schema/fixtures не менялись.
 - **Потоки 3, 4 и 5 завершены.** Шаги **5.1–5.6**, **6.1**, **6.2**, **6.3**,
-  **6.4**, **6.5**, **6.6** и **6.7** завершены, следующий незавершённый шаг —
-  **6.8** (Questions и blockers).
+  **6.4**, **6.5**, **6.6**, **6.7**, **6.8**, **7.1**, **7.2**, **7.3**,
+  **7.4**, **7.5** и **7.6** завершены как foundation старого контракта
+  schema v6. Ближайший шаг — **Поток 0A** (refresh контракта до schema v15);
+  следующий незавершённый исторический шаг — **7.7** (Question blocker), а
+  возможности v7–v15 (structured findings, budgets, workflow/dependencies,
+  checkpoints, worktree execution, profiles, parallel writers, quarantine,
+  delivery, diagnostics/hook, config migration) в Rust **не завершены**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

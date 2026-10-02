@@ -10,6 +10,7 @@ members = [
     "crates/bridge-path-policy",
     "crates/bridge-storage",
     "crates/bridge-verifier",
+    "crates/bridge-worker",
 ]
 
 [workspace.package]
@@ -25,8 +26,10 @@ bridge-git = { path = "crates/bridge-git" }
 bridge-opencode = { path = "crates/bridge-opencode" }
 bridge-path-policy = { path = "crates/bridge-path-policy" }
 bridge-storage = { path = "crates/bridge-storage" }
+bridge-worker = { path = "crates/bridge-worker" }
 command-group = "5"
 nix = { version = "0.27", default-features = false, features = ["fs"] }
+process-wrap = { version = "10", default-features = false, features = ["std", "process-session"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

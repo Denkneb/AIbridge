@@ -1,0 +1,33 @@
+[package]
+name = "bridge-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bridge-domain.workspace = true
+bridge-opencode.workspace = true
+bridge-storage.workspace = true
+process-wrap.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+bridge-config.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[[bin]]
+name = "worker_spawn_fixture"
+path = "tests/fixtures/worker_spawn_fixture.rs"
+test = false
+
+[[bin]]
+name = "worker_lock_fixture"
+path = "tests/fixtures/worker_lock_fixture.rs"
+test = false

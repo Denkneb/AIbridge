@@ -1,0 +1,709 @@
+{
+  "databases": {
+    "empty-v15.sqlite": {
+      "active_writers": [],
+      "events": [],
+      "meta": {
+        "schema_version": "15"
+      },
+      "rounds": [],
+      "tasks": [],
+      "user_version": 15,
+      "worktree_quarantine": [],
+      "worktrees": []
+    }
+  },
+  "fixture_version": 1,
+  "forbidden_indexes": [
+    "ux_active_writers_project",
+    "ux_tasks_active"
+  ],
+  "invariants": [
+    "PRAGMA user_version is 15 and meta.schema_version is '15'",
+    "PRAGMA integrity_check and quick_check return ok; foreign_key_check returns no rows",
+    "ux_active_writers_single is a partial unique index on active_writers(project_id) WHERE parallel=0",
+    "ux_tasks_active and ux_active_writers_project do NOT exist (removed in v15)",
+    "ix_tasks_project_status is a non-unique index on tasks(project_id, status)",
+    "ix_active_writers_project is a non-unique index on active_writers(project_id)",
+    "the database never constrains writer scope overlap: disjointness is application admission, not SQL",
+    "every round references an existing task (rounds.task_id -> tasks.task_id)",
+    "every worktree references an existing task (worktrees.task_id -> tasks.task_id)",
+    "fixtures are closed and checkpointed: no -wal/-shm sidecar files next to any fixture"
+  ],
+  "required_indexes": [
+    "ix_active_writers_project",
+    "ix_events_task",
+    "ix_tasks_project_status",
+    "ux_active_writers_single",
+    "ux_rounds_request"
+  ],
+  "schema": {
+    "foreign_keys": [
+      {
+        "from": "task_id",
+        "table": "rounds",
+        "to_column": "task_id",
+        "to_table": "tasks"
+      },
+      {
+        "from": "task_id",
+        "table": "worktrees",
+        "to_column": "task_id",
+        "to_table": "tasks"
+      }
+    ],
+    "indexes": {
+      "ix_active_writers_project": {
+        "columns": [
+          "project_id"
+        ],
+        "partial": false,
+        "table": "active_writers",
+        "unique": false
+      },
+      "ix_events_task": {
+        "columns": [
+          "task_id",
+          "id"
+        ],
+        "partial": false,
+        "table": "events",
+        "unique": false
+      },
+      "ix_tasks_project_status": {
+        "columns": [
+          "project_id",
+          "status"
+        ],
+        "partial": false,
+        "table": "tasks",
+        "unique": false
+      },
+      "ux_active_writers_single": {
+        "columns": [
+          "project_id"
+        ],
+        "partial": true,
+        "table": "active_writers",
+        "unique": true
+      },
+      "ux_rounds_request": {
+        "columns": [
+          "project_id",
+          "request_id"
+        ],
+        "partial": false,
+        "table": "rounds",
+        "unique": true
+      }
+    },
+    "tables": {
+      "active_writers": [
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "project_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "scopes_json",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "parallel",
+          "notnull": true,
+          "pk": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "events": [
+        {
+          "default": null,
+          "name": "id",
+          "notnull": false,
+          "pk": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "round_number",
+          "notnull": false,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "kind",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "message",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "meta": [
+        {
+          "default": null,
+          "name": "key",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "value",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "rounds": [
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": true,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "project_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "round_number",
+          "notnull": true,
+          "pk": 2,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "request_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "payload_hash",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "kind",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "outbound_message_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "attempted",
+          "notnull": true,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "response_message_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "response",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "error_code",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "result_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "findings",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "structured_findings",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "session_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "worker_started_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "worker_deadline_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "verifier_state",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "verifier_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "checkpoint_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "tasks": [
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "project_id",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "session_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "task",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "allowed_paths",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "test_commands",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "base_head",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "snapshot",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "revision_count",
+          "notnull": true,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "close_requested_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "close_reason",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "budget_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workflow_id",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "depends_on",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'direct'",
+          "name": "execution_mode",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "profile",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "profile_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "profile_hash",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "profile_source",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "worktree_quarantine": [
+        {
+          "default": null,
+          "name": "entry_id",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "original_path",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "quarantined_path",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "reason",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "found_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ],
+      "worktrees": [
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": false,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "path",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "runtime_dir",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "base_head",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "baseline_json",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "server_endpoint",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "server_port",
+          "notnull": false,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "server_process_record",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "removed_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "cleanup_reason",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "delivery_state",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "delivery_journal_path",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "delivered_at",
+          "notnull": false,
+          "pk": 0,
+          "type": "TEXT"
+        }
+      ]
+    }
+  },
+  "schema_version": 15,
+  "source": {
+    "commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+    "modules": [
+      "src/agent_bridge/config.py",
+      "src/agent_bridge/storage.py",
+      "src/agent_bridge/usage.py"
+    ],
+    "python_repo": "agent_bridge",
+    "tests": [
+      "tests/test_storage.py"
+    ]
+  },
+  "synthetic_conventions": {
+    "fingerprints": "64-character lowercase hex sha256 digests (index/worktree/blob)",
+    "heads": "40-character lowercase hex synthetic Git object ids",
+    "message_ids": "msg-<n>",
+    "payload_hash": "hash-<request_id>",
+    "project_id": "proj",
+    "request_ids": "req-<n>",
+    "session_ids": "ses-<n>",
+    "task_ids": "task-<n>",
+    "timestamps": "fixed UTC ISO-8601 with millisecond precision (2026-01-01T00:00:0n.000+00:00)",
+    "workspace": "/fixture/workspace"
+  }
+}

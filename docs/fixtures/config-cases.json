@@ -1,6 +1,7 @@
 {
   "cases": [
     {
+      "coverage": "legacy-v6",
       "error_category": "auto_approve_permissions_entry",
       "expectation": "invalid",
       "id": "invalid-auto-approve-permissions-empty-entry",
@@ -10,6 +11,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = [\"\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "auto_approve_permissions_external_directory",
       "expectation": "invalid",
       "id": "invalid-auto-approve-permissions-external-directory",
@@ -19,6 +21,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = [\"external_directory\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "auto_approve_permissions_type",
       "expectation": "invalid",
       "id": "invalid-auto-approve-permissions-non-list",
@@ -28,6 +31,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_permissions = \"bash\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "duplicate_endpoint",
       "expectation": "invalid",
       "id": "invalid-endpoint-duplicate-across-projects",
@@ -38,6 +42,7 @@
     },
     {
       "content": "A=one\nA=two\n",
+      "coverage": "legacy-v6",
       "error_category": "env_duplicate_name",
       "expectation": "invalid",
       "id": "invalid-env-duplicate-variable-name",
@@ -52,6 +57,7 @@
     },
     {
       "content": "A=1\n",
+      "coverage": "legacy-v6",
       "error_category": "env_file_owner",
       "expectation": "invalid",
       "id": "invalid-env-file-foreign-owner",
@@ -65,6 +71,7 @@
       }
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "env_file_missing",
       "expectation": "invalid",
       "id": "invalid-env-file-missing",
@@ -77,6 +84,7 @@
     },
     {
       "content": "A=1\n",
+      "coverage": "legacy-v6",
       "error_category": "env_file_mode",
       "expectation": "invalid",
       "id": "invalid-env-file-mode-not-0600",
@@ -90,6 +98,7 @@
       }
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "env_file_not_regular",
       "expectation": "invalid",
       "id": "invalid-env-file-not-regular",
@@ -102,6 +111,7 @@
     },
     {
       "content_hex": "fffe3d310a",
+      "coverage": "legacy-v6",
       "error_category": "env_invalid_utf8",
       "expectation": "invalid",
       "id": "invalid-env-file-not-utf8",
@@ -115,6 +125,7 @@
       }
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "env_file_symlink",
       "expectation": "invalid",
       "id": "invalid-env-file-symlink",
@@ -129,6 +140,7 @@
     },
     {
       "content": "BAD-NAME=value\n",
+      "coverage": "legacy-v6",
       "error_category": "env_invalid_name",
       "expectation": "invalid",
       "id": "invalid-env-invalid-variable-name",
@@ -143,6 +155,7 @@
     },
     {
       "content": "JUST_A_NAME\n",
+      "coverage": "legacy-v6",
       "error_category": "env_line_missing_equals",
       "expectation": "invalid",
       "id": "invalid-env-line-missing-equals",
@@ -157,6 +170,7 @@
     },
     {
       "content": "NAME\u0000=value\n",
+      "coverage": "legacy-v6",
       "error_category": "env_nul_byte",
       "expectation": "invalid",
       "id": "invalid-env-nul-byte",
@@ -171,6 +185,7 @@
     },
     {
       "content": "OPENCODE_SERVER_PASSWORD=value\n",
+      "coverage": "legacy-v6",
       "description": "Bridge service variables are rejected fail-closed; values never appear in errors.",
       "error_category": "env_protected_name",
       "expectation": "invalid",
@@ -185,6 +200,7 @@
       }
     },
     {
+      "coverage": "legacy-v6",
       "description": "The filesystem root '/' is always rejected as a trusted external directory.",
       "error_category": "external_directory_root",
       "expectation": "invalid",
@@ -195,6 +211,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"/\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "external_directory_missing",
       "expectation": "invalid",
       "id": "invalid-external-directory-missing",
@@ -204,6 +221,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${MISSING_DIR}\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "external_directory_type",
       "expectation": "invalid",
       "id": "invalid-external-directory-non-list",
@@ -213,6 +231,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = \"/tmp\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "external_directory_not_directory",
       "expectation": "invalid",
       "id": "invalid-external-directory-not-a-directory",
@@ -222,6 +241,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${FILE_PATH}\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "external_directory_not_absolute",
       "expectation": "invalid",
       "id": "invalid-external-directory-relative",
@@ -231,6 +251,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"relative/dir\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "max_rounds_not_positive",
       "expectation": "invalid",
       "id": "invalid-max-rounds-non-integer",
@@ -240,6 +261,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = \"3\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "max_rounds_not_positive",
       "expectation": "invalid",
       "id": "invalid-max-rounds-not-positive",
@@ -249,6 +271,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 0\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "The MCP server endpoint must not reuse the project OpenCode endpoint.",
       "error_category": "duplicate_endpoint",
       "expectation": "invalid",
@@ -259,6 +282,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4101/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "duplicate_mcp_token_file",
       "expectation": "invalid",
       "id": "invalid-mcp-token-file-duplicate-across-projects",
@@ -268,6 +292,7 @@
       "toml": "[projects.a]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n\n[projects.b]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4202/mcp\"\nmcp_token_file = \"secrets/shared.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_token_file_type",
       "expectation": "invalid",
       "id": "invalid-mcp-token-file-empty",
@@ -277,6 +302,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_token_equals_password",
       "expectation": "invalid",
       "id": "invalid-mcp-token-file-equals-password-file",
@@ -286,6 +312,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.password\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_pairing",
       "expectation": "invalid",
       "id": "invalid-mcp-token-without-url",
@@ -295,6 +322,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_url_suffix",
       "expectation": "invalid",
       "id": "invalid-mcp-url-must-end-with-mcp",
@@ -304,6 +332,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/other\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_url_endpoint",
       "expectation": "invalid",
       "id": "invalid-mcp-url-non-loopback-host",
@@ -313,6 +342,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://0.0.0.0:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "mcp_pairing",
       "expectation": "invalid",
       "id": "invalid-mcp-url-without-token",
@@ -322,6 +352,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "password_file is required.",
       "error_category": "missing_required_key",
       "expectation": "invalid",
@@ -332,6 +363,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\nmax_rounds = 1\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_env_file_type",
       "expectation": "invalid",
       "id": "invalid-opencode-env-file-non-string",
@@ -341,6 +373,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_model_format",
       "expectation": "invalid",
       "id": "invalid-opencode-model-missing-separator",
@@ -350,6 +383,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \"noslash\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_model_type",
       "expectation": "invalid",
       "id": "invalid-opencode-model-non-string",
@@ -359,6 +393,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_model_whitespace",
       "expectation": "invalid",
       "id": "invalid-opencode-model-surrounding-whitespace",
@@ -368,6 +403,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \" a/b\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_credentials",
       "expectation": "invalid",
       "id": "invalid-opencode-url-embedded-credentials",
@@ -377,6 +413,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://user:pass@127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_missing_port",
       "expectation": "invalid",
       "id": "invalid-opencode-url-missing-port",
@@ -386,6 +423,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_host",
       "expectation": "invalid",
       "id": "invalid-opencode-url-non-loopback-host",
@@ -395,6 +433,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://localhost:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_type",
       "expectation": "invalid",
       "id": "invalid-opencode-url-non-string",
@@ -404,6 +443,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = 4101\npassword_file = \"secrets/proj.password\"\nmax_rounds = 1\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_path",
       "expectation": "invalid",
       "id": "invalid-opencode-url-path",
@@ -413,6 +453,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101/api\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_port_range",
       "expectation": "invalid",
       "id": "invalid-opencode-url-port-out-of-range",
@@ -422,6 +463,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:70000\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_query_or_fragment",
       "expectation": "invalid",
       "id": "invalid-opencode-url-query-or-fragment",
@@ -431,6 +473,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101?x=1\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "opencode_url_scheme",
       "expectation": "invalid",
       "id": "invalid-opencode-url-scheme",
@@ -440,6 +483,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"https://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "invalid_project_id",
       "expectation": "invalid",
       "id": "invalid-project-id-pattern",
@@ -449,6 +493,7 @@
       "toml": "[projects.Bad_ID]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Project ids are limited to 64 characters.",
       "error_category": "invalid_project_id",
       "expectation": "invalid",
@@ -459,6 +504,7 @@
       "toml": "[projects.ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "projects_table_missing",
       "expectation": "invalid",
       "id": "invalid-projects-table-missing",
@@ -468,6 +514,7 @@
       "toml": "[other]\nkey = \"value\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "config_toml_invalid",
       "expectation": "invalid",
       "id": "invalid-toml-syntax",
@@ -477,6 +524,7 @@
       "toml": "this is not = = = toml\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "unknown_project",
       "expectation": "invalid",
       "id": "invalid-unknown-project",
@@ -487,6 +535,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "duplicate_workspace",
       "expectation": "invalid",
       "id": "invalid-workspace-duplicate",
@@ -496,6 +545,7 @@
       "toml": "[projects.a]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n\n[projects.b]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/b.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "workspace_missing",
       "expectation": "invalid",
       "id": "invalid-workspace-missing",
@@ -505,6 +555,7 @@
       "toml": "[projects.proj]\nworkspace = \"${MISSING_DIR}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "error_category": "workspace_not_directory",
       "expectation": "invalid",
       "id": "invalid-workspace-not-a-directory",
@@ -514,6 +565,662 @@
       "toml": "[projects.proj]\nworkspace = \"${FILE_PATH}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "target-v15",
+      "error_category": "allow_parallel_writers_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-allow-parallel-writers-non-bool-int",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nallow_parallel_writers = 0\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "allow_parallel_writers_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-allow-parallel-writers-non-bool-list",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nallow_parallel_writers = []\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "allow_parallel_writers_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-allow-parallel-writers-non-bool-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nallow_parallel_writers = \"false\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "allow_parallel_writers_direct",
+      "expectation": "invalid",
+      "id": "v15-invalid-allow-parallel-writers-true-direct-default",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nallow_parallel_writers = true\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "allow_parallel_writers_direct",
+      "expectation": "invalid",
+      "id": "v15-invalid-allow-parallel-writers-true-direct-explicit",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"direct\"\nallow_parallel_writers = true\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "default_profile_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-default-profile-empty",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "default_profile_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-default-profile-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "default_profile_unknown",
+      "expectation": "invalid",
+      "id": "v15-invalid-default-profile-unknown",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"nope\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "default_profile_whitespace",
+      "expectation": "invalid",
+      "id": "v15-invalid-default-profile-whitespace",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \" test-writer \"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_value",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-mixed-case",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"Direct\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-non-string-bool",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = true\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-non-string-int",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-non-string-list",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = [\"worktree\"]\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_whitespace",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-surrounding-whitespace",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"direct \"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "execution_mode_value",
+      "expectation": "invalid",
+      "id": "v15-invalid-execution-mode-unknown-value",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"none\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Python bool is an int subclass, so it must be rejected explicitly.",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-bool",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = true\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-float",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = 1.5\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-list",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = []\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-negative",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = -1\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = \"2\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "max_active_tasks_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-max-active-tasks-zero",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = 0\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A duplicated profile table is invalid TOML and is rejected by the parser.",
+      "error_category": "config_toml_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-duplicate-table",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.dup]\npurpose = \"p\"\n[projects.proj.profiles.dup]\npurpose = \"q\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_not_table",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-entry-non-table",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nprofiles = { bad = 1 }\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_id_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-id-pattern",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.Bad]\npurpose = \"p\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_instructions_control",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-instructions-control",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\ninstructions = \"bad\\u0001ctrl\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_instructions_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-instructions-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\ninstructions = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Synthetic placeholder token; the scanner must reject any recognised credential shape in profile text.",
+      "error_category": "profile_instructions_secret",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-instructions-suspected-secret",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\ninstructions = \"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "instructions are bounded to 8000 characters.",
+      "error_category": "profile_instructions_too_long",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-instructions-too-long",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\ninstructions = \"iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_missing_purpose",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-missing-purpose",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.bad]\ninstructions = \"i\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_model_format",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-model-no-slash",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\nmodel = \"no-slash\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_model_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-model-non-string",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\nmodel = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_model_whitespace",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-model-whitespace",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"p\"\nmodel = \" a/b\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_purpose_control",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-purpose-control",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"bad\\u0001ctrl\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_purpose_invalid",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-purpose-empty",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "purpose is bounded to 200 characters.",
+      "error_category": "profile_purpose_too_long",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-purpose-too-long",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.ko]\npurpose = \"ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_snapshot_corrupt",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-snapshot-tamper-definition-hash",
+      "input_kind": "projects_toml",
+      "operation": "profile_snapshot",
+      "profile": "test-writer",
+      "rule": "profile_snapshot",
+      "tamper": "definition_hash",
+      "tamper_value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A shape-valid snapshot whose instructions changed no longer matches the pinned hash.",
+      "error_category": "profile_snapshot_corrupt",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-snapshot-tamper-instructions",
+      "input_kind": "projects_toml",
+      "operation": "profile_snapshot",
+      "profile": "test-writer",
+      "rule": "profile_snapshot",
+      "tamper": "instructions",
+      "tamper_value": "changed text",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_snapshot_corrupt",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-snapshot-tamper-model",
+      "input_kind": "projects_toml",
+      "operation": "profile_snapshot",
+      "profile": "test-writer",
+      "rule": "profile_snapshot",
+      "tamper": "model",
+      "tamper_value": "evil/model",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profile_unknown_key",
+      "expectation": "invalid",
+      "id": "v15-invalid-profile-unknown-key",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.bad]\npurpose = \"p\"\nunknown = 1\n"
+    },
+    {
+      "coverage": "target-v15",
+      "error_category": "profiles_table_type",
+      "expectation": "invalid",
+      "id": "v15-invalid-profiles-non-table",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nprofiles = \"not-a-table\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Unlike default_profile validation at load time, an unknown requested id is a submit-time refusal.",
+      "error_category": "unknown_profile",
+      "expectation": "invalid",
+      "id": "v15-invalid-resolve-profile-unknown-requested",
+      "input_kind": "projects_toml",
+      "operation": "resolve_profile",
+      "profile": "does-not-exist",
+      "rule": "profile_resolution",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "allow_parallel_writers": false
+      },
+      "expectation": "valid",
+      "id": "v15-valid-allow-parallel-writers-false",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nallow_parallel_writers = false\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "allow_parallel_writers": true,
+        "execution_mode": "worktree",
+        "max_active_tasks": 3
+      },
+      "expectation": "valid",
+      "id": "v15-valid-allow-parallel-writers-true-worktree",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "allow_parallel_writers",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"worktree\"\nallow_parallel_writers = true\nmax_active_tasks = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A custom profile id may override a builtin id; the override is a distinct config definition.",
+      "expect": {
+        "default_profile": "implementer",
+        "profile_definitions": {
+          "implementer": {
+            "purpose": "override",
+            "source": "config"
+          },
+          "my-profile": {
+            "instructions": "custom instructions",
+            "model": "provider/model",
+            "purpose": "custom purpose",
+            "source": "config"
+          }
+        }
+      },
+      "expectation": "valid",
+      "id": "v15-valid-custom-profile-and-override",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "custom_profiles",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"implementer\"\n[projects.proj.profiles.my-profile]\npurpose = \"custom purpose\"\ninstructions = \"custom instructions\"\nmodel = \"provider/model\"\n[projects.proj.profiles.implementer]\npurpose = \"override\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "default_profile": "test-writer"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-default-profile-builtin",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"test-writer\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "default_profile": "my-profile",
+        "profile_definitions": {
+          "my-profile": {
+            "purpose": "custom",
+            "source": "config"
+          }
+        }
+      },
+      "expectation": "valid",
+      "id": "v15-valid-default-profile-custom",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "default_profile",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"my-profile\"\n[projects.proj.profiles.my-profile]\npurpose = \"custom\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Absent execution_mode keeps the historical direct mode and the legacy coordination defaults.",
+      "expect": {
+        "allow_parallel_writers": false,
+        "default_profile": null,
+        "execution_mode": "direct",
+        "max_active_tasks": 1
+      },
+      "expectation": "valid",
+      "id": "v15-valid-execution-mode-absent-defaults-direct",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "execution_mode": "direct"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-execution-mode-explicit-direct",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"direct\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "execution_mode": "worktree"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-execution-mode-explicit-worktree",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "execution_mode",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nexecution_mode = \"worktree\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "max_active_tasks": 3
+      },
+      "expectation": "valid",
+      "id": "v15-valid-max-active-tasks-positive",
+      "input_kind": "projects_toml",
+      "operation": "load_all_projects",
+      "rule": "max_active_tasks",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmax_active_tasks = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "definition_version": "1",
+        "id": "test-writer",
+        "model": null,
+        "model_source": "project",
+        "origin": "argument",
+        "source": "builtin"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-profile-snapshot-builtin",
+      "input_kind": "projects_toml",
+      "operation": "profile_snapshot",
+      "profile": "test-writer",
+      "rule": "profile_snapshot",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "definition_version": "1",
+        "id": "my-profile",
+        "model": "provider/model",
+        "model_source": "profile",
+        "origin": "argument",
+        "source": "config"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-profile-snapshot-custom-model",
+      "input_kind": "projects_toml",
+      "operation": "profile_snapshot",
+      "profile": "my-profile",
+      "rule": "profile_snapshot",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n[projects.proj.profiles.my-profile]\npurpose = \"p\"\nmodel = \"provider/model\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "id": "implementer",
+        "origin": "builtin_default",
+        "source": "builtin"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-resolve-profile-builtin-default",
+      "input_kind": "projects_toml",
+      "operation": "resolve_profile",
+      "rule": "profile_resolution",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A config override of implementer resolves to a non-historical config definition.",
+      "expect": {
+        "id": "implementer",
+        "origin": "project_default",
+        "source": "config"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-resolve-profile-custom-override",
+      "input_kind": "projects_toml",
+      "operation": "resolve_profile",
+      "rule": "profile_resolution",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"implementer\"\n[projects.proj.profiles.implementer]\npurpose = \"custom\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "expect": {
+        "id": "test-writer",
+        "origin": "project_default",
+        "source": "builtin"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-resolve-profile-project-default",
+      "input_kind": "projects_toml",
+      "operation": "resolve_profile",
+      "rule": "profile_resolution",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\ndefault_profile = \"test-writer\"\n"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Explicit submit_task profile argument resolves at submit time.",
+      "expect": {
+        "id": "test-writer",
+        "origin": "argument",
+        "source": "builtin"
+      },
+      "expectation": "valid",
+      "id": "v15-valid-resolve-profile-requested-builtin",
+      "input_kind": "projects_toml",
+      "operation": "resolve_profile",
+      "profile": "test-writer",
+      "rule": "profile_resolution",
+      "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Entries keep first-seen order and duplicates collapse.",
       "expect": {
         "auto_approve_permissions": [
@@ -530,6 +1237,7 @@
     },
     {
       "content": "# provider keys\n\nANTHROPIC_API_KEY=placeholder-key\n   \nOPENAI_API_KEY=placeholder=with=equals\nEMPTY=\nQUOTED=\"literal\"\n",
+      "coverage": "legacy-v6",
       "description": "Comments and blank lines are skipped; split is on the first '=' only; values stay literal.",
       "expect": {
         "parsed": {
@@ -551,6 +1259,7 @@
       }
     },
     {
+      "coverage": "legacy-v6",
       "description": "Trusted roots are canonicalized through symlink aliases.",
       "expect": {
         "auto_approve_external_directories": [
@@ -565,6 +1274,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_LINK}\"]\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Only an exact canonical workspace match links; a containing parent directory does not.",
       "expect": {
         "linked_project_ids": []
@@ -578,6 +1288,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${PARENT_DIR}\"]\n\n[projects.beta]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A trusted symlink alias that canonicalizes to another registered workspace links exactly that project.",
       "expect": {
         "linked_project_ids": [
@@ -593,6 +1304,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_LINK}\"]\n\n[projects.beta]\nworkspace = \"${TRUSTED_DIR}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Linked projects are returned sorted by project id regardless of config order.",
       "expect": {
         "linked_project_ids": [
@@ -609,6 +1321,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_DIR}\", \"${OTHER_WORKSPACE}\"]\n\n[projects.zeta]\nworkspace = \"${TRUSTED_DIR}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/zeta.password\"\nmax_rounds = 3\n\n[projects.alpha]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4103\"\npassword_file = \"secrets/alpha.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A trusted directory without a registered project keeps its multi-repo role and never becomes a task target.",
       "expect": {
         "linked_project_ids": [
@@ -624,6 +1337,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nauto_approve_external_directories = [\"${TRUSTED_DIR}\", \"${OTHER_WORKSPACE}\"]\n\n[projects.beta]\nworkspace = \"${OTHER_WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4102\"\npassword_file = \"secrets/beta.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "mcp_url and mcp_token_file are both present; URL is normalized.",
       "expect": {
         "mcp_token_file": "${CONFIG_DIR}/secrets/proj.mcp-token",
@@ -637,6 +1351,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nmcp_url = \"http://127.0.0.1:4201/mcp\"\nmcp_token_file = \"secrets/proj.mcp-token\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Required keys only: defaults for every optional key.",
       "expect": {
         "auto_approve_external_directories": [],
@@ -660,6 +1375,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Absolute opencode_env_file is kept verbatim.",
       "expect": {
         "opencode_env_file": "${ENV_FILE}"
@@ -672,6 +1388,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = \"${ENV_FILE}\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Relative opencode_env_file resolves against the config directory.",
       "expect": {
         "opencode_env_file": "${CONFIG_DIR}/secrets/proj.env"
@@ -684,6 +1401,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_env_file = \"secrets/proj.env\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Only the first slash separates provider and model; later slashes stay in the model id.",
       "expect": {
         "opencode_model": [
@@ -699,6 +1417,7 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\nopencode_model = \"opencode/grok-code/1.0\"\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Relative workspace resolves against the projects.toml directory and is canonicalized.",
       "expect": {
         "workspace": "${CONFIG_DIR}/ws"
@@ -711,6 +1430,7 @@
       "toml": "[projects.proj]\nworkspace = \"ws\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A symlink workspace is resolved with resolve(strict=True) to its canonical target.",
       "expect": {
         "workspace": "${WORKSPACE}"
@@ -723,12 +1443,23 @@
       "toml": "[projects.proj]\nworkspace = \"${WORKSPACE_LINK}\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n"
     }
   ],
-  "corpus_version": 1,
+  "corpus_version": 2,
+  "coverage": {
+    "legacy_label": "v6",
+    "legacy_source_commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "target_label": "v15",
+    "target_source_commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a"
+  },
   "error_categories": {
+    "allow_parallel_writers_direct": "allow_parallel_writers=true is accepted only together with execution_mode='worktree'.",
+    "allow_parallel_writers_type": "allow_parallel_writers must be a boolean.",
     "auto_approve_permissions_entry": "auto_approve_permissions entries must be non-empty strings without surrounding whitespace.",
     "auto_approve_permissions_external_directory": "'external_directory' is rejected in auto_approve_permissions; use auto_approve_external_directories.",
     "auto_approve_permissions_type": "auto_approve_permissions must be a list of strings.",
     "config_toml_invalid": "projects.toml is not valid TOML.",
+    "default_profile_type": "default_profile must be a non-empty string.",
+    "default_profile_unknown": "default_profile does not name a builtin or custom profile.",
+    "default_profile_whitespace": "default_profile must not have surrounding whitespace.",
     "duplicate_endpoint": "A server endpoint is reused by more than one project or by the MCP server of the same project.",
     "duplicate_mcp_token_file": "An MCP token file is reused across projects.",
     "duplicate_workspace": "The same canonical workspace is bound to more than one project.",
@@ -743,12 +1474,16 @@
     "env_line_missing_equals": "An env line has no '=' separator.",
     "env_nul_byte": "An env line contains a NUL byte.",
     "env_protected_name": "The env file defines a reserved agent-bridge service variable.",
+    "execution_mode_type": "execution_mode must be a string.",
+    "execution_mode_value": "execution_mode must be exactly 'direct' or 'worktree'.",
+    "execution_mode_whitespace": "execution_mode must not have surrounding whitespace.",
     "external_directory_missing": "A trusted external directory does not exist.",
     "external_directory_not_absolute": "A trusted external directory is not an absolute path.",
     "external_directory_not_directory": "A trusted external path is not a directory.",
     "external_directory_root": "The filesystem root '/' is rejected as a trusted external directory.",
     "external_directory_type": "auto_approve_external_directories must be a list of strings.",
     "invalid_project_id": "The project id does not match ^[a-z0-9][a-z0-9_-]{0,63}$.",
+    "max_active_tasks_invalid": "max_active_tasks must be a positive integer (bool is not accepted).",
     "max_rounds_not_positive": "max_rounds must be a positive integer (bool is not accepted).",
     "mcp_pairing": "mcp_url and mcp_token_file must be set together or both omitted.",
     "mcp_token_equals_password": "The MCP token file must be separate from the project password file.",
@@ -768,7 +1503,24 @@
     "opencode_url_query_or_fragment": "opencode_url must not contain a query or fragment.",
     "opencode_url_scheme": "opencode_url must use the http scheme.",
     "opencode_url_type": "opencode_url must be a string.",
+    "profile_id_invalid": "A custom profile id must match ^[a-z][a-z0-9_-]{0,63}$.",
+    "profile_instructions_control": "Custom profile instructions must not contain control characters.",
+    "profile_instructions_secret": "Custom profile instructions carry a suspected credential.",
+    "profile_instructions_too_long": "Custom profile instructions exceed the 8000-character limit.",
+    "profile_instructions_type": "Custom profile instructions must be a string.",
+    "profile_missing_purpose": "A custom profile is missing its required 'purpose' key.",
+    "profile_model_format": "A custom profile model must be '<providerID>/<modelID>'.",
+    "profile_model_type": "A custom profile model must be a string.",
+    "profile_model_whitespace": "A custom profile model must not have surrounding whitespace.",
+    "profile_not_table": "A custom profile entry must be a table.",
+    "profile_purpose_control": "Custom profile purpose must not contain control characters.",
+    "profile_purpose_invalid": "Custom profile purpose must be a non-empty string.",
+    "profile_purpose_too_long": "Custom profile purpose exceeds the 200-character limit.",
+    "profile_snapshot_corrupt": "The pinned profile snapshot is malformed or fails its identity/hash check.",
+    "profile_unknown_key": "A custom profile table contains an unknown key.",
+    "profiles_table_type": "profiles must be a table.",
     "projects_table_missing": "The config must contain a non-empty [projects] table.",
+    "unknown_profile": "A submit-time requested profile id is not known.",
     "unknown_project": "The requested project id is not present in the config.",
     "workspace_missing": "The workspace path does not exist.",
     "workspace_not_directory": "The workspace path exists but is not a directory."
@@ -786,16 +1538,18 @@
     "${WORKSPACE}": "Absolute path of an existing directory (the primary workspace)."
   },
   "source": {
-    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
     "modules": [
       "src/agent_bridge/config.py",
       "src/agent_bridge/credentials.py",
+      "src/agent_bridge/profiles.py",
       "src/agent_bridge/project_env.py"
     ],
     "python_repo": "agent_bridge",
     "tests": [
       "tests/test_config.py",
       "tests/test_mcp_http.py",
+      "tests/test_profiles.py",
       "tests/test_project_env.py"
     ]
   }

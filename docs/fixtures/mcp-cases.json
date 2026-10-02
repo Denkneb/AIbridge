@@ -1,6 +1,7 @@
 {
   "cases": [
     {
+      "coverage": "legacy-v6",
       "description": "A non-review, non-needs_user task is rejected with its actual status.",
       "error_category": "not_awaiting_review",
       "error_payload": {
@@ -38,6 +39,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "OpenCode retrying/busy session blocks accept.",
       "error_category": "server_busy",
       "evidence": [
@@ -73,6 +75,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Failed status probe blocks accept; a ${DETAIL} suffix may follow the category.",
       "error_category": "server_unavailable",
       "error_payload": {
@@ -114,6 +117,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Unknown task_id is reported as unknown_task.",
       "error_category": "unknown_task",
       "evidence": [
@@ -134,6 +138,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Held worker lock blocks accept before the status probe.",
       "error_category": "worker_running",
       "evidence": [
@@ -168,6 +173,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Accepting an already accepted task returns accepted again.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:accept_task_impl"
@@ -207,6 +213,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A pending blocker returns the needs_user payload instead of an error.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:accept_task_impl",
@@ -282,6 +289,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Idle server: awaiting_review is accepted and the project slot is freed.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:accept_task_impl",
@@ -332,6 +340,7 @@
       "tool": "accept_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Held worker lock persists a cooperative close request without changing status.",
       "evidence": [
         "src/agent_bridge/storage.py:request_task_close",
@@ -386,6 +395,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Blank reason is rejected before any lookup.",
       "error_category": "reason_required",
       "evidence": [
@@ -421,6 +431,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "OpenCode retrying/busy session blocks close; the bare category is returned.",
       "error_category": "server_busy",
       "evidence": [
@@ -457,6 +468,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Failed status probe blocks close with the bare category (no detail).",
       "error_category": "server_unavailable",
       "error_payload": {
@@ -495,6 +507,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Unknown task_id is reported as unknown_task.",
       "error_category": "unknown_task",
       "evidence": [
@@ -516,6 +529,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Closing an already closed task returns its terminal status again.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:close_task_impl"
@@ -556,6 +570,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Idle server and free worker lock: task is closed directly.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:close_task_impl",
@@ -607,6 +622,7 @@
       "tool": "close_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Immutable binding plus the current active task identity/status.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:build_server.project_info",
@@ -651,6 +667,7 @@
       "tool": "project_info"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Immutable binding with no active task: null active fields.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:build_server.project_info",
@@ -689,6 +706,474 @@
       "tool": "project_info"
     },
     {
+      "coverage": "target-v15",
+      "description": "Under the worktree parallel opt-in the full safe writer id set is exposed.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:build_server.project_info",
+        "src/agent_bridge/storage.py:get_active_writers",
+        "tests/test_mcp.py::test_parallel_project_info_reports_full_writer_set"
+      ],
+      "expect": {
+        "fields": [
+          "active_writer_count",
+          "active_writer_task_id",
+          "active_writer_task_ids",
+          "execution_mode",
+          "parallel_writers_enabled"
+        ],
+        "shape": "contains",
+        "values": {
+          "active_writer_count": 2,
+          "active_writer_task_id": "${TASK_ID}",
+          "active_writer_task_ids": [
+            "${TASK_ID}",
+            "${OTHER_TASK_ID}"
+          ],
+          "execution_mode": "worktree",
+          "parallel_writers_enabled": true
+        }
+      },
+      "expectation": "success",
+      "id": "project-info-parallel-writer-set",
+      "input": {},
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "active_writers": [
+          {
+            "parallel": 1,
+            "task_id": "${TASK_ID}"
+          },
+          {
+            "parallel": 1,
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "config": {
+          "allow_parallel_writers": true,
+          "execution_mode": "worktree",
+          "max_active_tasks": 3
+        },
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "project_info"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "The v15 project_info carries the coordination, execution and profile surface.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:build_server.project_info",
+        "tests/test_mcp.py::test_project_info_reports_b1_coordination_surface"
+      ],
+      "expect": {
+        "fields": [
+          "active_status",
+          "active_task_id",
+          "active_writer_count",
+          "active_writer_task_id",
+          "active_writer_task_ids",
+          "default_profile",
+          "endpoint",
+          "execution_mode",
+          "max_active_tasks",
+          "max_rounds",
+          "parallel_writers_enabled",
+          "profiles",
+          "project_id",
+          "workspace"
+        ],
+        "shape": "exact",
+        "values": {
+          "active_status": "implementing",
+          "active_task_id": "${TASK_ID}",
+          "active_writer_count": 0,
+          "default_profile": "implementer",
+          "execution_mode": "direct",
+          "max_active_tasks": 1,
+          "max_rounds": 3,
+          "parallel_writers_enabled": false,
+          "project_id": "${PROJECT_ID}",
+          "workspace": "${WORKSPACE}"
+        }
+      },
+      "expectation": "success",
+      "id": "project-info-v15-active-task",
+      "input": {},
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "session_id": "${SESSION_ID}",
+          "status": "implementing",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "project_info"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "With no active task the v15 identity fields are null and the writer set is empty.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:build_server.project_info",
+        "tests/test_mcp.py::test_project_info_reports_execution_mode"
+      ],
+      "expect": {
+        "fields": [
+          "active_status",
+          "active_task_id",
+          "active_writer_count",
+          "active_writer_task_id",
+          "active_writer_task_ids",
+          "default_profile",
+          "execution_mode",
+          "profiles"
+        ],
+        "shape": "contains",
+        "values": {
+          "active_status": null,
+          "active_task_id": null,
+          "active_writer_count": 0,
+          "active_writer_task_id": null,
+          "active_writer_task_ids": [],
+          "default_profile": "implementer",
+          "execution_mode": "direct"
+        }
+      },
+      "expectation": "success",
+      "id": "project-info-v15-no-active-task",
+      "input": {},
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "project_info"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A saved budget that cannot be validated fails closed with budget_corrupt.",
+      "error_category": "budget_corrupt",
+      "error_payload": {
+        "budget": {
+          "configured": true,
+          "corrupt": true,
+          "gate": "corrupt"
+        },
+        "status": "awaiting_review"
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_gate_fails_closed_on_corrupt_budget"
+      ],
+      "expectation": "error",
+      "id": "request-changes-budget-corrupt-blocked",
+      "input": {
+        "findings": "corrupt",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget_raw": "{not-json",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Explicit consent also bypasses the corrupt-budget gate.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_explicit_consent_bypasses_corrupt_budget_gate"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "exact",
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-budget-corrupt-override-proceeds",
+      "input": {
+        "allow_budget_override": true,
+        "findings": "override corrupt",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget_raw": "{not-json",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An exhausted saved budget blocks a new revision without explicit consent.",
+      "error_category": "budget_exhausted",
+      "error_payload": {
+        "budget": {
+          "exhausted": true,
+          "gate": "exhausted"
+        },
+        "status": "awaiting_review"
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_gate_blocks_exhausted_budget_without_consent"
+      ],
+      "expectation": "error",
+      "id": "request-changes-budget-exhausted-blocked",
+      "input": {
+        "findings": "more work",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget": {
+            "limits": {
+              "input": 100
+            }
+          },
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "usage": {
+                  "input": 100
+                }
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "allow_budget_override=true is explicit consent that bypasses only the budget gate.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_explicit_consent_creates_revision_round"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "exact",
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-budget-override-bypasses-exhausted",
+      "input": {
+        "allow_budget_override": true,
+        "findings": "override",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget": {
+            "limits": {
+              "input": 100
+            }
+          },
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "usage": {
+                  "input": 100
+                }
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A warning (not exhausted) budget does not gate the revision.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_budget_warning_does_not_gate"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "exact",
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-budget-warning-does-not-gate",
+      "input": {
+        "findings": "continue",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget": {
+            "limits": {
+              "input": 100
+            },
+            "warning_threshold": 0.8
+          },
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "usage": {
+                  "input": 85
+                }
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "A request_id owned by another task/kind is a hard conflict.",
       "error_category": "request_conflict",
       "evidence": [
@@ -732,6 +1217,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Blank findings (or empty request_id) is rejected.",
       "error_category": "invalid_request",
       "evidence": [
@@ -766,6 +1252,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A non-review, non-needs_user task is rejected with its actual status.",
       "error_category": "not_awaiting_review",
       "error_payload": {
@@ -805,6 +1292,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "At max_rounds the task moves to needs_user and no round is sent.",
       "error_category": "revision_limit",
       "error_payload": {
@@ -861,6 +1349,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Unknown task_id is reported as unknown_task.",
       "error_category": "unknown_task",
       "evidence": [
@@ -883,6 +1372,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Repeating the same request_id/findings is idempotent: no second round or spawn.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:request_changes_impl",
@@ -954,6 +1444,99 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "target-v15",
+      "description": "A non-boolean allow_budget_override is rejected.",
+      "error_category": "invalid_allow_budget_override",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl"
+      ],
+      "expectation": "error",
+      "id": "request-changes-invalid-allow-budget-override",
+      "input": {
+        "allow_budget_override": "yes",
+        "findings": "x",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-boolean allow_suspected_secrets is rejected.",
+      "error_category": "invalid_allow_suspected_secrets",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl"
+      ],
+      "expectation": "error",
+      "id": "request-changes-invalid-allow-suspected-secrets",
+      "input": {
+        "allow_suspected_secrets": 1,
+        "findings": "x",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "A pending blocker returns the needs_user payload instead of an error.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:request_changes_impl",
@@ -1032,6 +1615,7 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A resolved needs_user blocker is synchronised then the revision is created.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:request_changes_impl",
@@ -1097,6 +1681,613 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "target-v15",
+      "description": "A blank message is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "message must be a non-empty string",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-blank-message",
+      "input": {
+        "findings": "msg",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "   ",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An empty structured_findings list is valid and keeps the text-only payload.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings",
+        "tests/test_mcp.py::test_request_changes_empty_structured_findings_is_valid"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "exact",
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-structured-findings-empty-list-is-valid",
+      "input": {
+        "findings": "text only",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A code that is not a safe token is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "invalid code",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:FINDING_CODE_RE",
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-invalid-code",
+      "input": {
+        "findings": "code",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "bad code!",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unknown severity is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "invalid severity",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:FINDING_SEVERITIES",
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-invalid-severity",
+      "input": {
+        "findings": "sev",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "fatal"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A finding line above 1000000 is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "line must be a positive integer",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:MAX_FINDING_LINE",
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-line-too-high",
+      "input": {
+        "findings": "line",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 1000001,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-object finding entry is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "finding must be an object",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-not-an-object",
+      "input": {
+        "findings": "shape",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          42
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A finding path outside the task allowed_paths is rejected.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_normalize_finding_path",
+        "tests/test_mcp.py::test_request_changes_structured_findings_directory_scope"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-path-outside-scope",
+      "input": {
+        "findings": "scope",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "other.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "More than the max 200 entries is rejected before any round is sent.",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "too many findings (max 200)"
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:MAX_STRUCTURED_FINDINGS",
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-too-many",
+      "input": {
+        "findings": "many",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": "${STRUCTURED_FINDINGS_201}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unknown finding field is rejected (fail-closed schema).",
+      "error_category": "invalid_structured_findings",
+      "error_payload": {
+        "detail": "unknown finding field",
+        "index": 0
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_FINDING_KEYS",
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings"
+      ],
+      "expectation": "error",
+      "id": "request-changes-structured-findings-unknown-field",
+      "input": {
+        "findings": "extra",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "extra": "x",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A valid structured finding inside allowed_paths creates a revision round.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_structured_findings",
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_accepts_structured_findings"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "one revise round number=2",
+          "spawn_worker(${TASK_ID}, 2)",
+          "no new round"
+        ],
+        "spawn_count": 1,
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising",
+          "task_id": "${TASK_ID}"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-structured-findings-valid",
+      "input": {
+        "findings": "fix the operator",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "persisted_revision": {
+        "findings": "fix the operator",
+        "revision_count": 1,
+        "round_number": 2,
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "wrong operator",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ]
+      },
+      "repeat": 2,
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "awaiting_review with a fresh request_id creates revision round 2.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:request_changes_impl",
@@ -1156,6 +2347,354 @@
       "tool": "request_changes"
     },
     {
+      "coverage": "target-v15",
+      "description": "A secret inside a structured finding message is scanned and only its category returned.",
+      "error_category": "suspected_secrets",
+      "error_exact_fields": [
+        "categories",
+        "error"
+      ],
+      "error_payload": {
+        "categories": [
+          "openai_api_key"
+        ]
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_structured_findings_text",
+        "tests/test_mcp.py::test_request_changes_structured_findings_secret_in_message"
+      ],
+      "expect": {
+        "side_effects": [
+          "no spawn_worker call",
+          "no revise round"
+        ]
+      },
+      "expectation": "error",
+      "forbidden_content": [
+        "${SUSPECTED_OPENAI_KEY}",
+        "see finding",
+        "wrong operator"
+      ],
+      "id": "request-changes-suspected-secrets-in-structured-message",
+      "input": {
+        "findings": "see finding",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "structured_findings": [
+          {
+            "code": "STYLE-1",
+            "line": 2,
+            "message": "token ${SUSPECTED_OPENAI_KEY}",
+            "path": "module.py",
+            "severity": "error"
+          }
+        ],
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "suspected_categories_from": "findings+structured",
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "allow_suspected_secrets=true is explicit consent for the revision text.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:request_changes_impl",
+        "tests/test_mcp.py::test_request_changes_suspected_secrets_override_retry_is_idempotent"
+      ],
+      "expect": {
+        "fields": [
+          "task_id",
+          "status",
+          "round_number",
+          "revision_count"
+        ],
+        "shape": "exact",
+        "values": {
+          "revision_count": 1,
+          "round_number": 2,
+          "status": "revising"
+        }
+      },
+      "expectation": "success",
+      "id": "request-changes-suspected-secrets-override-accepted",
+      "input": {
+        "allow_suspected_secrets": true,
+        "findings": "token ${SUSPECTED_OPENAI_KEY}",
+        "request_id": "${REVISION_REQUEST_ID}",
+        "task_id": "${TASK_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "request_changes"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A warning_threshold outside (0, 1] is rejected.",
+      "error_category": "invalid_budget",
+      "error_payload": {
+        "detail": "warning_threshold must be in (0, 1]"
+      },
+      "evidence": [
+        "src/agent_bridge/usage.py:validate_budget"
+      ],
+      "expectation": "error",
+      "id": "submit-budget-invalid-threshold",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "budget": {
+          "limits": {
+            "input": 10
+          },
+          "warning_threshold": 1.5
+        },
+        "request_id": "${REQUEST_ID}",
+        "task": "bad threshold",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A zero budget limit is rejected before any task is created.",
+      "error_category": "invalid_budget",
+      "error_payload": {
+        "detail": "budget limit 'input' must be a positive finite number"
+      },
+      "evidence": [
+        "src/agent_bridge/usage.py:validate_budget",
+        "tests/test_mcp.py::test_submit_rejects_invalid_budget_contract"
+      ],
+      "expectation": "error",
+      "id": "submit-budget-invalid-zero-limit",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "budget": {
+          "limits": {
+            "input": 0
+          }
+        },
+        "request_id": "${REQUEST_ID}",
+        "task": "bad budget",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-object budget is rejected.",
+      "error_category": "invalid_budget",
+      "error_payload": {
+        "detail": "budget must be an object"
+      },
+      "evidence": [
+        "src/agent_bridge/usage.py:validate_budget"
+      ],
+      "expectation": "error",
+      "id": "submit-budget-not-an-object",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "budget": "big",
+        "request_id": "${REQUEST_ID}",
+        "task": "not object",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unknown budget field is rejected so the contract stays stable.",
+      "error_category": "invalid_budget",
+      "evidence": [
+        "src/agent_bridge/usage.py:validate_budget"
+      ],
+      "expectation": "error",
+      "id": "submit-budget-unknown-field",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "budget": {
+          "extra": 1,
+          "limits": {
+            "input": 10
+          }
+        },
+        "request_id": "${REQUEST_ID}",
+        "task": "unknown field",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A valid soft budget is accepted and persisted with the task.",
+      "evidence": [
+        "src/agent_bridge/usage.py:validate_budget",
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_submit_with_budget_persists_and_starts_worker"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "round_number",
+          "status",
+          "task_id"
+        ],
+        "shape": "exact",
+        "values": {
+          "baseline_dirty_paths": [],
+          "round_number": 1,
+          "status": "implementing",
+          "task_id": "${TASK_ID}"
+        }
+      },
+      "expectation": "success",
+      "id": "submit-budget-valid",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "budget": {
+          "limits": {
+            "cost": 5.0,
+            "input": 1000
+          },
+          "warning_threshold": 0.8
+        },
+        "request_id": "${REQUEST_ID}",
+        "task": "bounded work",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Same request_id with a different payload is a hard conflict.",
       "error_category": "request_conflict",
       "evidence": [
@@ -1201,6 +2740,232 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "target-v15",
+      "description": "An accepted same-project dependency lets the task start implementing.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_last_accepted_dependency_unlocks_exactly_one_spawn"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "round_number",
+          "status",
+          "task_id"
+        ],
+        "shape": "exact",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "values": {
+          "round_number": 1,
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "submit-depends-on-ready-starts-implementing",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "ready work",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-empty depends_on without a workflow_id is rejected.",
+      "error_category": "depends_on_requires_workflow",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_normalize_workflow_metadata",
+        "tests/test_mcp.py::test_submit_depends_on_without_workflow_is_rejected"
+      ],
+      "expectation": "error",
+      "id": "submit-depends-on-requires-workflow",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "dep work",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A dependency that is not accepted starts the task in waiting_dependencies with no session and no worker.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_submit_waiting_dependency_saves_task_round_without_session_or_worker"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "round_number",
+          "status",
+          "task_id",
+          "workflow_gate"
+        ],
+        "shape": "exact",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "values": {
+          "round_number": 1,
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "${PROJECT_ID}",
+                "reason": "not_accepted",
+                "state": "blocked",
+                "status": "awaiting_review",
+                "task_id": "${OTHER_TASK_ID}"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "id": "submit-depends-on-waiting-dependencies",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "waiting work",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "status": "awaiting_review",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A repeated dependency reference is rejected.",
+      "error_category": "duplicate_dependency",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_normalize_workflow_metadata"
+      ],
+      "expectation": "error",
+      "id": "submit-duplicate-dependency",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          },
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "dup deps",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Dirty external file outside the allowed directory scope is rejected.",
       "error_category": "dirty_paths_outside_scope",
       "error_payload": {
@@ -1250,6 +3015,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Dirty external repository is surfaced with a root-qualified path.",
       "error_category": "dirty_workspace",
       "error_payload": {
@@ -1296,6 +3062,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Dirty baseline not covered by allowed_paths is rejected even with allow_dirty.",
       "error_category": "dirty_paths_outside_scope",
       "error_payload": {
@@ -1334,6 +3101,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Pre-existing dirty path without allow_dirty=true is rejected; paths sorted.",
       "error_category": "dirty_workspace",
       "error_payload": {
@@ -1371,6 +3139,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Blank task text is rejected.",
       "error_category": "empty_task",
       "evidence": [
@@ -1396,6 +3165,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A GitError while snapshotting is reported as git_snapshot_failed.",
       "error_category": "git_snapshot_failed",
       "error_payload": {
@@ -1434,6 +3204,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Absolute main-workspace path without trusted roots is rejected.",
       "error_category": "invalid_allowed_paths",
       "error_payload": {
@@ -1473,6 +3244,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Empty allowed_paths list is rejected.",
       "error_category": "invalid_allowed_paths",
       "evidence": [
@@ -1496,6 +3268,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Non-boolean allow_dirty is rejected.",
       "error_category": "invalid_git_policy",
       "evidence": [
@@ -1522,6 +3295,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Empty request_id is rejected before any other work.",
       "error_category": "invalid_request_id",
       "evidence": [
@@ -1547,6 +3321,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "First failing command index is reported and the unsafe text is never echoed.",
       "error_category": "invalid_test_commands",
       "error_payload": {
@@ -1581,6 +3356,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A command made only of leading assignments has no executable and is rejected.",
       "error_category": "invalid_test_commands",
       "error_payload": {
@@ -1613,6 +3389,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Git-write test command is rejected before task creation; command text not echoed.",
       "error_category": "invalid_test_commands",
       "error_payload": {
@@ -1645,6 +3422,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Workspace that is not a Git repository is rejected.",
       "error_category": "not_a_git_repo",
       "evidence": [
@@ -1675,6 +3453,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A second concurrent task for the same project is rejected.",
       "error_category": "project_busy",
       "evidence": [
@@ -1707,6 +3486,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Unreachable OpenCode server aborts submit with a prefixed error.",
       "error_category": "server_unavailable",
       "error_payload": {
@@ -1741,6 +3521,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Reachable but unhealthy server is rejected with the exact observed string.",
       "error_category": "server_unhealthy",
       "error_payload": {
@@ -1770,6 +3551,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "OpenCode /path not returning the configured workspace is rejected.",
       "error_category": "server_wrong_directory",
       "error_payload": {
@@ -1799,6 +3581,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Foreign server root is rejected; path normalized to ${FOREIGN_PATH}.",
       "error_category": "server_wrong_directory",
       "error_payload": {
@@ -1831,6 +3614,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Same request_id and identical payload returns the existing task/round.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:submit_task_impl",
@@ -1898,6 +3682,452 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "target-v15",
+      "description": "A non-boolean allow_suspected_secrets is rejected before any work.",
+      "error_category": "invalid_allow_suspected_secrets",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_submit_rejects_non_boolean_suspected_secrets_override"
+      ],
+      "expectation": "error",
+      "id": "submit-invalid-allow-suspected-secrets",
+      "input": {
+        "allow_suspected_secrets": "yes",
+        "allowed_paths": [
+          "module.py"
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "t",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-list depends_on is rejected.",
+      "error_category": "invalid_depends_on",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_normalize_workflow_metadata"
+      ],
+      "expectation": "error",
+      "id": "submit-invalid-depends-on-not-a-list",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": "nope",
+        "request_id": "${REQUEST_ID}",
+        "task": "bad deps",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An empty profile string is a submit-time validation error.",
+      "error_category": "invalid_profile",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_unknown_and_invalid_profile_fail_closed"
+      ],
+      "expectation": "error",
+      "id": "submit-invalid-profile-empty",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "profile": "",
+        "request_id": "${REQUEST_ID}",
+        "task": "invalid profile",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unsafe workflow_id is rejected.",
+      "error_category": "invalid_workflow_id",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_normalize_workflow_metadata",
+        "tests/test_mcp.py::test_submit_rejects_invalid_workflow_contract"
+      ],
+      "expectation": "error",
+      "id": "submit-invalid-workflow-id",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "bad wf",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "bad id!"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An accepted dependency in a registered linked project makes the readiness gate ready and starts implementing.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "src/agent_bridge/storage.py:read_dependency_readonly",
+        "tests/test_mcp.py::test_submit_with_workflow_metadata_persists_and_starts_worker"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "round_number",
+          "status",
+          "task_id"
+        ],
+        "shape": "exact",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "values": {
+          "round_number": 1,
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "beta",
+            "state": "accepted",
+            "status": "accepted",
+            "task_id": "dep-1"
+          }
+        ],
+        "state": "ready"
+      },
+      "id": "submit-linked-dependency-ready",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "beta",
+            "task_id": "dep-1"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "linked ready",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "dep-1",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A registered linked project with no referenced task is rejected by the real referential reader before persistence.",
+      "error_category": "missing_dependency_task",
+      "error_exact_fields": [
+        "error",
+        "index",
+        "detail"
+      ],
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_workflow_references",
+        "src/agent_bridge/storage.py:read_referenced_task_readonly"
+      ],
+      "expect": {
+        "side_effects": [
+          "no spawn_worker call",
+          "no task or round persisted"
+        ]
+      },
+      "expectation": "error",
+      "id": "submit-linked-missing-dependency-task",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "beta",
+            "task_id": "no-such-task"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "linked missing",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A linked dependency persisted under a different workflow is rejected by the real referential reader before persistence.",
+      "error_category": "workflow_mismatch",
+      "error_exact_fields": [
+        "error",
+        "index",
+        "detail"
+      ],
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_workflow_references",
+        "tests/test_mcp.py::test_submit_rejects_cross_project_dependency_errors"
+      ],
+      "expect": {
+        "side_effects": [
+          "no spawn_worker call",
+          "no task or round persisted"
+        ]
+      },
+      "expectation": "error",
+      "id": "submit-linked-workflow-mismatch",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "beta",
+            "task_id": "dep-1"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "linked mismatch",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "dep-1",
+            "workflow_id": "other-wf"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A same-project dependency on a non-existent task is rejected.",
+      "error_category": "missing_dependency_task",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_workflow_references"
+      ],
+      "expectation": "error",
+      "id": "submit-missing-dependency-task",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "task-9"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "missing dep",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An explicit non-historical profile is pinned and surfaced on the submit result.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "src/agent_bridge/profiles.py:resolve_profile",
+        "tests/test_mcp.py::test_custom_implementer_override_omitted_equals_explicit"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "profile",
+          "profile_source",
+          "round_number",
+          "status",
+          "task_id"
+        ],
+        "shape": "exact",
+        "values": {
+          "profile": "test-writer",
+          "profile_source": "argument",
+          "round_number": 1,
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "submit-profile-test-writer",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "profile": "test-writer",
+        "request_id": "${REQUEST_ID}",
+        "task": "write tests",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "profile_identity": {
+        "forbidden_fields": [
+          "profile_json",
+          "profile_hash",
+          "profile_definition",
+          "instructions",
+          "model"
+        ],
+        "profile": "test-writer",
+        "public_fields": [
+          "profile",
+          "profile_source"
+        ]
+      },
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Clean Git workspace: task created, round 1 implementing, worker spawned.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:submit_task_impl",
@@ -1951,6 +4181,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Dirty baseline with allow_dirty=true: policy persisted and baseline returned.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:submit_task_impl",
@@ -2006,6 +4237,7 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Absolute allowed_path inside a trusted external repo snapshots that repo.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:submit_task_impl",
@@ -2068,6 +4300,976 @@
       "tool": "submit_task"
     },
     {
+      "coverage": "target-v15",
+      "description": "A credential-shaped task text is rejected with category names only, never the value.",
+      "error_category": "suspected_secrets",
+      "error_exact_fields": [
+        "categories",
+        "error"
+      ],
+      "error_payload": {
+        "categories": [
+          "aws_access_key"
+        ]
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_suspected_secret_error",
+        "src/agent_bridge/secret_scanner.py:suspected_secret_categories",
+        "tests/test_mcp.py::test_submit_rejects_suspected_secrets_without_override"
+      ],
+      "expect": {
+        "side_effects": [
+          "no spawn_worker call",
+          "no task or round persisted"
+        ]
+      },
+      "expectation": "error",
+      "forbidden_content": [
+        "${SUSPECTED_AWS_KEY}",
+        "use ${SUSPECTED_AWS_KEY} please"
+      ],
+      "id": "submit-suspected-secrets-categories-only",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "use ${SUSPECTED_AWS_KEY} please",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "suspected_categories_from": "task",
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "allow_suspected_secrets=true is explicit consent that bypasses the secret gate.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_suspected_secret_error",
+        "tests/test_mcp.py::test_submit_suspected_secrets_override_retry_is_idempotent"
+      ],
+      "expect": {
+        "fields": [
+          "baseline_dirty_paths",
+          "round_number",
+          "status",
+          "task_id"
+        ],
+        "shape": "exact",
+        "values": {
+          "round_number": 1,
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "submit-suspected-secrets-override-accepted",
+      "input": {
+        "allow_suspected_secrets": true,
+        "allowed_paths": [
+          "module.py"
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "use ${SUSPECTED_AWS_KEY}",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A dependency into a project this one is not linked to is rejected.",
+      "error_category": "unknown_dependency_project",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_workflow_references",
+        "tests/test_mcp.py::test_submit_rejects_cross_project_dependency_errors"
+      ],
+      "expectation": "error",
+      "id": "submit-unknown-dependency-project",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "ghost",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "ghost dep",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unknown profile id fails closed and creates nothing.",
+      "error_category": "unknown_profile",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_unknown_and_invalid_profile_fail_closed"
+      ],
+      "expectation": "error",
+      "id": "submit-unknown-profile",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "profile": "does-not-exist",
+        "request_id": "${REQUEST_ID}",
+        "task": "unknown profile",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A dependency whose persisted workflow_id differs is rejected.",
+      "error_category": "workflow_mismatch",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_validate_workflow_references"
+      ],
+      "expectation": "error",
+      "id": "submit-workflow-mismatch",
+      "input": {
+        "allowed_paths": [
+          "module.py"
+        ],
+        "depends_on": [
+          {
+            "project_id": "${PROJECT_ID}",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "wf mismatch",
+        "test_commands": [
+          "pytest -q"
+        ],
+        "workflow_id": "${WORKFLOW_ID}"
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "other-wf"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Worktree mode rejects external absolute allowed_paths before any validation.",
+      "error_category": "external_paths_not_supported_in_worktree_mode",
+      "error_payload": {
+        "paths": [
+          "${FOREIGN_PATH}"
+        ]
+      },
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:submit_task_impl",
+        "tests/test_mcp.py::test_worktree_task_status_surfaces_execution_mode_and_path"
+      ],
+      "expectation": "error",
+      "id": "submit-worktree-rejects-absolute-allowed-paths",
+      "input": {
+        "allowed_paths": [
+          "${FOREIGN_PATH}"
+        ],
+        "request_id": "${REQUEST_ID}",
+        "task": "external path",
+        "test_commands": [
+          "pytest -q"
+        ]
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "execution_mode": "worktree"
+        },
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "submit_task"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An explicit task_status call activates a waiting task once every dependency is accepted.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:task_status_impl",
+        "src/agent_bridge/mcp_server.py:_maybe_spawn",
+        "tests/test_mcp.py::test_activated_waiting_task_recovery_spawns_once"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "phase"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "values": {
+          "phase": "agent",
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "allow_dirty": true,
+        "assert_refreshed_snapshot": true,
+        "baseline_refreshed": true,
+        "dependencies_satisfied": 1,
+        "persisted_status": "implementing",
+        "spawn_count": 1
+      },
+      "coverage": "target-v15",
+      "description": "A direct successor whose own submit policy allows dirty rebaselines a dirty in-scope workspace and activates.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "tests/test_mcp.py::test_direct_successor_index_drift_allowed_rebaselines"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "phase"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "spawn_count": 1,
+        "values": {
+          "phase": "agent",
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-allow-dirty",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "post_seed": [
+          {
+            "kind": "write",
+            "stage": [
+              "module.py"
+            ],
+            "write": {
+              "module.py": "dirty = 2\n"
+            }
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": true,
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "worker_running_after_spawn": true,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "allow_dirty": false,
+        "assert_refreshed_snapshot": true,
+        "baseline_refreshed": true,
+        "dependencies_satisfied": 1,
+        "persisted_status": "implementing",
+        "spawn_count": 1
+      },
+      "coverage": "target-v15",
+      "description": "A direct successor with a persisted submit manifest rebaselines the clean shared workspace and activates exactly once.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "src/agent_bridge/mcp_server.py:_refresh_activation_baseline",
+        "tests/test_mcp.py::test_direct_successor_rebaselines_after_committed_predecessor"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "phase"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "spawn_count": 1,
+        "values": {
+          "phase": "agent",
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-baseline-refresh",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "post_seed": [
+          {
+            "kind": "commit",
+            "message": "predecessor commit",
+            "write": {
+              "other.txt": "pred = 1\n"
+            }
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "worker_running_after_spawn": true,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "assert_preserved_snapshot": true,
+        "baseline_refreshed": false,
+        "blocker_reason": "baseline_dirty_outside_scope",
+        "paths": [
+          "other.txt"
+        ],
+        "persisted_status": "waiting_dependencies",
+        "spawn_count": 0
+      },
+      "coverage": "target-v15",
+      "description": "A dirty path outside the successor's allowed scope blocks activation even with allow_dirty=true.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "src/agent_bridge/git_snapshot.py:scope_violations"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "activation_blocker"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "activation_blocker": {
+            "paths": [
+              "other.txt"
+            ],
+            "reason": "baseline_dirty_outside_scope",
+            "state": "blocked"
+          },
+          "status": "waiting_dependencies"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-outside-scope",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "post_seed": [
+          {
+            "kind": "write",
+            "write": {
+              "other.txt": "pred = 1\n"
+            }
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": true,
+          "allowed_paths": [
+            "module.py"
+          ],
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "assert_preserved_snapshot": true,
+        "baseline_refreshed": false,
+        "blocker_reason": "baseline_dirty",
+        "dirty_paths": [
+          "module.py"
+        ],
+        "persisted_status": "waiting_dependencies",
+        "spawn_count": 0
+      },
+      "coverage": "target-v15",
+      "description": "A successor with allow_dirty=false never inherits the predecessor's allow_dirty=true: a dirty shared workspace blocks activation.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "tests/test_mcp.py::test_direct_successor_dirty_baseline_fails_closed"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate",
+          "activation_blocker"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "activation_blocker": {
+            "dirty_paths": [
+              "module.py"
+            ],
+            "reason": "baseline_dirty",
+            "state": "blocked"
+          },
+          "status": "waiting_dependencies"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-own-deny-dirty",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "post_seed": [
+          {
+            "kind": "write",
+            "write": {
+              "module.py": "pred = 1\n"
+            }
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "assert_preserved_snapshot": true,
+        "baseline_refreshed": false,
+        "blocker_reason": "baseline_unavailable",
+        "persisted_status": "waiting_dependencies",
+        "spawn_count": 0
+      },
+      "coverage": "target-v15",
+      "description": "An unreadable workspace (not a Git repository) makes the direct activation baseline unavailable and blocks the task.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "src/agent_bridge/git_snapshot.py:is_repo"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "activation_blocker"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "activation_blocker": {
+            "reason": "baseline_unavailable",
+            "state": "blocked"
+          },
+          "status": "waiting_dependencies"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-unavailable",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "break_git": true,
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": true,
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "activation": {
+        "assert_preserved_snapshot": true,
+        "baseline_refreshed": false,
+        "dependencies_satisfied": 1,
+        "persisted_base_head": "1111111111111111111111111111111111111111",
+        "persisted_status": "implementing",
+        "spawn_count": 1
+      },
+      "coverage": "target-v15",
+      "description": "A worktree successor keeps its persisted base_head and never rebaselines the shared workspace on activation.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_recompute_activation_baseline",
+        "tests/test_mcp.py::test_worktree_waiting_dependency_regression"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "phase"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "spawn_worker(${TASK_ID}, 1)"
+        ],
+        "spawn_count": 1,
+        "values": {
+          "phase": "agent",
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-activates-waiting-dependency-worktree-base-head",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "repeat": 2,
+      "setup": {
+        "config": {
+          "execution_mode": "worktree",
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "allow_dirty": true,
+            "snapshot_from_workspace": true,
+            "status": "accepted",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "base_head": "1111111111111111111111111111111111111111",
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "execution_mode": "worktree",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "worker_running_after_spawn": true,
+        "workspace": {
+          "dirty_paths": [
+            "module.py"
+          ],
+          "git_repo": true
+        },
+        "worktrees": [
+          {
+            "base_head": "1111111111111111111111111111111111111111",
+            "status": "pending",
+            "task_id": "${TASK_ID}"
+          }
+        ]
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "Without an id and with several active tasks, task_status returns a read-only ambiguous selection list.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:task_status_impl",
+        "src/agent_bridge/mcp_server.py:AMBIGUOUS_TASK",
+        "tests/test_mcp.py::test_parallel_no_id_status_is_ambiguous_not_arbitrary"
+      ],
+      "expect": {
+        "fields": [
+          "count",
+          "status",
+          "tasks"
+        ],
+        "invariants": [
+          "tasks lists both active tasks as {task_id,status,execution_mode}",
+          "no recovery or activation is performed for an ambiguous call"
+        ],
+        "shape": "exact",
+        "values": {
+          "count": 2,
+          "status": "ambiguous_task"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-ambiguous-task-without-id",
+      "input": {
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 3
+        },
+        "extra_tasks": [
+          {
+            "status": "implementing",
+            "task_id": "${TASK_ID}"
+          },
+          {
+            "status": "revising",
+            "task_id": "${OTHER_TASK_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": null,
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Clean baseline keeps the default answer free of an empty baseline list.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2125,6 +5327,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Non-empty persisted baseline wins over the snapshot fallback.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2190,6 +5393,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Without a persisted baseline the submit-time snapshot dirty list is used.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2248,6 +5452,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Compact awaiting_review surfaces an external scope violation and repositories.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2368,6 +5573,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "repositories is omitted from the compact answer when there are no violations.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2441,6 +5647,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Compact awaiting_review includes the verification summary; full log stays relative.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2557,6 +5764,61 @@
       "tool": "task_status"
     },
     {
+      "coverage": "target-v15",
+      "description": "verbose=true omits the budget block when the task has no budget.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_verbose_task_result",
+        "tests/test_mcp.py::test_verbose_task_status_omits_budget_without_budget"
+      ],
+      "expect": {
+        "absent": [
+          "budget"
+        ],
+        "fields": [
+          "status"
+        ],
+        "shape": "contains"
+      },
+      "expectation": "success",
+      "id": "task-status-budget-omitted-when-unconfigured-verbose",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "verbose": true,
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "implementing returns the exact compact progress payload.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_compact_task_result",
@@ -2625,6 +5887,122 @@
       "tool": "task_status"
     },
     {
+      "coverage": "target-v15",
+      "description": "An implementing task without a running verifier reports phase=agent.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_compact_task_result",
+        "src/agent_bridge/mcp_server.py:_inflight_phase"
+      ],
+      "expect": {
+        "absent": [
+          "verification_progress"
+        ],
+        "fields": [
+          "status",
+          "phase"
+        ],
+        "shape": "contains",
+        "values": {
+          "phase": "agent",
+          "status": "implementing"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-compact-phase-agent",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "sent"
+            }
+          ],
+          "session_id": null,
+          "status": "implementing",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A running verifier reports phase=verifying with safe command-free progress.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_verification_progress",
+        "src/agent_bridge/mcp_server.py:_inflight_phase",
+        "tests/test_mcp.py::test_task_result_is_compact_while_implementing"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "phase",
+          "verification_progress"
+        ],
+        "shape": "contains",
+        "values": {
+          "phase": "verifying",
+          "status": "implementing",
+          "verification_progress": {
+            "command_count": 2,
+            "command_index": 1,
+            "state": "running"
+          }
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-compact-phase-verifying",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "observing",
+              "verifier_progress": {
+                "command_count": 2,
+                "command_index": 1
+              },
+              "verifier_state": "running"
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "implementing",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "revising returns the same compact shape with revision_count and round 2.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_compact_task_result",
@@ -2693,6 +6071,64 @@
       "tool": "task_status"
     },
     {
+      "coverage": "target-v15",
+      "description": "A corrupt saved budget never crashes task_status and is not surfaced as a budget.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/usage.py:normalize_persisted_budget"
+      ],
+      "expect": {
+        "absent": [
+          "budget"
+        ],
+        "fields": [
+          "status"
+        ],
+        "shape": "contains",
+        "values": {
+          "status": "awaiting_review"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-corrupt-budget-survives",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget_raw": "[1, 2, 3]",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "accepted default answer is exactly the short identity/round fields.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2745,6 +6181,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Default awaiting_review answer carries exactly the review inputs.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2857,6 +6294,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "closed default answer is exactly the short identity/round fields.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2909,6 +6347,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "delivery_unknown keeps the exact reason plus blockers/tool errors.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -2991,6 +6430,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "failed keeps the exact reason plus blockers/tool errors.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -3073,6 +6513,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "needs_user keeps diagnostics, the worker window and the full user_action.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -3166,6 +6607,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "delivery_unknown recovery is deferred until the OpenCode binding is ready.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_maybe_spawn",
@@ -3217,6 +6659,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Infrastructure failures stay terminal failed and never spawn recovery.",
       "evidence": [
         "src/agent_bridge/storage.py:reopen_failed_round",
@@ -3275,6 +6718,64 @@
       "tool": "task_status"
     },
     {
+      "coverage": "target-v15",
+      "description": "The built-in implementer snapshot keeps the pre-profile response contract.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_profile_status_payload",
+        "src/agent_bridge/profiles.py:is_historical_snapshot"
+      ],
+      "expect": {
+        "absent": [
+          "profile",
+          "profile_source"
+        ],
+        "fields": [
+          "status"
+        ],
+        "shape": "contains"
+      },
+      "expectation": "success",
+      "id": "task-status-historical-implementer-suppressed",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "profile": "implementer",
+          "profile_json": "${SNAPSHOT_IMPLEMENTER}",
+          "profile_source": "builtin_default",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "Non-boolean verbose is rejected before any lookup.",
       "error_category": "invalid_verbose",
       "evidence": [
@@ -3295,6 +6796,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "wait_seconds above MAX_WAIT_SECONDS is rejected.",
       "error_category": "invalid_wait_seconds",
       "evidence": [
@@ -3314,6 +6816,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Negative wait_seconds is rejected.",
       "error_category": "invalid_wait_seconds",
       "evidence": [
@@ -3333,6 +6836,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Boolean (or otherwise non-int) wait_seconds is rejected.",
       "error_category": "invalid_wait_seconds",
       "evidence": [
@@ -3351,6 +6855,700 @@
       "tool": "task_status"
     },
     {
+      "coverage": "target-v15",
+      "description": "A registered linked project with no such task reports the missing gate reason.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "src/agent_bridge/storage.py:read_dependency_readonly",
+        "tests/test_mcp.py::test_missing_corrupt_or_mismatched_dependency_blocks"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "beta",
+                "reason": "missing",
+                "state": "blocked",
+                "task_id": "dep-1"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "beta",
+            "reason": "missing",
+            "state": "blocked",
+            "task_id": "dep-1"
+          }
+        ],
+        "state": "waiting"
+      },
+      "id": "task-status-linked-dependency-missing",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "beta",
+              "task_id": "dep-1"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A linked dependency that is not accepted keeps the task waiting with a not_accepted gate entry.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "src/agent_bridge/storage.py:read_dependency_readonly",
+        "tests/test_mcp.py::test_missing_corrupt_or_mismatched_dependency_blocks"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "beta",
+                "reason": "not_accepted",
+                "state": "blocked",
+                "status": "awaiting_review",
+                "task_id": "dep-1"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "beta",
+            "reason": "not_accepted",
+            "state": "blocked",
+            "status": "awaiting_review",
+            "task_id": "dep-1"
+          }
+        ],
+        "state": "waiting"
+      },
+      "id": "task-status-linked-dependency-pending",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [
+          {
+            "status": "awaiting_review",
+            "task_id": "dep-1",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "beta",
+              "task_id": "dep-1"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A dependency into a project that is not a registered linked project reports the unlinked gate reason.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "tests/test_mcp.py::test_dependency_gate_reports_unlinked_project"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "gamma",
+                "reason": "unlinked",
+                "state": "blocked",
+                "task_id": "task-x"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "gamma",
+            "reason": "unlinked",
+            "state": "blocked",
+            "task_id": "task-x"
+          }
+        ],
+        "state": "waiting"
+      },
+      "id": "task-status-linked-dependency-unlinked",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "gamma",
+              "task_id": "task-x"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "An unreadable linked project database reports the unreadable gate reason.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "src/agent_bridge/storage.py:read_dependency_readonly",
+        "tests/test_mcp.py::test_missing_corrupt_or_mismatched_dependency_blocks"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "beta",
+                "reason": "unreadable",
+                "state": "blocked",
+                "task_id": "dep-1"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "beta",
+            "reason": "unreadable",
+            "state": "blocked",
+            "task_id": "dep-1"
+          }
+        ],
+        "state": "waiting"
+      },
+      "id": "task-status-linked-dependency-unreadable",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "break_linked": "unreadable",
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "dep-1",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "beta",
+              "task_id": "dep-1"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A linked dependency persisted under a different workflow reports workflow_mismatch.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_dependency_gate",
+        "src/agent_bridge/storage.py:read_dependency_readonly",
+        "tests/test_mcp.py::test_missing_corrupt_or_mismatched_dependency_blocks"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "side_effects": [
+          "no spawn_worker call"
+        ],
+        "spawn_count": 0,
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "beta",
+                "reason": "workflow_mismatch",
+                "state": "blocked",
+                "status": "accepted",
+                "task_id": "dep-1"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "expected_gate": {
+        "dependencies": [
+          {
+            "project_id": "beta",
+            "reason": "workflow_mismatch",
+            "state": "blocked",
+            "status": "accepted",
+            "task_id": "dep-1"
+          }
+        ],
+        "state": "waiting"
+      },
+      "id": "task-status-linked-dependency-workflow-mismatch",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "linked_project": {
+          "project_id": "beta"
+        },
+        "linked_tasks": [
+          {
+            "status": "accepted",
+            "task_id": "dep-1",
+            "workflow_id": "other-wf"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "allow_dirty": false,
+          "depends_on": [
+            {
+              "project_id": "beta",
+              "task_id": "dep-1"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "snapshot_from_workspace": true,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "The minimal answer reports the exhausted limit fields and gate reason.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/usage.py:budget_state"
+      ],
+      "expect": {
+        "fields": [
+          "budget"
+        ],
+        "shape": "contains",
+        "values": {
+          "budget": {
+            "configured": true,
+            "exhausted": true,
+            "exhausted_fields": [
+              "input"
+            ],
+            "gate": "exhausted",
+            "gate_reason": "budget limit(s) already reached: input",
+            "warning": true
+          }
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-minimal-budget-exhausted",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget": {
+            "limits": {
+              "input": 100
+            }
+          },
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ],
+                "usage": {
+                  "input": 100
+                }
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "The minimal awaiting_review answer surfaces the warning budget gate.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/usage.py:budget_state",
+        "tests/test_mcp.py::test_minimal_review_answer_surfaces_budget_gate"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "budget"
+        ],
+        "shape": "contains",
+        "values": {
+          "budget": {
+            "configured": true,
+            "exhausted": false,
+            "exhausted_fields": [],
+            "gate": "warning",
+            "gate_reason": "budget reached warning threshold 0.8",
+            "warning": true
+          },
+          "status": "awaiting_review"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-minimal-budget-warning",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "server": "ready",
+        "task": {
+          "budget": {
+            "limits": {
+              "input": 100
+            },
+            "warning_threshold": 0.8
+          },
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ],
+                "usage": {
+                  "input": 85
+                }
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A non-historical pinned profile is surfaced by its safe id and origin only.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_profile_status_payload",
+        "tests/test_mcp.py::test_task_status_surfaces_profile_for_profiled_task_only"
+      ],
+      "expect": {
+        "fields": [
+          "profile",
+          "profile_source"
+        ],
+        "shape": "contains",
+        "values": {
+          "profile": "test-writer",
+          "profile_source": "argument"
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-minimal-profile-surface",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "profile_identity": {
+        "forbidden_fields": [
+          "profile_json",
+          "profile_hash",
+          "profile_definition",
+          "instructions",
+          "model"
+        ],
+        "profile": "test-writer",
+        "public_fields": [
+          "profile",
+          "profile_source"
+        ]
+      },
+      "setup": {
+        "server": "ready",
+        "task": {
+          "profile": "test-writer",
+          "profile_hash": "${SNAPSHOT_TEST_WRITER_HASH}",
+          "profile_json": "${SNAPSHOT_TEST_WRITER}",
+          "profile_source": "argument",
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "complete",
+              "stored_result": {
+                "changed_paths": [
+                  "module.py"
+                ]
+              }
+            }
+          ],
+          "session_id": "${SESSION_ID}",
+          "status": "awaiting_review",
+          "task_id": "${TASK_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
+    },
+    {
+      "coverage": "legacy-v6",
       "description": "needs_user before session creation still exposes the project console action.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_user_action",
@@ -3421,6 +7619,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "user_action must be byte-identical between verbose=false and verbose=true.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_minimal_task_result",
@@ -3483,6 +7682,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "No task_id and no active task: no_active_task.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -3510,6 +7710,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A failed assistant_error initial round is reopened to implementing then awaiting_review.",
       "evidence": [
         "src/agent_bridge/storage.py:reopen_failed_round",
@@ -3575,6 +7776,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A failed assistant_error revision round is reopened to revising then awaiting_review.",
       "evidence": [
         "src/agent_bridge/storage.py:reopen_failed_round",
@@ -3636,6 +7838,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A genuinely pending blocker stays needs_user after one bounded recovery attempt.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -3700,6 +7903,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A stale blocker with a final response recovers to awaiting_review without resend.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -3765,6 +7969,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Explicit unknown task_id: unknown_task.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -3795,6 +8000,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "External git-policy violations are prefixed with the repository root in flat lists.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_repositories_view",
@@ -3929,6 +8135,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "verbose=true restores the full historical contract without changing values.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_verbose_task_result",
@@ -4059,6 +8266,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "verbose reports the structured multi-repository view and merged flat paths.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_repositories_view",
@@ -4180,6 +8388,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "Old single-repository persisted rounds map onto a one-entry repositories list.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:_single_repository_view",
@@ -4254,6 +8463,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "A long wait returns as soon as the task leaves the in-flight statuses.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -4306,6 +8516,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "wait_seconds=300 is accepted and returns immediately when nothing is active.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -4337,6 +8548,7 @@
       "tool": "task_status"
     },
     {
+      "coverage": "legacy-v6",
       "description": "wait_seconds=0 does not spawn a recovery worker or reopen a failed round.",
       "evidence": [
         "src/agent_bridge/mcp_server.py:task_status_impl",
@@ -4386,21 +8598,134 @@
         }
       },
       "tool": "task_status"
+    },
+    {
+      "coverage": "target-v15",
+      "description": "A waiting task exposes its normalized workflow and the read-only dependency gate.",
+      "evidence": [
+        "src/agent_bridge/mcp_server.py:_minimal_task_result",
+        "src/agent_bridge/mcp_server.py:_task_dependency_gate",
+        "tests/test_mcp.py::test_task_status_minimal_surfaces_workflow_metadata"
+      ],
+      "expect": {
+        "fields": [
+          "status",
+          "workflow",
+          "workflow_gate"
+        ],
+        "shape": "contains",
+        "values": {
+          "status": "waiting_dependencies",
+          "workflow": {
+            "depends_on": [
+              {
+                "project_id": "${PROJECT_ID}",
+                "task_id": "${OTHER_TASK_ID}"
+              }
+            ],
+            "workflow_id": "${WORKFLOW_ID}"
+          },
+          "workflow_gate": {
+            "dependencies": [
+              {
+                "project_id": "${PROJECT_ID}",
+                "reason": "not_accepted",
+                "state": "blocked",
+                "status": "awaiting_review",
+                "task_id": "${OTHER_TASK_ID}"
+              }
+            ],
+            "state": "waiting"
+          }
+        }
+      },
+      "expectation": "success",
+      "id": "task-status-waiting-dependencies-gate",
+      "input": {
+        "task_id": "${TASK_ID}",
+        "wait_seconds": 0
+      },
+      "normalization": [
+        "task_ids"
+      ],
+      "setup": {
+        "config": {
+          "max_active_tasks": 2
+        },
+        "extra_tasks": [
+          {
+            "status": "awaiting_review",
+            "task_id": "${OTHER_TASK_ID}",
+            "workflow_id": "${WORKFLOW_ID}"
+          }
+        ],
+        "server": "ready",
+        "task": {
+          "depends_on": [
+            {
+              "project_id": "${PROJECT_ID}",
+              "task_id": "${OTHER_TASK_ID}"
+            }
+          ],
+          "revision_count": 0,
+          "rounds": [
+            {
+              "kind": "implement",
+              "request_id": "${REQUEST_ID}",
+              "round_number": 1,
+              "status": "pending"
+            }
+          ],
+          "session_id": null,
+          "status": "waiting_dependencies",
+          "task_id": "${TASK_ID}",
+          "workflow_id": "${WORKFLOW_ID}"
+        },
+        "workspace": {
+          "dirty_paths": [],
+          "git_repo": true
+        }
+      },
+      "tool": "task_status"
     }
   ],
-  "corpus_version": 1,
+  "contract_schema_version": 15,
+  "corpus_version": 2,
+  "coverage": {
+    "legacy_label": "v6",
+    "legacy_source_commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "target_label": "v15",
+    "target_source_commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a"
+  },
   "error_categories": {
+    "ambiguous_task": "task_status without an id found several unfinished tasks and returned a read-only selection list.",
+    "budget_corrupt": "request_changes refused to auto-continue because the saved budget state could not be validated.",
+    "budget_exhausted": "request_changes refused a new revision because a saved budget limit was already reached.",
+    "dependency_cycle": "submit_task rejected a dependency graph that contains a cycle.",
+    "dependency_graph_unreadable": "submit_task could not read the full dependency graph; the absence of a cycle cannot be proven.",
+    "depends_on_requires_workflow": "submit_task requires a workflow_id whenever depends_on is non-empty.",
     "dirty_paths_outside_scope": "submit_task rejects a dirty baseline whose paths are not covered by allowed_paths.",
     "dirty_workspace": "submit_task rejects pre-existing dirty paths unless allow_dirty=true; `dirty_paths` is sorted.",
+    "duplicate_dependency": "A dependency reference was repeated.",
     "empty_task": "submit_task requires a non-blank task text.",
+    "external_paths_not_supported_in_worktree_mode": "Worktree mode rejects absolute external allowed_paths.",
     "git_snapshot_failed": "submit_task could not take the Git snapshot (GitError); detail is not contract.",
+    "invalid_allow_budget_override": "request_changes requires allow_budget_override to be a boolean.",
+    "invalid_allow_suspected_secrets": "submit_task/request_changes require allow_suspected_secrets to be a boolean.",
     "invalid_allowed_paths": "submit_task rejected allowed_paths: empty list, absolute main-workspace path, or path outside trusted external roots; detail is not contract.",
+    "invalid_budget": "The optional submit_task budget violates the public contract; detail names the field.",
+    "invalid_dependency_identifier": "A dependency project_id/task_id does not match the safe-token contract.",
+    "invalid_depends_on": "depends_on must be a list of {project_id, task_id} objects.",
     "invalid_git_policy": "submit_task requires allow_dirty and allow_commit to be booleans.",
+    "invalid_profile": "submit_task profile must be a non-empty, trimmed string.",
     "invalid_request": "request_changes requires a non-empty request_id and non-blank findings.",
     "invalid_request_id": "submit_task requires a non-empty string request_id.",
+    "invalid_structured_findings": "A structured finding violates the fail-closed schema; detail/index locate it.",
     "invalid_test_commands": "submit_task rejected a test command before any task/command ran; carries `index` and a safe `reason`, never the command text.",
     "invalid_verbose": "task_status requires verbose to be a boolean.",
     "invalid_wait_seconds": "task_status requires wait_seconds to be an integer in 0..300.",
+    "invalid_workflow_id": "workflow_id must match the safe-token workflow contract.",
+    "missing_dependency_task": "A referenced dependency task does not exist.",
     "no_active_task": "task_status without task_id reports that no active task exists for the project.",
     "not_a_git_repo": "submit_task requires the workspace to be a Git repository.",
     "not_awaiting_review": "request_changes/accept_task require an awaiting_review task; carries the actual `status`.",
@@ -4412,9 +8737,14 @@
     "server_unavailable": "OpenCode health/path/status probe failed; accept_task may append a ${DETAIL} suffix, close_task returns the bare category.",
     "server_unhealthy": "OpenCode health probe reported healthy != true.",
     "server_wrong_directory": "OpenCode /path did not return the configured workspace directory.",
+    "suspected_secrets": "Untrusted text carried a recognised credential shape; only deduplicated category names are returned.",
+    "unknown_dependency_project": "A dependency references a project this one is not linked to.",
+    "unknown_profile": "submit_task profile does not name a builtin or custom profile.",
     "unknown_task": "The requested task_id does not exist.",
-    "worker_running": "accept_task refused while the project worker lock is held."
+    "worker_running": "accept_task refused while the project worker lock is held.",
+    "workflow_mismatch": "A referenced dependency task belongs to a different workflow."
   },
+  "legacy_contract_schema_version": 6,
   "normalization_rules": {
     "absolute_paths": "Every absolute filesystem path is replaced by its documented placeholder (${WORKSPACE}, ${EXTERNAL_REPO}, ${FOREIGN_PATH}, ${FIXTURE_DIR}); paths inside an external repository keep the `${EXTERNAL_REPO}/<relative>` form in flat lists and stay repository-relative inside `repositories[]`.",
     "commands": "user_action.command and user_action.fallback_command are compared after replacing the shlex-joined argv with ${CONSOLE_COMMAND}/${ATTACH_COMMAND}; tokens and quoting are contract, absolute config/state paths are not.",
@@ -4425,6 +8755,7 @@
     "pids": "Process ids are replaced by ${PID}.",
     "request_ids": "MCP request_id values are stable synthetic literals (${REQUEST_ID}, ${REVISION_REQUEST_ID}); they participate in idempotency/conflict semantics.",
     "session_ids": "OpenCode session ids are replaced by ${SESSION_ID}/${REVISION_SESSION_ID}; user_action.session_title keeps the deterministic `agent-bridge ${TASK_ID} round <n>` form.",
+    "structured_findings": "Structured findings are normalized in place: severity stays the literal token, path is the same normalized allowed-path form as the task scope, line is an integer and code/message are validated safe strings.",
     "task_ids": "UUID task ids are replaced by the stable synthetic ${TASK_ID}/${OTHER_TASK_ID}.",
     "timestamps": "created_at/updated_at/close_requested_at ISO-8601 values are replaced by ${TIMESTAMP}; exact clock values are not contract.",
     "verification_output": "verification.commands[].output_tail is a bounded tail for failed commands only and is replaced by ${OUTPUT_TAIL}; the full log stays in the private state dir behind the relative `log` path."
@@ -4453,26 +8784,117 @@
     "${REVISION_SESSION_ID}": "Stable synthetic revision session id (`ses_2`).",
     "${SESSION_ID}": "Stable synthetic OpenCode session id (`ses_1`).",
     "${SESSION_TITLE}": "Deterministic session title `agent-bridge ${TASK_ID} round <round_number>`.",
+    "${SNAPSHOT_IMPLEMENTER}": "Canonical built-in implementer profile snapshot; the verifier computes it with profiles.build_snapshot/canonical_snapshot.",
+    "${SNAPSHOT_TEST_WRITER}": "Canonical built-in test-writer profile snapshot; the verifier computes it with profiles.build_snapshot/canonical_snapshot.",
     "${STATE_ROOT}": "Absolute state root used to build console/attach commands.",
+    "${STRUCTURED_FINDINGS_201}": "A list of 201 minimal valid structured findings used to exercise the max_entries=200 bound; the verifier expands it.",
+    "${SUSPECTED_AWS_KEY}": "Synthetic 20-character AWS-shaped access key id placeholder (never a real credential); the verifier substitutes the canonical non-secret AWS documentation example so only the scanner's high-confidence AWS regex matches.",
+    "${SUSPECTED_OPENAI_KEY}": "Synthetic OpenAI-shaped token placeholder (`sk-` plus 32 alphanumerics); never a real credential.",
     "${TASK_ID}": "Stable synthetic task id (`task-1`); a real UUID is normalized to this placeholder.",
     "${TIMESTAMP}": "Normalized UTC ISO-8601 timestamp (created_at/updated_at/close_requested_at/worker window).",
+    "${WORKFLOW_ID}": "Stable synthetic workflow id (`wf-1`).",
     "${WORKSPACE}": "Absolute canonical path of the project workspace (a Git repository)."
   },
   "source": {
-    "commit": "64b2a8370d5e86fdf2f660fd0b71fc912371dee2",
+    "commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
     "modules": [
-      "src/agent_bridge/mcp_server.py",
-      "src/agent_bridge/mcp_http.py",
-      "src/agent_bridge/storage.py",
-      "src/agent_bridge/worker.py",
+      "src/agent_bridge/cli.py",
       "src/agent_bridge/git_snapshot.py",
+      "src/agent_bridge/mcp_http.py",
+      "src/agent_bridge/mcp_server.py",
+      "src/agent_bridge/profiles.py",
+      "src/agent_bridge/secret_scanner.py",
+      "src/agent_bridge/storage.py",
+      "src/agent_bridge/usage.py",
       "src/agent_bridge/verifier.py",
-      "src/agent_bridge/cli.py"
+      "src/agent_bridge/worker.py"
     ],
     "python_repo": "agent_bridge",
+    "schema_version": 15,
     "tests": [
       "tests/test_mcp.py",
       "tests/test_mcp_http.py"
+    ]
+  },
+  "tool_surface": {
+    "server_name": "agent-bridge",
+    "tool_count": 6,
+    "tools": [
+      {
+        "defaults": {},
+        "name": "accept_task",
+        "required": [
+          "task_id"
+        ]
+      },
+      {
+        "defaults": {},
+        "name": "close_task",
+        "required": [
+          "reason",
+          "task_id"
+        ]
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "defaults": {},
+        "name": "project_info",
+        "required": []
+      },
+      {
+        "defaults": {
+          "allow_budget_override": false,
+          "allow_suspected_secrets": false,
+          "structured_findings": null
+        },
+        "name": "request_changes",
+        "required": [
+          "findings",
+          "request_id",
+          "task_id"
+        ]
+      },
+      {
+        "defaults": {
+          "allow_commit": false,
+          "allow_dirty": false,
+          "allow_suspected_secrets": false,
+          "budget": null,
+          "depends_on": null,
+          "profile": null,
+          "workflow_id": null
+        },
+        "name": "submit_task",
+        "required": [
+          "allowed_paths",
+          "request_id",
+          "task",
+          "test_commands"
+        ]
+      },
+      {
+        "annotations": {
+          "readOnlyHint": false
+        },
+        "bounds": {
+          "wait_seconds": [
+            0,
+            300
+          ]
+        },
+        "defaults": {
+          "task_id": null,
+          "verbose": false,
+          "wait_seconds": 300
+        },
+        "name": "task_status",
+        "required": []
+      }
     ]
   }
 }

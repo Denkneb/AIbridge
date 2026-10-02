@@ -1,11 +1,177 @@
 {
+  "checkpoint": {
+    "bounds": {
+      "max_count": 1000000,
+      "max_detail_entries_per_repo": 200,
+      "max_digest_length": 128,
+      "max_path_length": 300,
+      "max_repositories": 64,
+      "max_state_entries_per_repo": 2000
+    },
+    "column": "rounds.checkpoint_json",
+    "diff_stat": {
+      "change_kinds": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed"
+      ],
+      "counts": "one non-negative integer per change kind, each 0..1000000",
+      "counts_bound": "counts are the exact totals for the round while entries may be truncated",
+      "entries": "at most 200 detail entries; each is {path, change, kind} and, when change=renamed, also from",
+      "entries_bound": 200,
+      "file_kinds": [
+        "file",
+        "binary",
+        "symlink",
+        "unknown"
+      ],
+      "required_keys": [
+        "counts",
+        "entries",
+        "truncated"
+      ],
+      "truncated": "non-negative integer 0..1000000 = max(0, total entries - 200)"
+    },
+    "encoding": "compact JSON text written with sort_keys=True; parse_round_checkpoint accepts a JSON string or an already-decoded dict",
+    "evidence": "storage.py:ROUND_CHECKPOINT_* / storage.py:parse_round_checkpoint / git_snapshot.py:CHECKPOINT_VERSION / git_snapshot.py:worktree_state / git_snapshot.py:diff_round_stat / worker.py:_build_round_checkpoint / worker.py:_previous_checkpoint_repos",
+    "malformed_handling": {
+      "malformed": "parse_round_checkpoint returns None for a non-dict payload, empty/invalid JSON, an unknown version, repositories that are not a 1..64 list, a non-canonical 'workspace'+'external N' label topology, a non-bool available, a missing/unbounded diff_stat, and for an available repository missing any of head/index_fingerprint/worktree_fingerprint/changed/absent or exceeding a bound, or a workspace fingerprint-mirror mismatch; the whole value is then unavailable and is never echoed or reused as a predecessor",
+      "normalization": "the parser reads only known keys, so unknown top-level or per-field keys are dropped, not rejected. For an available=false repository it requires only label, available and a well-formed bounded diff_stat: it does not reject extra/legacy state keys and does not enforce the canonical empty diff_stat the writer emits, nor verify truncated equals the computed totals. The top-level workspace mirror accepts an absent or explicit-null head/index_fingerprint/worktree_fingerprint when the workspace is unavailable, whereas the writer always emits all three as JSON null",
+      "unavailable": "checkpoint_json null or parse_round_checkpoint returning None means the round has no checkpoint and cannot be a predecessor; the worker persists null for that round",
+      "unknown_version": "a version other than the accepted value is rejected with None"
+    },
+    "predecessor": {
+      "no_backward_fallback": "a missing, corrupt, unknown-version or oversized immediately-preceding (round N-1) checkpoint raises _CheckpointUnavailable; the current checkpoint is persisted as unavailable and the worker never scans further back to an older checkpoint or the submit-time baseline",
+      "rule": "the delta of round N is computed against round N-1's valid checkpoint only; round 1 is measured against the submit-time (direct) or clean-checkout (worktree) baseline",
+      "topology": "the predecessor must describe the exact same canonical repository topology in the same order and every predecessor repository must be available, otherwise the current checkpoint is unavailable fail-closed"
+    },
+    "privacy": "only repository-relative paths, bounded numeric counts and content-free fingerprints are persisted; file content, absolute external-repository roots, credentials, session ids and task text are never stored or rendered",
+    "repository": {
+      "available": "bool",
+      "available_required_keys": [
+        "head",
+        "index_fingerprint",
+        "worktree_fingerprint",
+        "changed",
+        "absent"
+      ],
+      "fingerprints": "head, index_fingerprint and worktree_fingerprint are bounded hex refs of at most 128 characters",
+      "label": "canonical writer labels only: 'workspace' plus contiguous unique 'external N' with 1 <= N <= 64; a duplicate, reordered or missing label rejects the whole checkpoint",
+      "label_taxonomy": "the first repository is always 'workspace'; external repositories are numbered from 1 in sorted canonical root order",
+      "unavailable": "writer shape: available=false carries only label, available and the canonical empty diff_stat, with no head/index/state keys; the parser is more lenient and ignores any extra keys (see malformed_handling.normalization)",
+      "unavailable_reason": "the repository root is missing or is not a usable Git work tree, or its state could not be read"
+    },
+    "state": {
+      "absent": "sorted repository-relative paths present in the baseline but absent in this round; at most 2000 entries",
+      "changed": "repository-relative path -> {digest (bounded hex), kind}; at most 2000 keys",
+      "combined_bound": "len(changed) + len(absent) must not exceed 2000 per repository; the exact state is reused verbatim as the next round's predecessor and is never truncated, so exceeding the bound makes the whole checkpoint unavailable"
+    },
+    "top_level": {
+      "optional_keys": [
+        "head",
+        "index_fingerprint",
+        "worktree_fingerprint"
+      ],
+      "required_keys": [
+        "version",
+        "repositories"
+      ],
+      "version": 1,
+      "workspace_fingerprint_mirror": "head, index_fingerprint and worktree_fingerprint mirror the workspace repository exactly: present and equal when it is available, and all null when it is not; a partial or mismatched mirror rejects the whole checkpoint"
+    },
+    "unavailable_conditions": [
+      "the whole checkpoint is null when len(changed)+len(absent) exceeds 2000 for any repository (the exact predecessor state cannot be preserved verbatim)",
+      "the whole checkpoint is null when a predecessor repository is unavailable or the repository label topology differs",
+      "the whole checkpoint is null when the immediately preceding round has no valid checkpoint (missing, corrupt, unknown-version or oversized)",
+      "the whole checkpoint is null when an outer failure escapes collection or normalization, including _CheckpointUnavailable and any unexpected exception",
+      "a single repository whose root is missing, is not a usable Git work tree or raises GitError/OSError is NOT a whole-checkpoint failure: it is emitted as available=false with the writer's canonical empty diff_stat and empty state, and collection continues for the other repositories"
+    ],
+    "version": 1
+  },
   "cli": {
     "commands": [
       {
+        "common_options": [
+          "--config",
+          "--state-root"
+        ],
+        "defaults": {
+          "mode": "dry-run"
+        },
+        "name": "add-project",
+        "options": [
+          {
+            "description": "absolute workspace directory for the new project",
+            "name": "WORKSPACE",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "default": false,
+            "description": "backup, atomically write, create credentials and run checks",
+            "group": "mode",
+            "name": "--apply",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": true,
+            "description": "print the deterministic TOML diff without writing (default)",
+            "group": "mode",
+            "name": "--dry-run",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "path to projects.toml (default: ~/.config/agent-bridge/projects.toml)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "new project id ([a-z0-9][a-z0-9_-]{0,63})",
+            "name": "--id",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only; default ~/.local/state/agent-bridge)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": false,
+        "summary": "add a new project binding to projects.toml (dry-run by default)"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
         "name": "attach-opencode",
         "options": [
           {
-            "default": null,
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
             "description": "task id (default: active task)",
             "name": "--task",
             "required": false,
@@ -16,93 +182,703 @@
         "summary": "attach TUI to the active task session"
       },
       {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
         "name": "console",
-        "options": [],
-        "project_required": true,
-        "summary": "open one persistent OpenCode TUI for the project"
-      },
-      {
-        "name": "dashboard",
-        "options": [],
-        "project_required": true,
-        "summary": "show a read-only dashboard of project tasks"
-      },
-      {
-        "name": "doctor",
-        "options": [],
-        "project_required": true,
-        "summary": "validate config, credentials and server"
-      },
-      {
-        "name": "launch-codex",
-        "options": [],
-        "project_required": true,
-        "summary": "launch Codex wired to the bridge MCP server"
-      },
-      {
-        "name": "launch-opencode",
-        "options": [],
-        "project_required": true,
-        "summary": "launch an OpenCode TUI controller wired to the bridge MCP server"
-      },
-      {
-        "name": "mcp",
-        "options": [],
-        "project_required": true,
-        "summary": "run the project MCP stdio server"
-      },
-      {
-        "name": "serve-mcp",
-        "options": [],
-        "project_required": true,
-        "summary": "run the authenticated localhost HTTP MCP server"
-      },
-      {
-        "name": "serve-opencode",
-        "options": [],
-        "project_required": true,
-        "summary": "run the project OpenCode server"
-      },
-      {
-        "name": "setup",
-        "options": [],
-        "project_required": true,
-        "summary": "create missing runtime dirs and credentials"
-      },
-      {
-        "name": "start",
-        "options": [],
-        "project_required": false,
-        "summary": "start servers for all configured projects"
-      },
-      {
-        "name": "status",
-        "options": [],
-        "project_required": false,
-        "summary": "status servers for all configured projects"
-      },
-      {
-        "name": "stop",
-        "options": [],
-        "project_required": false,
-        "summary": "stop servers for all configured projects"
-      },
-      {
-        "name": "worker",
         "options": [
           {
-            "default": null,
-            "description": null,
-            "name": "--task",
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
             "required": true,
             "type": "str"
           },
           {
-            "default": null,
-            "description": null,
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "task id (routes to the task-scoped server for worktree tasks)",
+            "name": "--task",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "open one persistent OpenCode TUI for the project"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "dashboard",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "show a read-only dashboard of project tasks"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "defaults": {
+          "delivery_mode": "dry-run"
+        },
+        "name": "deliver-task",
+        "options": [
+          {
+            "default": false,
+            "description": "materialize the built artifact into the main working tree",
+            "group": "delivery_mode",
+            "name": "--apply",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "build the byte-complete artifact from the frozen accepted checkout",
+            "group": "delivery_mode",
+            "name": "--build",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": true,
+            "description": "full preflight validation with zero writes (default)",
+            "group": "delivery_mode",
+            "name": "--dry-run",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "accepted worktree task id",
+            "name": "--task",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "explicitly deliver an accepted worktree result into the main working tree (dry-run by default; never an MCP tool)"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "doctor",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "validate config, credentials and server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "hook-status",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "choices": [
+              "codex"
+            ],
+            "default": "codex",
+            "description": "hook output format",
+            "name": "--format",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "read-only Codex UserPromptSubmit hook; prints nothing when idle"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "launch-codex",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "launch Codex wired to the bridge MCP server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "launch-opencode",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "launch an OpenCode TUI controller wired to the bridge MCP server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "mcp",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "run the project MCP stdio server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "defaults": {
+          "mode": "dry-run"
+        },
+        "name": "prune",
+        "options": [
+          {
+            "default": false,
+            "description": "delete history candidates / physically clean quarantine candidates",
+            "group": "mode",
+            "name": "--apply",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "with --quarantine --apply: exact entry id(s), comma-separated, or the reviewed snapshot 'all:<snapshot>' printed by the dry-run (a bare 'all' is refused)",
+            "name": "--confirm",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": true,
+            "description": "report candidates without changing anything (default)",
+            "group": "mode",
+            "name": "--dry-run",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "also prune old failed tasks (never pruned by default)",
+            "name": "--include-failed",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "age cutoff for history candidates, e.g. 90d, 48h, 30m (s/m/h/d/w)",
+            "name": "--older-than",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "default": false,
+            "description": "with --quarantine: permanently remove already-moved quarantine copies instead of moving quarantined directories",
+            "name": "--purge",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "explicitly clean up logically quarantined orphan worktrees: move them into the private state quarantine area (requires --apply and an exact --confirm naming the reviewed entry ids or snapshot)",
+            "name": "--quarantine",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": false,
+            "description": "also run VACUUM after deletion (blocking/expensive; requires --apply)",
+            "name": "--vacuum",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "explicitly remove the worktree (checkout + runtime) of pruned terminal tasks under the worker lock; without it a live worktree row keeps its task (dry-run default)",
+            "name": "--worktree",
+            "required": false,
+            "type": "bool"
+          }
+        ],
+        "project_required": true,
+        "summary": "prune old terminal task history, or with --quarantine physically clean up logically quarantined orphan worktrees (dry-run default)"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "serve-mcp",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "run the authenticated localhost HTTP MCP server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "serve-opencode",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "run the project OpenCode server"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "serve-opencode-worktree",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "task-scoped server port; must be in 43000..43999",
+            "name": "--port",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "task id whose persisted worktree row supplies the checkout",
+            "name": "--task",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "internal: run the task-scoped OpenCode server bound to a task checkout"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "setup",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "create missing runtime dirs and credentials"
+      },
+      {
+        "common_options": [],
+        "defaults": {
+          "smoke_mode": "direct"
+        },
+        "name": "smoke-opencode",
+        "options": [
+          {
+            "default": false,
+            "description": "emit the JSON report (always the default; accepted for explicitness)",
+            "name": "--json",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "keep the temporary workspace/state on exit (troubleshooting)",
+            "name": "--keep",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "opencode executable path (default: resolve on PATH)",
+            "name": "--opencode-bin",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": false,
+            "description": "run the live B2 two-parallel-writers scenario through the production lifecycle",
+            "group": "smoke_mode",
+            "name": "--parallel-worktrees",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": false,
+            "description": "run the task-scoped worktree smoke scenario",
+            "group": "smoke_mode",
+            "name": "--worktree",
+            "required": false,
+            "type": "bool"
+          }
+        ],
+        "project_required": false,
+        "summary": "run the isolated OpenCode runtime compatibility smoke suite"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "start",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id; optional (all projects when omitted)",
+            "name": "--project",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": false,
+        "summary": "start servers for all configured projects"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "status",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": false,
+            "description": "emit a versioned JSON readiness and diagnostics report instead of text",
+            "name": "--json",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "description": "project id; optional (all projects when omitted)",
+            "name": "--project",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": false,
+        "summary": "show server readiness and diagnostics for all configured projects"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "stop",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id; optional (all projects when omitted)",
+            "name": "--project",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": false,
+        "summary": "stop servers for all configured projects"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "name": "worker",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "round number",
             "name": "--round",
             "required": true,
             "type": "int"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "task id",
+            "name": "--task",
+            "required": true,
+            "type": "str"
           }
         ],
         "project_required": true,
@@ -114,31 +890,40 @@
         "default": "<default_config_path>",
         "description": "path to projects.toml",
         "name": "--config",
-        "required": false
+        "required": false,
+        "type": "str"
       },
       {
-        "default": null,
         "description": "project id; optional for start/status/stop (all projects), required otherwise",
         "name": "--project",
-        "required": true
+        "required": true,
+        "type": "str"
       },
       {
         "default": "<default_state_root>",
         "description": "override state root (testing only)",
         "name": "--state-root",
-        "required": false
+        "required": false,
+        "type": "str"
       }
     ],
     "entry_point": "agent_bridge.cli:main",
     "exit_codes": {
-      "0": "success, or doctor/status ready",
-      "1": "doctor/status not ready, or mcp/worker runtime failure",
-      "2": "user-facing error (ConfigError, CredentialError, BridgeError, ProjectEnvError) or argparse usage error",
-      "3": "worker could not acquire the project worker lock"
+      "0": "success; start/stop ok; doctor/status ready; add-project dry-run or a clean --apply; deliver-task ok; smoke-opencode passed; worker completed or refused no-op",
+      "1": "doctor/status not ready; add-project --apply offline checks failed; deliver-task refused (active_writers or a DeliveryError); mcp/serve-mcp lock busy; smoke-opencode runtime_regression",
+      "2": "user-facing error (ConfigError, CredentialError, BridgeError, ProjectEnvError) or argparse usage error; prune/quarantine selection errors and any per-candidate quarantine failure; worker unknown task/round; smoke-opencode openapi_incompatible",
+      "3": "worker could not acquire the project worker lock or the per-task worker lock; smoke-opencode environment_limited",
+      "4": "smoke-opencode internal or unknown outcome"
     },
     "program": "agent-bridge"
   },
   "config": {
+    "defaults": {
+      "allow_parallel_writers": false,
+      "default_profile": "implementer",
+      "execution_mode": "direct",
+      "max_active_tasks": 1
+    },
     "file": {
       "default_path": "<default_config_path>",
       "format": "toml",
@@ -146,12 +931,17 @@
     },
     "project_keys": {
       "optional": [
+        "allow_parallel_writers",
         "auto_approve_external_directories",
         "auto_approve_permissions",
+        "default_profile",
+        "execution_mode",
+        "max_active_tasks",
         "mcp_token_file",
         "mcp_url",
         "opencode_env_file",
-        "opencode_model"
+        "opencode_model",
+        "profiles"
       ],
       "required": [
         "max_rounds",
@@ -161,19 +951,253 @@
       ]
     },
     "rules": [
+      "allow_parallel_writers must be a boolean; false is the default and true is accepted only when execution_mode is 'worktree'",
       "auto_approve_external_directories entries must be existing absolute directories, canonicalized with resolve(strict=True), and '/' is rejected",
       "auto_approve_permissions must not contain 'external_directory'; that permission is controlled only by auto_approve_external_directories",
+      "default_profile must be a non-empty string without surrounding whitespace and must name a builtin or custom profile",
+      "execution_mode is optional and defaults to 'direct'; the only accepted values are exactly 'direct' and 'worktree' (no normalization, no surrounding whitespace)",
       "mcp_token_file must be a separate credential file from password_file and unique across projects",
       "mcp_url and mcp_token_file must be set together; mcp_url must end with /mcp on 127.0.0.1 with an explicit port",
+      "max_active_tasks is optional and defaults to 1; it must be a positive integer (booleans, zero, negatives and non-integers are rejected)",
       "max_rounds must be a positive integer",
       "opencode_model must be '<providerID>/<modelID>', split on the first '/' only",
       "opencode_url must be http://127.0.0.1:<port> with an explicit port in 1..65535 and no path, query, fragment, username or password",
+      "profiles is an optional [projects.<id>.profiles.<profile_id>] table; each entry must be a table, requires 'purpose' and accepts 'instructions' and 'model'; unknown keys are rejected",
       "project ids must match ^[a-z0-9][a-z0-9_-]{0,63}$",
       "workspace must be an existing directory; relative paths resolve against the config file directory",
       "workspaces, server endpoints and credential files must be unique across projects"
     ]
   },
+  "delivery": {
+    "artifact": {
+      "blobs_dir_name": "blobs",
+      "dir": "<state_dir>/worktrees/<task_id>/runtime/artifact",
+      "manifest_filename": "manifest.json",
+      "manifest_version": 1
+    },
+    "default_mode": "dry-run",
+    "journal": {
+      "filename": "delivery-journal.json",
+      "path": "<state_dir>/worktrees/<task_id>/runtime/delivery-journal.json",
+      "version": 1
+    },
+    "limitations": [
+      "dry-run performs the full preflight with zero writes",
+      "--build writes only the private artifact; --apply requires an accepted task and a created worktree row",
+      "an interrupted --apply may leave a partially materialized base/artifact mix; resume accepts a path only in exact base or exact artifact state and otherwise reports needs_manual_recovery",
+      "there is no automatic rollback; --apply never mutates Git HEAD, refs or the index and post-verifies them unchanged",
+      "deliver-task is never automatic and never an MCP tool; it refuses while any writer reservation or writer-status task remains"
+    ],
+    "modes": [
+      "apply",
+      "build",
+      "dry-run"
+    ],
+    "never_an_mcp_tool": true,
+    "refusal_codes": [
+      "active_writers",
+      "already_delivered",
+      "artifact_corrupt",
+      "artifact_drift",
+      "artifact_missing",
+      "base_head_missing",
+      "base_entry_malformed",
+      "baseline_corrupt",
+      "baseline_missing",
+      "checkout_missing",
+      "delivery_in_progress",
+      "dirty_main_workspace",
+      "fsync_failed",
+      "git_failed",
+      "git_timeout",
+      "head_changed",
+      "history_rewritten",
+      "index_changed",
+      "invalid_mode",
+      "invalid_path",
+      "journal_artifact_mismatch",
+      "journal_corrupt",
+      "journal_missing",
+      "needs_manual_recovery",
+      "no_worktree",
+      "not_accepted",
+      "out_of_scope_changes",
+      "post_verify_failed",
+      "repo_identity_mismatch",
+      "state_unavailable",
+      "state_write_failed",
+      "target_exists",
+      "target_modified",
+      "target_unreadable",
+      "target_unwritable",
+      "unknown_task",
+      "unsafe_state_path",
+      "unsupported_object_type",
+      "worktree_not_created",
+      "worktree_path_mismatch",
+      "workspace_not_repo"
+    ],
+    "report_fields": [
+      "artifact_dir",
+      "base_head",
+      "code",
+      "delivery_state",
+      "main_head",
+      "message",
+      "mode",
+      "out_of_scope",
+      "paths",
+      "status",
+      "task_id"
+    ],
+    "states": [
+      "none",
+      "applying",
+      "delivered"
+    ],
+    "statuses": [
+      "built",
+      "validated",
+      "delivered",
+      "refused"
+    ]
+  },
+  "diagnostics": {
+    "command": "agent-bridge status --json",
+    "envelope": {
+      "schema_version": 1,
+      "top_level_keys": [
+        "projects",
+        "schema_version"
+      ]
+    },
+    "evidence": "runtime.py:_status_all_json / diagnostics.py:collect_project_snapshot / diagnostics.py:worktree_summary / runtime.py:_readonly_record_status / runtime.py:status_all",
+    "exit_code": {
+      "not_ready": 1,
+      "ready": 0
+    },
+    "project_entry": {
+      "keys": [
+        "project_id",
+        "ready",
+        "servers",
+        "snapshot",
+        "worktree"
+      ],
+      "ready": "true only when every selected server kind is ready; errors are isolated per project and never hide the other projects",
+      "servers": {
+        "fields": [
+          "managed",
+          "process_record",
+          "ready"
+        ],
+        "kinds": [
+          "mcp",
+          "opencode"
+        ],
+        "process_record_states": [
+          "binding_mismatch",
+          "invalid",
+          "live",
+          "missing",
+          "stale"
+        ],
+        "rule": "ready is endpoint readiness (mcp: mcp_url configured plus a bounded SDK probe; opencode: bounded probe) and is independent of the ownership record. The record is inspected read-only and never deleted or rewritten: managed=true only for a live record bound to this project, while a stale or missing record reports managed=false yet can still be ready=true. Only an invalid or binding-mismatched record additionally forces ready=false (tests/test_runtime.py:test_status_all_json_never_touches_stale_process_record asserts stale + ready=true + exit 0)"
+      }
+    },
+    "read_only": "never initializes storage, never creates a state directory/database/WAL or runtime.lock, never migrates the schema, never runs worker/task recovery and never writes runtime or database state. Probes are read-only and bounded by short timeouts: the MCP readiness probe initializes the SDK streamable-HTTP client, lists the tools and requires exactly the six public tools, then calls project_info and checks project_id/workspace/endpoint; the OpenCode readiness probe calls /path (root directory), health and the OpenAPI document; collect_project_snapshot additionally probes OpenCode server/session health when probe_opencode is enabled. A failed or unresponsive probe degrades to not-ready/reachable=false instead of retrying or writing; every database read uses mode=ro with a short busy timeout",
+    "schema_version": 1,
+    "snapshot": {
+      "coordination_fields": [
+        "waiting_dependencies_count",
+        "active_writer_count",
+        "active_writers",
+        "parallel_writers_enabled"
+      ],
+      "fields": [
+        "project_id",
+        "error",
+        "tasks_by_status",
+        "active_task",
+        "needs_user_count",
+        "failed_count",
+        "delivery_unknown_count",
+        "last_round_duration_seconds",
+        "usage",
+        "models",
+        "worker_lock",
+        "opencode_session",
+        "db_size_bytes",
+        "wal_size_bytes",
+        "quarantine_count",
+        "worktree"
+      ],
+      "notes": "collect_project_snapshot never raises: error is null or a short reason collected from the read-only query, and non-database fields are still reported. active_task copies persisted task_id, status, created_at and updated_at verbatim; only round_number and revision_count are validated as integers, age_seconds/last_round_duration_seconds degrade to null on unparseable timestamps, and a profile/profile_source label is emitted only for a safe matching profile id backed by a non-historical snapshot (any other value is dropped). active_writers is every persisted active_writers ledger row for the project selected with no LIMIT, each reported as the raw persisted {task_id, status} (status may be null when the task row is absent); unlike the Codex hook there is no hook-style validation and no fixed output bound, so corrupt persisted strings are surfaced as-is rather than sanitized."
+    },
+    "worktree_summary": {
+      "delivery_state": "from worktrees.delivery_state",
+      "error": "str(exc)[:200], returned alongside present=false (not instead of it) when the read-only query fails; not guaranteed path-free for every exception",
+      "present": "false when there is no active or accepted worktree-mode task",
+      "server_note": "'server stopped at accept' for an accepted worktree task",
+      "server_port": "persisted task-scoped server port",
+      "server_state": "read-only process-record state, defaulting to 'unknown' when the record cannot be read",
+      "task_id": "selected worktree task id",
+      "task_status": "tasks.status",
+      "worktrees_status": "worktrees.status"
+    }
+  },
   "domain": {
+    "activation": {
+      "activation_blocker_reasons": [
+        "baseline_dirty",
+        "baseline_dirty_outside_scope",
+        "baseline_unavailable"
+      ],
+      "activation_status": "implementing",
+      "auto_activation": false,
+      "execution_baseline": {
+        "direct": {
+          "dirty_policy": "an in-scope dirty baseline is allowed only when this task's own persisted submit-time allow_dirty is true; a dirty baseline with allow_dirty=false blocks with baseline_dirty. No policy is inherited from dependencies or from any other project.",
+          "evidence": "mcp_server.py:_recompute_activation_baseline",
+          "legacy_task": "a direct task without a persisted manifest keeps its historical empty baseline and is neither rebaselined nor blocked",
+          "outside_scope": "any pre-existing dirty path outside the task's allowed_paths blocks with baseline_dirty_outside_scope regardless of allow_dirty",
+          "rebaseline": "storage.refresh_task_baseline persists a fresh snapshot (current HEAD/index/manifest plus refreshed external-repository snapshots) before the atomic activation",
+          "unavailable": "a workspace that is not a Git repo or cannot be snapshotted blocks with baseline_unavailable"
+        },
+        "worktree": {
+          "blocker": "no baseline blocker is produced by activation",
+          "evidence": "mcp_server.py:_recompute_activation_baseline",
+          "rebaseline": "none; the worker derives the baseline from the task's persisted base_head in its own clean task-scoped checkout, never from the main working tree"
+        }
+      },
+      "gates": [
+        "the call is an explicit task_status activation (allow_waiting_activation); startup recovery and any scheduler never set it",
+        "admission.lock is held for the short activation critical section",
+        "task.close_requested_at is null",
+        "dependency_gate state == ready (every depends_on resolves to an accepted task in the same workflow and a linked project)",
+        "single-writer mode: worker.lock is free; parallel mode: the atomic storage admission re-checks scope overlap instead",
+        "storage.activate_waiting_dependencies is a conditional atomic update; exactly one caller wins and the loser does not spawn"
+      ],
+      "note": "waiting_dependencies -> implementing is only via an explicit task_status call; startup recovery and scheduler never activate waiting tasks",
+      "trigger": "an explicit task_status call, gated by dependencies and admission; the required execution baseline depends on execution_mode and the task's own persisted policy (direct), or is derived from the persisted base_head (worktree)"
+    },
+    "dependency_gate": {
+      "blocked_reasons": [
+        "missing",
+        "not_accepted",
+        "unlinked",
+        "unreadable",
+        "workflow_mismatch"
+      ],
+      "entry_states": [
+        "accepted",
+        "blocked"
+      ],
+      "states": [
+        "ready",
+        "waiting"
+      ]
+    },
     "recoverable_failure": {
       "error_code": "assistant_error",
       "rule": "only an OpenCode assistant error on the current round is recoverable; all infrastructure/invariant failures stay terminal",
@@ -262,11 +1286,20 @@
         "failed",
         "implementing",
         "needs_user",
-        "revising"
+        "revising",
+        "waiting_dependencies"
       ],
       "terminal": [
         "accepted",
         "closed"
+      ],
+      "writer": [
+        "awaiting_review",
+        "delivery_unknown",
+        "failed",
+        "implementing",
+        "needs_user",
+        "revising"
       ]
     },
     "task_transitions": [
@@ -430,6 +1463,14 @@
           "needs_user"
         ],
         "trigger": "session blocker, transient_error, deadline, permission or question blocker"
+      },
+      {
+        "evidence": "mcp_server.py:_maybe_spawn / storage.py:activate_waiting_dependencies",
+        "from": "waiting_dependencies",
+        "to": [
+          "implementing"
+        ],
+        "trigger": "explicit task_status activation after every dependency is accepted; always implementing, never revising"
       }
     ],
     "worker_error_codes": {
@@ -450,7 +1491,9 @@
       "AGENT_BRIDGE_MCP_TOKEN_<PROJECT_ID_UPPERCASE_HYPHEN_TO_UNDERSCORE>": "bearer token for a linked HTTP MCP server",
       "OPENCODE_CONFIG": "generated controller config path for launch-opencode",
       "OPENCODE_SERVER_PASSWORD": "executor server password, read from password_file at run time",
-      "OPENCODE_SERVER_USERNAME": "fixed value 'opencode'"
+      "OPENCODE_SERVER_USERNAME": "fixed value 'opencode'",
+      "XDG_CONFIG_HOME": "base directory for the default projects.toml path",
+      "XDG_STATE_HOME": "base directory for the default state root"
     },
     "implementation_overrides_not_frozen": [
       "AB_DELIVERY_GRACE",
@@ -462,16 +1505,103 @@
       "AB_VERIFY_MAX_LOG_BYTES",
       "AB_VERIFY_TAIL_BYTES",
       "AB_VERIFY_TIMEOUT"
+    ],
+    "smoke_only": [
+      "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"
     ]
+  },
+  "hook": {
+    "command": "agent-bridge hook-status --format codex",
+    "context_max_chars": 1200,
+    "evidence": "hook_status.py:HOOK_EVENT_NAME / hook_status.py:build_hook_context_many / hook_status.py:codex_output / storage.py:read_active_task_briefs / storage.py:is_safe_active_task_brief",
+    "fail_open": "any read, config, database or other failure prints nothing, writes nothing to stderr and exits 0, so the user's prompt is never blocked",
+    "idle": "no active task prints nothing and exits 0",
+    "multiple_active_tasks": "with more than one active writer each task is listed by safe identity/status only and Codex is told to call task_status with an explicit task_id (a bare task_status returns ambiguous_task); the hook never selects an arbitrary task",
+    "output": {
+      "additional_context_field": "additionalContext",
+      "decision_omitted": true,
+      "hook_event_name": "UserPromptSubmit",
+      "wrapper": "hookSpecificOutput"
+    },
+    "privacy": "never emits task text, result, findings, credentials, session id, private/absolute paths or commands; only project id, task id, status, updated_at, an optional safe phase (agent/verifying) and a fixed status-dependent instruction",
+    "read_only": "never writes SQLite, never starts a worker or recovery, never reaches OpenCode/MCP/network and never calls a lifecycle MCP tool (submit_task/accept_task/request_changes/close_task)",
+    "safe_brief": {
+      "fields": [
+        "project_id",
+        "task_id",
+        "status",
+        "updated_at",
+        "phase"
+      ],
+      "source": "storage.read_active_task_briefs (read-only connection with a bounded busy timeout)",
+      "validation": "every field is checked by is_safe_active_task_brief before emission; any invalid field raises ValueError and the caller fails open with no output instead of emitting sanitized or truncated text"
+    }
   },
   "manifest_version": 1,
   "mcp": {
+    "budget": {
+      "fields": [
+        "input",
+        "output",
+        "reasoning",
+        "cache_read",
+        "cache_write",
+        "cost"
+      ],
+      "gate_states": [
+        "none",
+        "warning",
+        "exhausted"
+      ],
+      "note": "warning does not gate; allow_budget_override bypasses only the budget gate, never secret/allowed_paths/git/max_rounds gates",
+      "request_changes_gate": [
+        "budget_corrupt",
+        "budget_exhausted"
+      ],
+      "warning_threshold_default": 0.8
+    },
+    "internal_only": {
+      "helpers": [
+        "_maybe_spawn.allow_waiting_activation",
+        "_maybe_spawn.failed_recovery",
+        "_maybe_spawn.needs_user_recovery",
+        "_payload_for_revision",
+        "_payload_for_submit",
+        "_task_result.full",
+        "config",
+        "storage"
+      ],
+      "note": "internal helpers and flags are not public tool arguments",
+      "request_changes_impl_argument_order": "allow_suspected_secrets precedes structured_findings internally; the public wrapper reorders",
+      "task_status_impl": [
+        "needs_user_recovery"
+      ]
+    },
+    "project_info_fields": [
+      "active_status",
+      "active_task_id",
+      "active_writer_count",
+      "active_writer_task_id",
+      "active_writer_task_ids",
+      "default_profile",
+      "endpoint",
+      "execution_mode",
+      "max_active_tasks",
+      "max_rounds",
+      "parallel_writers_enabled",
+      "profiles",
+      "project_id",
+      "workspace"
+    ],
     "result_codes": {
       "accept_task": [
         "not_awaiting_review",
         "server_busy",
         "server_unavailable",
-        "unknown_task"
+        "unknown_task",
+        "worker_running",
+        "worktree_row_missing",
+        "worktree_server_stop_failed"
       ],
       "close_task": [
         "reason_required",
@@ -481,31 +1611,86 @@
       ],
       "project_info": [],
       "request_changes": [
+        "budget_corrupt",
+        "budget_exhausted",
+        "invalid_allow_budget_override",
+        "invalid_allow_suspected_secrets",
         "invalid_request",
+        "invalid_structured_findings",
         "not_awaiting_review",
         "request_conflict",
         "revision_limit",
+        "suspected_secrets",
         "unknown_task"
       ],
       "submit_task": [
+        "dependency_cycle",
+        "dependency_graph_unreadable",
+        "depends_on_requires_workflow",
         "dirty_paths_outside_scope",
         "dirty_workspace",
+        "duplicate_dependency",
         "empty_task",
+        "external_paths_not_supported_in_worktree_mode",
         "git_snapshot_failed",
+        "invalid_allow_suspected_secrets",
         "invalid_allowed_paths",
+        "invalid_budget",
+        "invalid_dependency_identifier",
+        "invalid_depends_on",
         "invalid_git_policy",
+        "invalid_profile",
         "invalid_request_id",
         "invalid_test_commands",
+        "invalid_workflow_id",
+        "lfs_not_supported_in_worktree_mode",
+        "missing_dependency_task",
+        "nested_repo_not_supported_in_worktree_mode",
         "not_a_git_repo",
         "project_busy",
         "request_conflict",
+        "scope_data_corrupt",
+        "scope_overlap",
+        "self_dependency",
         "server_unavailable",
         "server_unhealthy",
-        "server_wrong_directory"
+        "server_wrong_directory",
+        "sparse_checkout_not_supported_in_worktree_mode",
+        "submodules_not_supported_in_worktree_mode",
+        "suspected_secrets",
+        "unknown_dependency_project",
+        "unknown_profile",
+        "workflow_mismatch"
       ],
       "task_status": [
+        "ambiguous_task",
         "invalid_verbose",
         "invalid_wait_seconds",
+        "no_active_task",
+        "unknown_task"
+      ]
+    },
+    "result_statuses": {
+      "accept_task": [
+        "accepted",
+        "unknown_task"
+      ],
+      "close_task": [
+        "accepted",
+        "close_requested",
+        "closed",
+        "unknown_task"
+      ],
+      "request_changes": [
+        "revising",
+        "unknown_task"
+      ],
+      "submit_task": [
+        "implementing",
+        "waiting_dependencies"
+      ],
+      "task_status": [
+        "ambiguous_task",
         "no_active_task",
         "unknown_task"
       ]
@@ -515,12 +1700,139 @@
       "linked": "agent_bridge_<project_id>",
       "primary": "agent_bridge"
     },
+    "status_phases": [
+      "agent",
+      "verifying"
+    ],
+    "structured_findings": {
+      "allowed_keys": [
+        "code",
+        "line",
+        "message",
+        "path",
+        "severity"
+      ],
+      "code_pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$",
+      "max_entries": 200,
+      "max_line": 1000000,
+      "max_message_length": 4000,
+      "max_path_length": 4096,
+      "severities": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "validation": "path must resolve inside the task allowed_paths; None preserves text-only historical behavior"
+    },
+    "task_status_views": {
+      "compact_fields": [
+        "close_requested",
+        "close_requested_at",
+        "created_at",
+        "phase",
+        "project_id",
+        "revision_count",
+        "round_number",
+        "session_id",
+        "status",
+        "task_id",
+        "updated_at",
+        "worker"
+      ],
+      "compact_optional_fields": [
+        "execution_mode",
+        "profile",
+        "profile_source",
+        "verification_progress",
+        "worktree_state"
+      ],
+      "compact_statuses": [
+        "implementing",
+        "revising"
+      ],
+      "default_is_status_dependent": true,
+      "minimal_base_fields": [
+        "project_id",
+        "revision_count",
+        "round_number",
+        "status",
+        "task_id"
+      ],
+      "minimal_optional_fields": [
+        "activation_blocker",
+        "allow_commit",
+        "allow_dirty",
+        "baseline_dirty_paths",
+        "blockers",
+        "budget",
+        "changed_paths",
+        "close_requested",
+        "close_requested_at",
+        "committed_paths",
+        "error",
+        "execution_mode",
+        "git_policy_violations",
+        "head_after",
+        "head_before",
+        "profile",
+        "profile_source",
+        "repositories",
+        "scope_violations",
+        "session_id",
+        "task_changed_paths",
+        "tool_errors",
+        "updated_at",
+        "user_action",
+        "verification",
+        "workflow",
+        "workflow_gate",
+        "worker",
+        "worktree",
+        "worktree_state"
+      ],
+      "notes": [
+        "verbose=true maps to the full historical contract; verbose=false maps to the minimal/compact view",
+        "phase is 'verifying' while a verifier is running, otherwise 'agent'",
+        "verification_progress is present only while a verifier is running and never contains command text or log paths",
+        "the minimal awaiting_review budget block is trimmed to configured/warning/exhausted/exhausted_fields/gate/gate_reason",
+        "workflow_gate is surfaced only for waiting_dependencies"
+      ],
+      "verbose_fields": [
+        "allow_commit",
+        "allow_dirty",
+        "baseline_dirty_paths",
+        "blockers",
+        "changed_paths",
+        "close_requested",
+        "close_requested_at",
+        "committed_paths",
+        "created_at",
+        "error",
+        "git_policy_violations",
+        "head_after",
+        "head_before",
+        "model",
+        "project_id",
+        "repositories",
+        "result",
+        "revision_count",
+        "round_number",
+        "scope_violations",
+        "session_id",
+        "status",
+        "task_changed_paths",
+        "task_id",
+        "tool_errors",
+        "updated_at",
+        "usage",
+        "worker"
+      ]
+    },
     "tool_count": 6,
     "tools": [
       {
-        "annotations": {
-          "explicit": false
-        },
+        "annotations": {},
         "name": "accept_task",
         "parameters": [
           {
@@ -529,12 +1841,10 @@
             "type": "string"
           }
         ],
-        "summary": "Accept an awaiting_review task and free the project slot."
+        "summary": "Accept an awaiting_review task and free the project slot. Idempotent for an already accepted task."
       },
       {
-        "annotations": {
-          "explicit": false
-        },
+        "annotations": {},
         "name": "close_task",
         "parameters": [
           {
@@ -548,28 +1858,25 @@
             "type": "string"
           }
         ],
-        "summary": "Explicitly close a blocked task. reason is required."
+        "summary": "Explicitly close a blocked task. reason is required. While a worker holds the lifecycle lock a cooperative close_requested is returned."
       },
       {
         "annotations": {
           "destructiveHint": false,
-          "explicit": true,
           "idempotentHint": true,
           "openWorldHint": false,
           "readOnlyHint": true
         },
         "name": "project_info",
         "parameters": [],
-        "summary": "Return the immutable project binding and active task state."
+        "summary": "Return the immutable project binding, safe active writer set, profile metadata and active task state."
       },
       {
-        "annotations": {
-          "explicit": false
-        },
+        "annotations": {},
         "name": "request_changes",
         "parameters": [
           {
-            "name": "findings",
+            "name": "task_id",
             "required": true,
             "type": "string"
           },
@@ -579,36 +1886,35 @@
             "type": "string"
           },
           {
-            "name": "task_id",
+            "name": "findings",
             "required": true,
             "type": "string"
+          },
+          {
+            "default": null,
+            "name": "structured_findings",
+            "required": false,
+            "type": "array[object]|null"
+          },
+          {
+            "default": false,
+            "name": "allow_suspected_secrets",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": false,
+            "name": "allow_budget_override",
+            "required": false,
+            "type": "boolean"
           }
         ],
-        "summary": "Send review findings for an awaiting_review task. Idempotent by request_id."
+        "summary": "Send review findings for an awaiting_review task. Idempotent by request_id. Budget exhaustion and corruption gate the new revision round unless allow_budget_override is set."
       },
       {
-        "annotations": {
-          "explicit": false
-        },
+        "annotations": {},
         "name": "submit_task",
         "parameters": [
-          {
-            "default": false,
-            "name": "allow_commit",
-            "required": false,
-            "type": "boolean"
-          },
-          {
-            "default": false,
-            "name": "allow_dirty",
-            "required": false,
-            "type": "boolean"
-          },
-          {
-            "name": "allowed_paths",
-            "required": true,
-            "type": "array[string]"
-          },
           {
             "name": "request_id",
             "required": true,
@@ -620,16 +1926,62 @@
             "type": "string"
           },
           {
+            "name": "allowed_paths",
+            "required": true,
+            "type": "array[string]"
+          },
+          {
             "name": "test_commands",
             "required": true,
             "type": "array[string]"
+          },
+          {
+            "default": false,
+            "name": "allow_dirty",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": false,
+            "name": "allow_commit",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": false,
+            "name": "allow_suspected_secrets",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "default": null,
+            "name": "budget",
+            "required": false,
+            "type": "object|null"
+          },
+          {
+            "default": null,
+            "name": "workflow_id",
+            "required": false,
+            "type": "string|null"
+          },
+          {
+            "default": null,
+            "name": "depends_on",
+            "required": false,
+            "type": "array[object]|null"
+          },
+          {
+            "default": null,
+            "name": "profile",
+            "required": false,
+            "type": "string|null"
           }
         ],
-        "summary": "Create a task and start implementation. Idempotent by request_id."
+        "summary": "Create a task and start implementation. Idempotent by request_id. A task whose dependencies are not yet accepted starts as waiting_dependencies."
       },
       {
         "annotations": {
-          "explicit": true,
           "readOnlyHint": false
         },
         "name": "task_status",
@@ -641,21 +1993,21 @@
             "type": "string|null"
           },
           {
-            "default": false,
-            "name": "verbose",
-            "required": false,
-            "type": "boolean"
-          },
-          {
             "default": 300,
             "maximum": 300,
             "minimum": 0,
             "name": "wait_seconds",
             "required": false,
             "type": "integer"
+          },
+          {
+            "default": false,
+            "name": "verbose",
+            "required": false,
+            "type": "boolean"
           }
         ],
-        "summary": "Return status of a task. wait_seconds is bounded to 0..300; verbose=true returns the full contract."
+        "summary": "Return status of a task. wait_seconds is bounded to 0..300. Without task_id an empty active set is no_active_task and more than one active task is ambiguous_task. verbose=true returns the full contract; the default is minimal/compact."
       }
     ],
     "transports": {
@@ -744,23 +2096,83 @@
       "relative": "agent-bridge/projects.toml"
     },
     "files": {
+      "admission_lock": "<state_dir>/admission.lock",
       "controller_config": "<state_dir>/controller-opencode.json",
       "database": "<state_dir>/state.sqlite",
+      "delivery_artifact": "<state_dir>/worktrees/<task_id>/runtime/artifact",
+      "delivery_journal": "<state_dir>/worktrees/<task_id>/runtime/delivery-journal.json",
       "mcp_lock": "<state_dir>/mcp.lock",
       "mcp_server_log": "<state_dir>/mcp.server.log",
       "opencode_server_log": "<state_dir>/opencode.server.log",
       "process_record": "<state_dir>/<kind>.process.json",
+      "quarantine_entry": "<state_dir>/quarantine/<entry_id>",
       "runtime_manager_lock": "<state_root>/runtime.lock",
       "verification_log_reference": "verification/<task_id>/round_<round_number>",
       "verification_logs": "<state_dir>/verification/<task_id>/round_<round_number>/cmd_<index>.{out,err}",
       "worker_lock": "<state_dir>/worker.lock",
-      "worker_log": "<state_dir>/worker.log"
+      "worker_log": "<state_dir>/worker.log",
+      "worker_task_lock": "<state_dir>/workers/<task_id>.lock",
+      "worktree_checkout": "<state_dir>/worktrees/<task_id>/checkout",
+      "worktree_process_record": "<state_dir>/worktrees/<task_id>/runtime/opencode.process.json",
+      "worktree_runtime_dir": "<state_dir>/worktrees/<task_id>/runtime",
+      "worktree_server_log": "<state_dir>/worktrees/<task_id>/runtime/server.log"
     },
     "project_state_dir": "<state_root>/<project_id>",
     "state_root": {
       "base": "XDG_STATE_HOME or ~/.local/state",
       "relative": "agent-bridge"
     }
+  },
+  "profiles": {
+    "builtin": [
+      "implementer",
+      "migration-specialist",
+      "review-investigator",
+      "test-writer"
+    ],
+    "builtin_version": "1",
+    "custom_version": "1",
+    "default_profile_id": "implementer",
+    "definition_hash": "SHA-256 over the canonical JSON of {id, purpose, instructions, model}",
+    "id_pattern": "^[a-z][a-z0-9_-]{0,63}$",
+    "limits": {
+      "instructions": 8000,
+      "purpose": 200
+    },
+    "model_sources": [
+      "profile",
+      "project"
+    ],
+    "origins": [
+      "argument",
+      "project_default",
+      "builtin_default"
+    ],
+    "persistence_columns": [
+      "profile",
+      "profile_hash",
+      "profile_json",
+      "profile_source"
+    ],
+    "snapshot_error_codes": [
+      "profile_snapshot_corrupt",
+      "profile_snapshot_missing"
+    ],
+    "snapshot_keys": [
+      "id",
+      "source",
+      "origin",
+      "purpose",
+      "instructions",
+      "model",
+      "model_source",
+      "definition_version",
+      "definition_hash"
+    ],
+    "sources": [
+      "builtin",
+      "config"
+    ]
   },
   "runtime": {
     "entry_points": [
@@ -813,9 +2225,28 @@
         "name": "opencode_server"
       },
       {
+        "command": "agent-bridge serve-opencode-worktree --project ID --config PATH --state-root PATH --task TASK_ID --port N",
+        "execs": [
+          "opencode",
+          "serve",
+          "--hostname",
+          "127.0.0.1",
+          "--port",
+          "<task_port>"
+        ],
+        "module": "cli.cmd_serve_opencode_worktree",
+        "name": "opencode_worktree_server",
+        "scope": "task-scoped checkout and port from 43000..43999"
+      },
+      {
         "command": "agent-bridge start|status|stop [--project ID] --config PATH --state-root PATH",
         "module": "runtime.start_all|runtime.status_all|runtime.stop_all",
         "name": "runtime_manager"
+      },
+      {
+        "command": "agent-bridge smoke-opencode [--worktree|--parallel-worktrees]",
+        "module": "opencode_smoke.run_smoke|parallel_worktree_smoke.run_parallel_worktree_smoke",
+        "name": "smoke_opencode"
       },
       {
         "command": "agent-bridge worker --project ID --config PATH --state-root PATH --task TASK_ID --round N",
@@ -824,7 +2255,16 @@
         "name": "worker"
       }
     ],
+    "limitations": [
+      "parallel worktree server startup serializes on the shared <state_root>/runtime.lock; the B2 smoke uses staggered startup (wait for the first task's persisted server_port) while a model rendezvous independently proves concurrent execution",
+      "no scheduler, background autostart, auto-unblock, auto-accept, auto merge/commit/push or A2A adapter is implemented"
+    ],
     "locks": [
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
+        "path": "<state_dir>/admission.lock",
+        "scope": "short project-wide admission/activation/delivery section"
+      },
       {
         "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
         "path": "<state_dir>/mcp.lock",
@@ -833,12 +2273,17 @@
       {
         "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
         "path": "<state_dir>/worker.lock",
-        "scope": "one worker process per project"
+        "scope": "one worker process per project in single-writer mode; also serializes accept/close/recovery, prune/quarantine cleanup and deliver-task"
+      },
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
+        "path": "<state_dir>/workers/<task_id>.lock",
+        "scope": "one worker/lifecycle section per task (used in both single and parallel modes)"
       },
       {
         "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
         "path": "<state_root>/runtime.lock",
-        "scope": "one start/status/stop operation per state root"
+        "scope": "one start/stop/status operation and one worktree server startup across all projects sharing a state root"
       }
     ],
     "process_records": {
@@ -851,18 +2296,35 @@
       "identity_field": "start",
       "path": "<state_dir>/<kind>.process.json",
       "pid_field": "pid",
-      "validation": "pid must be an int > 1, start must be a string, and /proc start ticks must match the live process"
+      "validation": "pid must be an int > 1, start must be a string, and /proc start ticks must match the live process",
+      "worktree": {
+        "binding_fields": [
+          "checkout",
+          "endpoint",
+          "kind",
+          "project_id",
+          "task_id"
+        ],
+        "path": "<state_dir>/worktrees/<task_id>/runtime/opencode.process.json"
+      }
     }
   },
   "scope": {
     "frozen": [
       "cli_command_names_and_options",
+      "config_execution_mode_max_active_tasks_allow_parallel_writers_and_profile_definitions",
       "config_file_location_keys_and_validation_rules",
-      "mcp_tool_names_parameters_and_result_error_codes",
+      "delivery_artifact_and_journal_contract",
+      "dependency_waiting_gate_and_explicit_activation_semantics",
+      "hook_status_codex_output_context_cap_and_fail_open_behavior",
       "mcp_stdio_and_http_transports_and_runtime_entry_points",
+      "mcp_tool_names_parameters_and_result_error_codes",
       "opencode_http_api_surface_required_by_the_adapter",
+      "round_checkpoint_shape_predecessor_rule_and_privacy_bounds",
       "sqlite_file_location_pragma_user_version_tables_key_columns_and_invariants",
-      "task_and_round_status_vocabulary_and_provable_transitions"
+      "status_json_diagnostics_readiness_envelope_and_exit_code",
+      "task_and_round_status_vocabulary_and_provable_transitions",
+      "worktree_execution_root_task_scoped_server_and_runtime_paths"
     ],
     "not_frozen": [
       "human-readable message and log wording",
@@ -874,43 +2336,96 @@
       "worker polling/timeout tuning defaults and AB_* environment overrides"
     ]
   },
+  "security": {
+    "allow_suspected_secrets": "boolean override on submit_task and request_changes; false by default",
+    "categories": [
+      "anthropic_api_key",
+      "aws_access_key",
+      "github_token",
+      "google_api_key",
+      "jwt",
+      "openai_api_key",
+      "pem_private_key",
+      "slack_token",
+      "stripe_token"
+    ],
+    "error": {
+      "categories_field": "categories",
+      "code": "suspected_secrets",
+      "note": "never returns the matched value or position"
+    },
+    "profile_instructions_secret_scan": true,
+    "worktree_path_policy": {
+      "absolute_external_allowed_paths": "rejected with external_paths_not_supported_in_worktree_mode",
+      "lfs": "rejected with lfs_not_supported_in_worktree_mode",
+      "nested_repos": "rejected with nested_repo_not_supported_in_worktree_mode",
+      "sparse_checkout": "rejected with sparse_checkout_not_supported_in_worktree_mode",
+      "submodules": "rejected with submodules_not_supported_in_worktree_mode"
+    }
+  },
   "source": {
     "entry_point": "agent_bridge.cli:main",
     "package_version": "0.1.0",
     "project": "agent-bridge",
-    "python_requires": ">=3.11"
+    "python_requires": ">=3.11",
+    "repository": "/home/denis/Python/agent_bridge",
+    "revision": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+    "schema_version": 15
   },
   "storage": {
     "database": {
       "per_project": true,
       "relative_path": "state.sqlite"
     },
+    "dropped_historical_indexes": [
+      "ux_active_writers_project",
+      "ux_tasks_active"
+    ],
     "indexes": [
       {
-        "definition": "UNIQUE tasks(project_id) WHERE status IN ('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
-        "name": "ux_tasks_active",
-        "purpose": "at most one unfinished task per project"
-      },
-      {
-        "definition": "UNIQUE rounds(project_id, request_id)",
-        "name": "ux_rounds_request",
-        "purpose": "request idempotency"
+        "definition": "active_writers(project_id)",
+        "name": "ix_active_writers_project",
+        "purpose": "nonunique reservation lookup per project"
       },
       {
         "definition": "events(task_id, id)",
         "name": "ix_events_task",
         "purpose": "ordered event lookup per task"
+      },
+      {
+        "definition": "tasks(project_id, status)",
+        "name": "ix_tasks_project_status",
+        "purpose": "nonunique task lookup per project and status"
+      },
+      {
+        "definition": "UNIQUE active_writers(project_id) WHERE parallel=0",
+        "name": "ux_active_writers_single",
+        "purpose": "at most one active writer reservation per project while parallel=0"
+      },
+      {
+        "definition": "UNIQUE rounds(project_id, request_id)",
+        "name": "ux_rounds_request",
+        "purpose": "request idempotency"
       }
     ],
     "invariants": [
-      "PRAGMA user_version is only changed by a migration; unsupported versions are refused",
-      "at most one unfinished task per project (ux_tasks_active partial unique index)",
-      "each round references an existing task (foreign key rounds.task_id -> tasks.task_id)",
+      "PRAGMA user_version is only changed by a migration; versions outside 0..15 are refused",
+      "fresh v15 has no UNIQUE tasks(project_id) index (ux_tasks_active); single-writer enforcement is the partial unique ux_active_writers_single plus atomic admission",
+      "admission counts both the reservation ledger and real persisted writer-status task rows inside BEGIN IMMEDIATE",
+      "parallel writers require canonically scope-disjoint allowed_paths; overlap raises ScopeOverlap and corrupt scope data fails closed",
+      "admission bound: count_unfinished_tasks() (including waiting_dependencies) must stay below max_active_tasks",
+      "waiting_dependencies never holds an active writer reservation",
+      "a reservation is released only when a task reaches accepted/closed (or prune), never merely because a worker exited",
+      "waiting_dependencies -> implementing activation is a conditional atomic UPDATE; exactly one caller wins",
       "round completion and task status update are atomic in one transaction (finish_round)",
       "rounds(project_id, request_id) is unique for request idempotency",
-      "task.allowed_paths and task.test_commands are JSON text arrays; task.snapshot, round.result_json and round.verifier_json are JSON text",
+      "each round references an existing task (foreign key rounds.task_id -> tasks.task_id)",
+      "task.allowed_paths, task.test_commands, task.depends_on, task.snapshot and task.budget_json, round.result_json, round.verifier_json, round.structured_findings and round.checkpoint_json are JSON text",
       "tasks.session_id points at the current round's session and is NULL between revision-round creation and session resolution",
-      "verifier_state is 'running' or 'done'; a 'done' result is never overwritten and is reused by recovery"
+      "profile/profile_json/profile_hash/profile_source persist an immutable profile snapshot; profile_hash is the canonical snapshot hash",
+      "verifier_state is 'running' or 'done'; a 'done' result is never overwritten and is reused by recovery",
+      "worktree status transitions are fail-closed",
+      "reconcile_active_writers is idempotent: it drops orphan/terminal reservations and backfills reservations for persisted writer-status tasks"
     ],
     "migratable_versions": [
       0,
@@ -918,13 +2433,97 @@
       2,
       3,
       4,
-      5
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "migration_map": [
+      {
+        "changes": [
+          "rounds.structured_findings TEXT added"
+        ],
+        "target_version": 7
+      },
+      {
+        "changes": [
+          "tasks.budget_json TEXT added"
+        ],
+        "target_version": 8
+      },
+      {
+        "changes": [
+          "tasks.workflow_id TEXT added",
+          "tasks.depends_on TEXT added"
+        ],
+        "target_version": 9
+      },
+      {
+        "changes": [
+          "tasks.execution_mode TEXT NOT NULL DEFAULT 'direct' added",
+          "worktrees table added",
+          "worktree_quarantine table added"
+        ],
+        "target_version": 10
+      },
+      {
+        "changes": [
+          "waiting_dependencies joined the intermediate partial unique ux_tasks_active (historical, removed at v15)"
+        ],
+        "target_version": 11
+      },
+      {
+        "changes": [
+          "rounds.checkpoint_json TEXT added"
+        ],
+        "target_version": 12
+      },
+      {
+        "changes": [
+          "tasks.profile TEXT added",
+          "tasks.profile_json TEXT added",
+          "tasks.profile_hash TEXT added",
+          "tasks.profile_source TEXT added"
+        ],
+        "target_version": 13
+      },
+      {
+        "changes": [
+          "active_writers table added",
+          "intermediate unique ux_active_writers_project added",
+          "ux_tasks_active narrowed to writer statuses",
+          "_reconcile_active_writers_in_conn backfills reservations for persisted writer-status tasks"
+        ],
+        "target_version": 14
+      },
+      {
+        "changes": [
+          "active_writers.parallel INTEGER NOT NULL DEFAULT 0 added",
+          "DROP INDEX ux_active_writers_project",
+          "DROP INDEX ux_tasks_active",
+          "CREATE UNIQUE INDEX ux_active_writers_single ON active_writers(project_id) WHERE parallel=0",
+          "CREATE INDEX ix_active_writers_project ON active_writers(project_id)",
+          "CREATE INDEX ix_tasks_project_status ON tasks(project_id, status)",
+          "_reconcile_active_writers_in_conn runs again (idempotent)"
+        ],
+        "target_version": 15
+      }
     ],
     "pragmas": {
       "connect": [
         "PRAGMA journal_mode=WAL",
         "PRAGMA foreign_keys=ON",
         "PRAGMA busy_timeout=30000"
+      ],
+      "readonly": [
+        "file:<database>?mode=ro (uri=True)",
+        "PRAGMA busy_timeout=<bounded milliseconds>"
       ],
       "transaction": [
         "PRAGMA journal_mode=WAL",
@@ -933,8 +2532,43 @@
         "BEGIN IMMEDIATE"
       ]
     },
-    "schema_version": 6,
+    "schema_version": 15,
     "tables": {
+      "active_writers": {
+        "columns": [
+          {
+            "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "default": 0,
+            "name": "parallel",
+            "nullable": false,
+            "type": "INTEGER"
+          },
+          {
+            "name": "project_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "scopes_json",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "task_id",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "note": "logical reservation ledger; intentionally not foreign-key bound so reconcile can backfill/drop rows",
+        "primary_key": [
+          "task_id"
+        ]
+      },
       "events": {
         "columns": [
           {
@@ -992,9 +2626,15 @@
       "rounds": {
         "columns": [
           {
+            "default": 0,
             "name": "attempted",
             "nullable": false,
             "type": "INTEGER"
+          },
+          {
+            "name": "checkpoint_json",
+            "nullable": true,
+            "type": "TEXT"
           },
           {
             "name": "created_at",
@@ -1067,6 +2707,11 @@
             "type": "TEXT"
           },
           {
+            "name": "structured_findings",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
             "name": "task_id",
             "nullable": false,
             "type": "TEXT"
@@ -1118,6 +2763,11 @@
             "type": "TEXT"
           },
           {
+            "name": "budget_json",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
             "name": "close_reason",
             "nullable": true,
             "type": "TEXT"
@@ -1133,11 +2783,43 @@
             "type": "TEXT"
           },
           {
+            "name": "depends_on",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "default": "direct",
+            "name": "execution_mode",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "profile",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "profile_hash",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "profile_json",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "profile_source",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
             "name": "project_id",
             "nullable": false,
             "type": "TEXT"
           },
           {
+            "default": 0,
             "name": "revision_count",
             "nullable": false,
             "type": "INTEGER"
@@ -1178,6 +2860,11 @@
             "type": "TEXT"
           },
           {
+            "name": "workflow_id",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
             "name": "workspace",
             "nullable": false,
             "type": "TEXT"
@@ -1186,8 +2873,180 @@
         "primary_key": [
           "task_id"
         ]
+      },
+      "worktree_quarantine": {
+        "columns": [
+          {
+            "name": "entry_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "found_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "original_path",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "quarantined_path",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "reason",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "status",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "primary_key": [
+          "entry_id"
+        ]
+      },
+      "worktrees": {
+        "columns": [
+          {
+            "name": "base_head",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "baseline_json",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "cleanup_reason",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "created_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "delivered_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "delivery_journal_path",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "delivery_state",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "path",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "removed_at",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "runtime_dir",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "server_endpoint",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "server_port",
+            "nullable": true,
+            "type": "INTEGER"
+          },
+          {
+            "name": "server_process_record",
+            "nullable": true,
+            "type": "TEXT"
+          },
+          {
+            "name": "status",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "task_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "updated_at",
+            "nullable": true,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          "task_id REFERENCES tasks(task_id)"
+        ],
+        "primary_key": [
+          "task_id"
+        ]
       }
     },
     "unsupported_version_behavior": "refuse to modify and raise StorageError"
+  },
+  "worktree": {
+    "checkout": "<state_dir>/worktrees/<task_id>/checkout",
+    "delivery_states": [
+      "none",
+      "applying",
+      "delivered"
+    ],
+    "execution_root_equals_checkout": true,
+    "limitations": [
+      "external directories, submodules, Git LFS, sparse checkout and nested repositories are not supported and fail closed",
+      "environment/dependency setup is not performed; agreed test_commands must supply their own environment",
+      "the task-scoped server starts under <state_root>/runtime.lock, so parallel worktree server startup is serialized (the smoke proves concurrency with a model rendezvous instead)",
+      "there is no scheduler, background autostart or auto-unblock of waiting tasks"
+    ],
+    "port_range": "43000-43999",
+    "runtime_dir": "<state_dir>/worktrees/<task_id>/runtime",
+    "statuses": [
+      "pending",
+      "creating",
+      "created",
+      "removing",
+      "removed",
+      "error"
+    ],
+    "transitions": {
+      "created": [
+        "removing"
+      ],
+      "creating": [
+        "created",
+        "error",
+        "removing"
+      ],
+      "error": [],
+      "pending": [
+        "creating",
+        "error",
+        "removed"
+      ],
+      "removed": [],
+      "removing": [
+        "removed"
+      ]
+    }
   }
 }

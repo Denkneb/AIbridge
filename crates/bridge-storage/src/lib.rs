@@ -1,10 +1,12 @@
 //! Read-only inspection of an existing `agent-bridge` SQLite state database.
 //!
 //! This crate opens an existing database strictly read-only (SQLite URI
-//! `mode=ro&immutable=1`) and checks the frozen v6 or v15 contract in
-//! `docs/fixtures/sqlite/expected.json` and `expected-v15.json`:
+//! `mode=ro&immutable=1`) and checks the frozen v6/v15 contracts in
+//! `docs/fixtures/sqlite/expected.json` and `expected-v15.json`, or the
+//! historical v11/v14 contracts transcribed from reference migration rules:
 //!
-//! * `PRAGMA user_version` and `meta.schema_version` as a consistent v6/v15 pair;
+//! * `PRAGMA user_version` and `meta.schema_version` as a consistent supported
+//!   version pair;
 //! * the required user tables with no unexpected ones;
 //! * every column's name, declared type, `NOT NULL` flag and primary-key
 //!   position (physical column order is not part of the contract);
@@ -130,11 +132,35 @@
 //! refuses to hand out a writable [`StorageConnection`] until the sidecar
 //! marker, its supported `format_version`, its implementation, its project
 //! namespace, its normalized state root, `meta.runtime_owner` and the frozen
-//! supported v6/v15 schema contract all agree. Initialization upgrades owned
-//! v6 state to v15 atomically; opening a legacy state alone never migrates it.
+//! supported v6/v11/v14/v15 schema contract all agree. Initialization upgrades owned
+//! v6/v11/v14 state to v15 atomically; opening a legacy state alone never migrates it.
 //! Every missing, malformed, unsupported, foreign or contradictory state fails
 //! closed without writing anything, so a Python state, a foreign namespace or a
 //! partially created state is never adopted.
+//!
+//! Dependency activation (task 3.12c) is explicit through
+//! [`StorageConnection::activate_waiting_dependencies`]. A domain
+//! dependencies-satisfied event permits the waiting-to-implementing transition;
+//! its conditional UPDATE and persisted event share one writer transaction.
+//! [`StorageConnection::refresh_task_baseline`] fences snapshot updates to a
+//! still-waiting task in the requested project. Neither operation starts a
+//! worker or creates/attempts a round. Dependency acceptance is established by
+//! the caller. Activation checks actual writer tasks plus the reservation
+//! ledger and reserves the slot atomically; validated [`AdmissionSettings`]
+//! enable disjoint parallel scopes only in worktree mode.
+//!
+//! Writer admission (task 3.12d) extends creation through
+//! [`StorageConnection::create_task_with_admission`]. Defaults remain one
+//! unfinished task and no parallel writers. Canonical scope identities follow
+//! symlinks and missing path tails, refusing corrupt or unresolvable data.
+//! Terminal status changes, round completion and cooperative close release
+//! reservations in the same transaction. [`StorageConnection::get_active_writers`],
+//! [`StorageConnection::writer_activity_present`] and explicit
+//! [`StorageConnection::reconcile_active_writers`] expose strict reads,
+//! conservative activity fencing and crash repair. Legacy Rust-owned upgrades
+//! backfill reservations; current v15 initialization never guesses new config
+//! or mutates existing state. Scope authorization and runtime parallel workers
+//! remain the responsibility of higher-level consumers.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -161,7 +187,23 @@ pub const SCHEMA_VERSION: i64 = 6;
 /// Schema created and upgraded by the guarded Rust state initializer.
 pub const RUST_SCHEMA_VERSION: i64 = 15;
 
+mod budgets;
+pub use budgets::{
+    BUDGET_USAGE_FIELDS, BudgetReadError, BudgetValidationError, DEFAULT_BUDGET_WARNING_THRESHOLD,
+    TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,
+};
+mod dependencies;
 mod schema_v15;
+mod worktrees;
+mod writers;
+pub use dependencies::DependencyUpdateError;
+pub use worktrees::{
+    WorktreeDeliveryState, WorktreeQuarantineEntry, WorktreeQuarantineRegistration,
+    WorktreeQuarantineStatus, WorktreeRecord, WorktreeRegistration, WorktreeStatus,
+    WorktreeStorageError, has_worktree_quarantine_table, list_worktree_quarantine_readonly,
+    read_worktree_readonly_strict,
+};
+pub use writers::{AdmissionSettings, WriterError, WriterReservation};
 
 /// A single column of a user table.
 ///
@@ -223,7 +265,7 @@ pub struct ForeignKey {
 /// The observed, contract-validated schema of a database.
 ///
 /// A value of this type can only be produced by [`inspect`], which guarantees
-/// that both version markers and the supported v6/v15 contract matched.
+/// that both version markers and the supported v6/v11/v14/v15 contract matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspection {
     user_version: i64,
@@ -340,7 +382,7 @@ pub enum InspectError {
     NotReadable,
     /// The file is not a SQLite database.
     NotADatabase,
-    /// `PRAGMA user_version` is neither [`SCHEMA_VERSION`] nor [`RUST_SCHEMA_VERSION`].
+    /// `PRAGMA user_version` is not v6, v11, v14 or [`RUST_SCHEMA_VERSION`].
     UnsupportedUserVersion { found: i64 },
     /// The `meta` table or the `schema_version` key is missing.
     MissingSchemaVersion,
@@ -386,7 +428,7 @@ impl Error for InspectError {
     }
 }
 
-/// Opens `path` strictly read-only and validates it against schema v6 or v15.
+/// Opens `path` strictly read-only and validates it against schema v6, v11, v14 or v15.
 ///
 /// The database is opened with the SQLite URI `mode=ro&immutable=1`, so a
 /// missing file is never created and no `-wal`/`-shm` sidecars are produced.
@@ -407,7 +449,7 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Inspection, InspectError> {
     validate_database(&connection)
 }
 
-/// Validates an open connection against its frozen v6 or v15 contract.
+/// Validates an open connection against its frozen v6/v11/v14/v15 contract.
 ///
 /// This is the shared core of [`inspect`] and [`initialize`]: it reads the
 /// version markers, the user tables, the named indexes and the foreign keys and
@@ -416,7 +458,7 @@ fn validate_database(connection: &Connection) -> Result<Inspection, InspectError
     let user_version = read_user_version(connection)?;
     let tables = read_tables(connection)?;
 
-    if !matches!(user_version, SCHEMA_VERSION | RUST_SCHEMA_VERSION) {
+    if !matches!(user_version, SCHEMA_VERSION | 11 | 14 | RUST_SCHEMA_VERSION) {
         return Err(InspectError::UnsupportedUserVersion {
             found: user_version,
         });
@@ -428,8 +470,8 @@ fn validate_database(connection: &Connection) -> Result<Inspection, InspectError
     let indexes = read_indexes(connection)?;
     let foreign_keys = read_foreign_keys(connection, &tables)?;
 
-    if user_version == RUST_SCHEMA_VERSION {
-        schema_v15::validate(connection, &tables, &indexes, &foreign_keys)?;
+    if user_version != SCHEMA_VERSION {
+        schema_v15::validate(connection, &tables, &indexes, &foreign_keys, user_version)?;
     } else {
         validate_schema(&tables, &indexes, &foreign_keys)
             .map_err(InspectError::IncompatibleSchema)?;
@@ -1032,9 +1074,8 @@ pub const BUSY_TIMEOUT_MS: i64 = 30_000;
 
 /// The exact, ordered list of the fifteen schema v6 `tasks` columns.
 ///
-/// This is the single production source for the task column list used by every
-/// read-only task query; it mirrors the frozen Python `_TASK_COLUMNS`. Every
-/// found row is mapped through [`Task::from_row`].
+/// Used for historical task inserts. Reads select all available columns and map
+/// through [`Task::from_row`] so modern optional budget validation is included.
 const TASK_COLUMNS: &str = "task_id, project_id, workspace, status, session_id, task, \
      allowed_paths, test_commands, created_at, updated_at, base_head, snapshot, \
      revision_count, close_requested_at, close_reason";
@@ -1087,10 +1128,10 @@ impl StorageConnection {
     /// [`QueryError::Database`] for an unexpected SQLite failure. No error
     /// message contains row data, identifiers, SQL or paths.
     pub fn get_task(&self, task_id: TaskId) -> Result<Option<Task>, QueryError> {
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?");
+        let sql = "SELECT * FROM tasks WHERE task_id = ?";
         let row = self
             .connection
-            .query_row(&sql, params![task_id.to_string()], |row| {
+            .query_row(sql, params![task_id.to_string()], |row| {
                 Ok(Task::from_row(row))
             })
             .optional()
@@ -1117,7 +1158,7 @@ impl StorageConnection {
     /// message contains row data, identifiers, SQL or paths.
     pub fn get_active_task(&self, project_id: &ProjectId) -> Result<Option<Task>, QueryError> {
         let (filter, statuses) = active_status_filter();
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ? AND {filter}");
+        let sql = format!("SELECT * FROM tasks WHERE project_id = ? AND {filter}");
         let mut parameters = Vec::with_capacity(statuses.len() + 1);
         parameters.push(SqlValue::Text(project_id.as_str().to_owned()));
         parameters.extend(statuses);
@@ -1165,7 +1206,7 @@ impl StorageConnection {
             return Err(QueryError::InvalidOffset);
         }
 
-        let mut sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?");
+        let mut sql = String::from("SELECT * FROM tasks WHERE project_id = ?");
         let mut parameters = vec![SqlValue::Text(project_id.as_str().to_owned())];
         if active_only {
             let (filter, statuses) = active_status_filter();
@@ -1258,7 +1299,7 @@ impl StorageConnection {
     /// is a [`CreateTaskError::ProjectBusy`].
     ///
     /// The returned [`Task`] is read back inside the same transaction through
-    /// the production [`TASK_COLUMNS`]/[`Task::from_row`] contract used by
+    /// the production [`Task::from_row`] contract used by
     /// [`StorageConnection::get_task`], so the value is the exact persisted row.
     ///
     /// # Errors
@@ -1271,6 +1312,50 @@ impl StorageConnection {
         &mut self,
         input: CreateTaskInput,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        self.create_task_with_admission(
+            input,
+            &AdmissionSettings::default(),
+            TaskStatus::Implementing,
+        )
+    }
+
+    /// Creates a ready or dependency-waiting task with validated admission settings.
+    ///
+    /// Settings come from project config; input workspace is that project's
+    /// absolute workspace. v15 counts all unfinished tasks and checks scopes
+    /// against real writers and reservations. Request replay precedes admission.
+    /// Waiting tasks reserve no writer slot until explicit activation.
+    /// Legacy v6 supports only historical defaults and implementing status.
+    ///
+    /// # Errors
+    /// Bounds, overlapping/corrupt scopes and SQLite failures roll back task,
+    /// round, event and reservation together. Errors never render inputs.
+    pub fn create_task_with_admission(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        self.create_task_with_budget(input, settings, initial_status, None)
+    }
+
+    /// Creates task, round, event, writer reservation and optional validated budget
+    /// in one transaction. Replay returns the existing budget without overwriting it.
+    /// A budget requires schema v15; legacy callers without a budget remain supported.
+    /// The trusted request payload hash must include the submitted budget.
+    /// # Errors
+    /// Storage/admission failures roll back every row; invalid legacy budget input
+    /// is rejected. Errors never render budget values.
+    pub fn create_task_with_budget(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+        budget: Option<&TaskBudget>,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        if !initial_status.is_active() {
+            return Err(CreateTaskError::InvalidInput);
+        }
         let prepared = PreparedCreateTask::new(input)?;
         let now = utc_now_rfc3339_millis();
 
@@ -1285,20 +1370,38 @@ impl StorageConnection {
             return Ok(CreateTaskOutcome::Replayed(task));
         }
 
-        // v15 removes the historical unique task index. Until admission and
-        // writer reservations land in 3.12d, keep the existing single-task
-        // contract inside this same writer transaction, including legacy rows.
-        let busy: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status IN \
-                 ('waiting_dependencies','implementing','awaiting_review','revising',\
-                  'needs_user','failed','delivery_unknown'))",
-                params![prepared.project_id],
-                |row| row.get(0),
-            )
-            .map_err(CreateTaskError::Database)?;
-        if busy {
+        let v15 = query_user_version(&transaction).map_err(CreateTaskError::Database)?
+            == RUST_SCHEMA_VERSION;
+        if !v15
+            && (*settings != AdmissionSettings::default()
+                || initial_status != TaskStatus::Implementing
+                || budget.is_some())
+        {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        let active: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status IN ('waiting_dependencies','implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
+            [&prepared.project_id], |row| row.get(0),
+        ).map_err(CreateTaskError::Database)?;
+        if u64::try_from(active).map_err(|_| CreateTaskError::InvalidInput)?
+            >= settings.max_active_tasks()
+        {
             return Err(CreateTaskError::ProjectBusy);
+        }
+        if v15 {
+            let scopes = writers::parse_scopes(&prepared.allowed_paths_json)
+                .map_err(classify_writer_create_error)?;
+            if writers::is_writer(initial_status) || settings.allow_parallel_writers() {
+                writers::check_admission(
+                    &transaction,
+                    &prepared.project_id,
+                    &scopes,
+                    Path::new(&prepared.workspace),
+                    settings.allow_parallel_writers(),
+                    &prepared.task_id.to_string(),
+                )
+                .map_err(classify_writer_create_error)?;
+            }
         }
 
         transaction
@@ -1311,7 +1414,7 @@ impl StorageConnection {
                     prepared.task_id.to_string(),
                     prepared.project_id,
                     prepared.workspace,
-                    TaskStatus::Implementing.as_str(),
+                    initial_status.as_str(),
                     Null,
                     prepared.text,
                     prepared.allowed_paths_json,
@@ -1326,6 +1429,19 @@ impl StorageConnection {
                 ],
             )
             .map_err(classify_task_insert_error)?;
+
+        if v15 {
+            transaction
+                .execute(
+                    "UPDATE tasks SET execution_mode=?1, budget_json=?3 WHERE task_id=?2",
+                    params![
+                        settings.execution_mode().as_str(),
+                        prepared.task_id.to_string(),
+                        budget.map(|b| b.as_json().to_string())
+                    ],
+                )
+                .map_err(CreateTaskError::Database)?;
+        }
 
         transaction
             .execute(
@@ -1359,6 +1475,18 @@ impl StorageConnection {
             )
             .map_err(classify_round_insert_error)?;
 
+        if v15 && writers::is_writer(initial_status) {
+            writers::reserve(
+                &transaction,
+                &prepared.task_id.to_string(),
+                &prepared.project_id,
+                &prepared.allowed_paths_json,
+                &now,
+                settings.allow_parallel_writers(),
+            )
+            .map_err(classify_writer_create_error)?;
+        }
+
         transaction
             .execute(
                 "INSERT INTO events (task_id, round_number, kind, message, created_at) \
@@ -1375,7 +1503,7 @@ impl StorageConnection {
 
         let task = transaction
             .query_row(
-                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+                "SELECT * FROM tasks WHERE task_id = ?1",
                 params![prepared.task_id.to_string()],
                 |row| Ok(Task::from_row(row)),
             )
@@ -1456,7 +1584,8 @@ pub struct CreateTaskInput {
     pub payload_hash: String,
     /// Base Git head, when captured (`base_head`).
     pub base_head: Option<String>,
-    /// Allowed workspace-relative paths, serialized as a JSON array of strings.
+    /// Normalized workspace-relative or authorized absolute scopes, serialized
+    /// as a JSON array of strings; trailing `/` denotes a directory scope.
     pub allowed_paths: Vec<String>,
     /// Verification commands, serialized as a JSON array of strings.
     pub test_commands: Vec<String>,
@@ -1540,10 +1669,13 @@ impl PreparedCreateTask {
 /// message that never contains ids, project, task text, workspace, request id,
 /// payload hash, paths, SQL or JSON. The underlying task-row or SQLite error,
 /// when present, is reachable only through [`Error::source`].
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum CreateTaskError {
-    /// The project already has an active task (`ux_tasks_active`).
+    /// A scope overlaps another active writer under parallel admission.
+    ScopeOverlap,
+    /// Incoming or persisted scopes are malformed or unresolvable.
+    ScopeDataError,
+    /// A task bound or the single-writer slot is already occupied.
     ProjectBusy,
     /// A task with the same `task_id` already exists.
     TaskIdConflict,
@@ -1565,6 +1697,10 @@ pub enum CreateTaskError {
 impl fmt::Display for CreateTaskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ScopeOverlap => f.write_str("scope overlaps an active writer"),
+            Self::ScopeDataError => {
+                f.write_str("writer scope data is invalid or cannot be resolved")
+            }
             Self::ProjectBusy => f.write_str("project already has an unfinished task"),
             Self::TaskIdConflict => f.write_str("task id already exists"),
             Self::RequestConflict => f.write_str("request id is already used in this project"),
@@ -1576,6 +1712,22 @@ impl fmt::Display for CreateTaskError {
             }
             Self::Database(_) => f.write_str("storage database error"),
         }
+    }
+}
+
+impl fmt::Debug for CreateTaskError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+fn classify_writer_create_error(error: WriterError) -> CreateTaskError {
+    match error {
+        WriterError::ProjectBusy => CreateTaskError::ProjectBusy,
+        WriterError::ScopeOverlap => CreateTaskError::ScopeOverlap,
+        WriterError::ScopeDataError => CreateTaskError::ScopeDataError,
+        WriterError::Database(error) => CreateTaskError::Database(error),
+        _ => CreateTaskError::InvalidInput,
     }
 }
 
@@ -1684,7 +1836,7 @@ fn replay_existing_request(
 
     let task = connection
         .query_row(
-            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            "SELECT * FROM tasks WHERE task_id = ?1",
             params![round.task_id.to_string()],
             |row| Ok(Task::from_row(row)),
         )
@@ -2284,6 +2436,8 @@ impl Error for StateLayoutError {}
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RustStateError {
+    /// Legacy writer reservations could not be repaired safely.
+    Writer(WriterError),
     /// The ownership/format sidecar marker is absent.
     MissingMarker,
     /// The sidecar marker exists but is not valid JSON or lacks a required
@@ -2321,6 +2475,7 @@ pub enum RustStateError {
 impl fmt::Display for RustStateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Writer(_) => f.write_str("rust state writer repair failed"),
             Self::MissingMarker => f.write_str("rust state ownership marker is missing"),
             Self::MalformedMarker => f.write_str("rust state ownership marker is malformed"),
             Self::ForeignImplementation => {
@@ -2353,6 +2508,7 @@ impl fmt::Display for RustStateError {
 impl Error for RustStateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Writer(error) => Some(error),
             Self::IncompatibleSchema(error) => Some(error),
             Self::Initialize(error) => Some(error),
             Self::Connect(error) => Some(error),
@@ -2502,7 +2658,7 @@ impl RustStateLayout {
         self.project_dir().join(Self::MARKER_FILE)
     }
 
-    /// Creates Rust-owned schema v15 or atomically upgrades owned legacy v6.
+    /// Creates Rust-owned schema v15 or atomically upgrades owned legacy v6/v11/v14.
     ///
     /// A new, isolated Rust state is initialized in a crash-safe order: the
     /// sidecar marker is written first (crash-durably, through a private
@@ -2516,7 +2672,7 @@ impl RustStateLayout {
     ///
     /// Initialization is idempotent. An existing Rust-owned state (a valid
     /// marker *and* a schema v15 database with `meta.runtime_owner='rust'`) is
-    /// validated and left unchanged. Owned legacy v6 state is validated before
+    /// validated and left unchanged. Owned legacy v6/v11/v14 state is validated before
     /// any writable connection, then rechecked and upgraded inside one
     /// transaction, preserving every existing row. A missing or truly empty
     /// database is created; foreign, unmarked and unsupported state fails closed.
@@ -2570,7 +2726,7 @@ impl RustStateLayout {
     /// * the marker's project namespace equals this layout's project;
     /// * the marker's normalized `state_root` equals this layout's state root,
     ///   so a state copied or moved under another root is rejected;
-    /// * the database exists and matches the frozen v6 or v15 contract;
+    /// * the database exists and matches the frozen v6/v11/v14/v15 contract;
     /// * `meta.runtime_owner` is present and exactly `rust`.
     ///
     /// Any missing, malformed, unsupported, foreign or contradictory state
@@ -2893,7 +3049,7 @@ fn require_adoptable_database(path: &Path) -> Result<(), RustStateError> {
 /// Initializes or validates a state whose sidecar marker is already owned.
 ///
 /// A populated database is validated read-only before a writable connection.
-/// v15 is left unchanged; owned v6 is upgraded transactionally. Missing or
+/// v15 is left unchanged; owned v6/v11/v14 is upgraded transactionally. Missing or
 /// truly empty state is created through [`initialize_rust_database`].
 fn initialize_owned_state(path: &Path) -> Result<(), RustStateError> {
     if path.exists() && !is_truly_empty_database(path)? {
@@ -2901,7 +3057,7 @@ fn initialize_owned_state(path: &Path) -> Result<(), RustStateError> {
         let connection = open_read_only_current(path)?;
         let version = query_user_version(&connection).map_err(RustStateError::Database)?;
         drop(connection);
-        if version == SCHEMA_VERSION {
+        if version != RUST_SCHEMA_VERSION {
             initialize_rust_database(path)
         } else {
             Ok(())
@@ -2928,7 +3084,7 @@ fn is_truly_empty_database(path: &Path) -> Result<bool, RustStateError> {
     Ok(!non_empty)
 }
 
-/// Validates existing state as a Rust-owned supported v6/v15 database.
+/// Validates existing state as a Rust-owned supported v6/v11/v14/v15 database.
 ///
 /// The database must exist, match its frozen schema contract and carry
 /// `meta.runtime_owner='rust'`. The check is read-only and never creates or
@@ -2938,8 +3094,14 @@ fn validate_rust_database(path: &Path) -> Result<(), RustStateError> {
         return Err(RustStateError::MissingDatabase);
     }
     let connection = open_read_only_current(path)?;
-    validate_database(&connection).map_err(RustStateError::IncompatibleSchema)?;
-    require_runtime_owner(&connection)
+    // All guard queries must observe one committed schema. A concurrent
+    // initializer can replace historical indexes between separate SELECTs.
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(RustStateError::Database)?;
+    validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+    require_runtime_owner(&transaction)?;
+    transaction.commit().map_err(RustStateError::Database)
 }
 
 /// Requires the exact `meta.runtime_owner='rust'` row on `connection`.
@@ -2959,7 +3121,7 @@ fn require_runtime_owner(connection: &Connection) -> Result<(), RustStateError> 
     }
 }
 
-/// Creates Rust-owned v15 or upgrades validated Rust-owned v6.
+/// Creates Rust-owned v15 or upgrades validated Rust-owned v6/v11/v14.
 ///
 /// An already compatible owned v15 database is accepted unchanged; foreign or
 /// incompatible state fails closed. Creation and additive upgrade both run
@@ -2985,6 +3147,15 @@ fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
             validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
             require_runtime_owner(&transaction)?;
             schema_v15::upgrade(&transaction).map_err(RustStateError::Database)?;
+            writers::reconcile_legacy(&transaction).map_err(RustStateError::Writer)?;
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+        }
+        11 | 14 => {
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+            require_runtime_owner(&transaction)?;
+            schema_v15::upgrade_intermediate(&transaction, user_version)
+                .map_err(RustStateError::Database)?;
+            writers::reconcile_legacy(&transaction).map_err(RustStateError::Writer)?;
             validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
         }
         0 if !non_empty => {
@@ -3030,7 +3201,7 @@ fn open_read_only_current(path: &Path) -> Result<Connection, RustStateError> {
         .map_err(RustStateError::IncompatibleSchema)
 }
 
-/// A fully typed view of one schema v6 `tasks` row.
+/// A typed task view of the historical columns and optional modern budget.
 ///
 /// All fifteen columns are represented. Domain-typed columns use [`TaskId`],
 /// [`ProjectId`] and [`TaskStatus`]; `allowed_paths` and `test_commands` are
@@ -3080,13 +3251,18 @@ pub struct Task {
     pub close_requested_at: Option<String>,
     /// Reason for a cooperative close (`close_reason`).
     pub close_reason: Option<String>,
+    /// Normalized optional budget. Corrupt non-NULL data fails row mapping.
+    pub budget: Option<TaskBudget>,
 }
 
 impl Task {
     /// Maps one `tasks` row into a [`Task`].
     ///
-    /// The row must expose the fifteen schema v6 `tasks` columns by name; a
-    /// missing column is reported as [`TaskRowError::MissingColumn`].
+    /// The row must expose the fifteen schema v6 columns by name; a missing
+    /// required column is reported as [`TaskRowError::MissingColumn`]. When
+    /// `budget_json` is present it must be SQL NULL or a valid budget object.
+    /// Historical v6 rows have no budget column and map to no budget. Production
+    /// queries select all task columns so modern budget validation cannot be skipped.
     ///
     /// # Errors
     ///
@@ -3115,6 +3291,15 @@ impl Task {
         }
         let close_requested_at = read_typed::<Option<String>>(row, "close_requested_at")?;
         let close_reason = read_typed::<Option<String>>(row, "close_reason")?;
+        // v6 genuinely has no budget column. Modern production reads SELECT *.
+        let budget = match row.as_ref().column_index("budget_json") {
+            Ok(_) => normalize_persisted_budget(
+                read_typed::<Option<String>>(row, "budget_json")?.as_deref(),
+            )
+            .map_err(|_| TaskRowError::InvalidBudget)?,
+            Err(rusqlite::Error::InvalidColumnName(_)) => None,
+            Err(error) => return Err(TaskRowError::Database(error)),
+        };
 
         Ok(Self {
             task_id,
@@ -3132,6 +3317,7 @@ impl Task {
             revision_count,
             close_requested_at,
             close_reason,
+            budget,
         })
     }
 }
@@ -3162,6 +3348,8 @@ pub enum TaskRowError {
     WrongJsonShape { column: &'static str },
     /// `revision_count` is negative.
     NegativeRevisionCount,
+    /// Non-NULL budget JSON is malformed or violates the public contract.
+    InvalidBudget,
     /// An unexpected SQLite failure.
     Database(rusqlite::Error),
 }
@@ -3185,6 +3373,7 @@ impl fmt::Display for TaskRowError {
                 write!(f, "task row column {column} has an unexpected JSON shape")
             }
             Self::NegativeRevisionCount => f.write_str("task revision count is negative"),
+            Self::InvalidBudget => f.write_str("task row budget is invalid"),
             Self::Database(_) => f.write_str("storage database error"),
         }
     }
@@ -3541,6 +3730,11 @@ fn check_verifier_consistency(
 
 #[cfg(test)]
 mod tests {
+    mod budgets;
+    mod dependencies;
+    mod worktrees;
+    mod writer_indexes;
+    mod writers;
     use super::{
         BUSY_TIMEOUT_MS, CLOSE_REASON_FALLBACK, CLOSE_REASON_MAX_CHARS, Column,
         CompleteRequestedCloseOutcome, CompleteVerifierInput, ConnectError, Contract,
@@ -3549,8 +3743,8 @@ mod tests {
         RECOVERABLE_FAILED_ERROR_CODE, ROUND_TRANSITIONS, RUNTIME_OWNER, ReopenFailedRoundOutcome,
         ReplayStateError, RequestTaskCloseOutcome, RoundRef, RoundRow, RoundRowError,
         RoundUpdateError, RuntimeLock, RuntimeLog, RuntimeProcess, RustStateError, RustStateLayout,
-        SCHEMA_VERSION, SchemaMismatch, StateLayoutError, StorageConnection, TASK_COLUMNS, Table,
-        Task, TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect,
+        SCHEMA_VERSION, SchemaMismatch, StateLayoutError, StorageConnection, Table, Task,
+        TaskRowError, V6_SCHEMA_DDL, VerifierUpdateOutcome, apply_schema_v6, connect,
         encode_state_root, initialize, inspect, open_read_only, query_user_version,
         round_transition_allowed, v6_contract,
     };
@@ -4621,9 +4815,7 @@ mod tests {
             .expect("insert task row");
 
         let task = connection
-            .query_row(&format!("SELECT {TASK_COLUMNS} FROM tasks"), [], |row| {
-                Ok(Task::from_row(row))
-            })
+            .query_row("SELECT * FROM tasks", [], |row| Ok(Task::from_row(row)))
             .expect("row query must execute")
             .expect("valid persisted row must map");
 
@@ -10845,9 +11037,11 @@ mod tests {
                 "SELECT COUNT(*) FROM rounds WHERE checkpoint_json IS NOT NULL OR structured_findings IS NOT NULL", [], |row| row.get(0),
             ).expect("legacy round defaults");
             assert_eq!(rounds, 0);
-            for table in ["active_writers", "worktrees", "worktree_quarantine"] {
+            for table in ["worktrees", "worktree_quarantine"] {
                 assert_eq!(count_rows(&storage, table), 0);
             }
+            let writers: i64 = storage.connection().query_row("SELECT COUNT(*) FROM tasks WHERE status IN ('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')", [], |row| row.get(0)).expect("legacy writers");
+            assert_eq!(count_rows(&storage, "active_writers"), writers);
             drop(storage);
             let upgraded = file_bytes(&layout.database());
             layout.initialize().expect("idempotent v15");
@@ -11521,6 +11715,8 @@ impl StorageConnection {
                 .map_err(RoundUpdateError::Database)?;
         }
 
+        writers::release_terminal(&transaction, input.round.task_id, effective_task_status)
+            .map_err(RoundUpdateError::Database)?;
         let outcome =
             read_round_update_outcome(&transaction, input.round.task_id, input.round.round_number)?;
         transaction.commit().map_err(RoundUpdateError::Database)?;
@@ -11708,7 +11904,7 @@ impl StorageConnection {
 
         let task = transaction
             .query_row(
-                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+                "SELECT * FROM tasks WHERE task_id = ?1",
                 params![task_id.to_string()],
                 |row| Ok(Task::from_row(row)),
             )
@@ -11966,6 +12162,8 @@ impl StorageConnection {
             )
             .map_err(RoundUpdateError::Database)?;
 
+        writers::release_terminal(&transaction, task_id, TaskStatus::Closed)
+            .map_err(RoundUpdateError::Database)?;
         let persisted = load_task_for_update(&transaction, task_id)?;
         transaction.commit().map_err(RoundUpdateError::Database)?;
         Ok(CompleteRequestedCloseOutcome::Closed(Box::new(persisted)))
@@ -12097,7 +12295,6 @@ pub fn round_transition_allowed(from: RoundStatus, to: RoundStatus) -> bool {
 /// response, session or message ids, SQL, JSON or paths. The underlying
 /// row-mapping or SQLite error, when present, is reachable only through
 /// [`Error::source`].
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum RoundUpdateError {
     /// The referenced task does not exist.
@@ -12174,6 +12371,12 @@ impl fmt::Display for RoundUpdateError {
             Self::RoundRow(_) => f.write_str("round row could not be mapped"),
             Self::Database(_) => f.write_str("storage database error"),
         }
+    }
+}
+
+impl fmt::Debug for RoundUpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -12350,7 +12553,7 @@ fn load_optional_task_for_update(
 ) -> Result<Option<Task>, RoundUpdateError> {
     let row = connection
         .query_row(
-            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            "SELECT * FROM tasks WHERE task_id = ?1",
             params![task_id.to_string()],
             |row| Ok(Task::from_row(row)),
         )
@@ -12371,7 +12574,7 @@ fn load_task_for_update(
 ) -> Result<Task, RoundUpdateError> {
     connection
         .query_row(
-            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id = ?1"),
+            "SELECT * FROM tasks WHERE task_id = ?1",
             params![task_id.to_string()],
             |row| Ok(Task::from_row(row)),
         )

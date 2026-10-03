@@ -40,9 +40,17 @@ profile hashing (pure domain, без storage/runtime wiring).
 выбор профиля и effective snapshot с зафиксированной моделью.
 **Шаг 3.12a завершён:** новый Rust state создаётся со schema v15;
 Rust-owned legacy v6 обновляется атомарно с сохранением строк и ownership guards.
-Ближайший шаг — **3.12b: historical writer-status indexes и v15 invariants**,
-затем остальные storage foundations
-и потребители (см.
+**Шаг 3.12b завершён:** guarded upgrade Rust-owned v11/v14, сохранение
+writer reservations и проверки final v15 индексов.
+**Шаг 3.12c завершён:** атомарная явная активация `waiting_dependencies`,
+refresh baseline с status/project fence и событие `dependencies_satisfied`.
+**Шаг 3.12d завершён:** атомарные writer reservations/admission, общий task bound,
+каноническое пересечение scopes и восстановление ledger.
+**Шаг 3.12e завершён:** атомарный lifecycle реестров worktrees/quarantine,
+строгие переходы и read-only диагностика.
+**Шаг 3.12f завершён:** сохранение и строгий разбор бюджетов задач.
+Storage foundations 3.12 завершены. Ближайший шаг —
+**7.13: structured findings validation**, далее потребители (см.
 [docs/implementation-plan.md](docs/implementation-plan.md)). Новые возможности
 распределены по существующим потокам и выполняются после согласованного
 refresh; единого хвостового «когда-нибудь» нет.
@@ -289,6 +297,60 @@ refresh; единого хвостового «когда-нибудь» нет.
   текущий single-task bound сохраняется транзакционной проверкой.
   Прошли **200 storage tests**, **956 workspace tests**, read-only проверка
   пяти SQLite fixtures, all-targets clippy, format и `git diff --check`.
+- Завершён этап **3.12b. Writer-status indexes**: schema guard различает
+  исторические v11/v14 и final v15; Rust-owned v11/v14 обновляются атомарно.
+  Старые writer reservations сохраняются с `parallel=0`; v15 удаляет оба
+  старых UNIQUE-индекса. Проверены singleton/parallel matrix, project isolation,
+  legacy rows, rollback/retry и concurrent upgrade. Read-only ownership guard
+  читает одну schema snapshot, а partial-index predicate проверяется целиком.
+  Прошли **207 storage tests**, **963 workspace tests**, SQLite `verify.py`,
+  all-targets clippy, format и `git diff --check`.
+  Scope admission и ledger reconciliation реализованы в 3.12d;
+  runtime parallelism остаётся у следующих consumers.
+- Завершён этап **3.12c. Waiting-dependency activation**: typed storage API
+  `activate_waiting_dependencies` применяет domain event transition и
+  conditional UPDATE с одним победителем; status и event атомарны.
+  `refresh_task_baseline` обновляет snapshot/base head только у still-waiting
+  задачи указанного project. Open/init не активируют задачи. Шаг 3.12d добавляет
+  scopes/reservation writes; dependency resolution остаётся у consumers.
+  Прошли **216 storage tests** (9 новых), workspace all-targets clippy,
+  SQLite verifier, format и `git diff --check`.
+- Завершён этап **3.12d. Writer reservations и admission**: typed
+  `AdmissionSettings` сохраняет defaults `max_active_tasks=1` и
+  `allow_parallel_writers=false`, true допускает только с worktree mode.
+  Creation/activation сверяют ledger и реальные writer tasks, атомарно
+  записывают reservation; общий bound считает waiting tasks. Parallel scopes
+  сравниваются по canonical identity с symlink/missing-leaf resolution;
+  overlap и corrupt/unresolvable scopes отвергаются без частичных строк.
+  Terminal status/finish/cooperative close освобождают reservation в той же
+  транзакции; failed и остальные writer statuses держат слот. Добавлены strict
+  writer reads, config-independent activity fence и idempotent reconcile;
+  guarded legacy upgrades восстанавливают reservations до commit v15.
+  Прошли **233 storage tests**, **989 workspace tests**, all-targets clippy,
+  SQLite verifier, format и `git diff --check`. Settings передаёт trusted config
+  consumer; path authorization, dependency resolution и runtime parallel
+  workers остаются в следующих задачах.
+- Завершён этап **3.12e. Worktrees и quarantine storage**: registration,
+  status/server/baseline/delivery metadata updates с typed переходами и
+  atomic events; quarantine registration, drift-guarded transitions и listing.
+  Worktree mutations проверяют project/task ownership и worktree mode.
+  Повтор status/delivery сохраняет metadata; повтор quarantine status может
+  уточнить путь. Opaque baseline/process/path values сохраняются точно.
+  Read-only listing/table probe и strict worktree read читают актуальный WAL
+  без создания БД, миграций и смены journal mode; SQLite может затронуть свои
+  transient WAL/SHM sidecars. Corrupt rows/schema fail closed, ошибки не
+  раскрывают metadata. Проверено **246 storage tests**, **1002 workspace tests**, all-targets clippy,
+  SQLite verifier, format и diff check. Git/FS lifecycle, запуск серверов и
+  применение delivery выполняются будущими runtime consumers.
+- Завершён этап **3.12f. Budget storage**: immutable validated `TaskBudget`,
+  atomic `create_task_with_budget`, strict ordinary task reads и read-only
+  snapshot reader. SQL NULL/historical v6 означают no budget; malformed JSON,
+  JSON null, неизвестные поля и invalid limits/threshold возвращают ошибку.
+  Порог по умолчанию — 0.8; limits positive finite, bool запрещён.
+  Default creation сохраняет прежнее поведение, replay не меняет бюджет.
+  Проверено **254 storage tests**, **1010 workspace tests**, all-targets clippy, SQLite verifier,
+  format и diff check. Usage aggregation и round budget gates — следующий
+  consumer 7.14; ближайший шаг общей очереди — 7.13.
 - Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
   Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
   базовой семантики Python `command_policy.py`: `split_command`
@@ -1265,7 +1327,12 @@ refresh; единого хвостового «когда-нибудь» нет.
   **шаг 2.11 завершён** (typed admission defaults/settings);
   **шаг 2.12 завершён** (profile definitions/defaults/effective snapshots);
   **шаг 3.12a завершён** (fresh v15 и guarded additive v6→v15);
-  ближайшая задача — **3.12b** (writer-status indexes);
+  **шаг 3.12b завершён** (historical writer indexes и v11/v14 upgrade);
+  **шаг 3.12c завершён** (explicit activation и baseline refresh);
+  **шаг 3.12d завершён** (writer reservations/scope admission/reconcile);
+  **шаг 3.12e завершён** (worktrees/quarantine lifecycle);
+  **шаг 3.12f завершён** (budget persistence/parse);
+  ближайшая задача — **7.13** (structured findings validation);
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v15 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

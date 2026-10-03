@@ -56,8 +56,13 @@ Targeted checks:
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
   **3.12a завершён** (fresh v15 и guarded additive v6→v15).
-  Ближайший шаг — **3.12b (writer-status indexes)**, затем storage foundations
-  и потребители по зависимостям. Исторический шаг 7.7 больше не заблокирован
+  **3.12b завершён** (historical writer indexes и v11/v14 upgrade).
+  **3.12c завершён** (explicit activation и fenced baseline refresh).
+  **3.12d завершён** (writer reservations/scope admission/reconcile).
+  **3.12e завершён** (worktrees/quarantine lifecycle).
+  **3.12f завершён** (budget persistence/parse).
+  Ближайший шаг — **7.13 (structured findings validation)**,
+  далее потребители по зависимостям. Исторический шаг 7.7 больше не заблокирован
   refresh-контрактом.
 
 ## Поток 0. Контрактная база
@@ -614,14 +619,14 @@ Data model и serde compatibility без runtime logic.
    тот же ownership/format guard и расширить проверку на поддерживаемый
    schema v15, не ослабляя изоляцию.
 
-### 3.12. Schema v15 storage target (после 0A, не завершено)
+### 3.12. Schema v15 storage target (после 0A, завершено)
 
-**3.12a завершён; 3.12b–3.12f остаются открыты.** Зависит от refresh 0A.4 и
+**3.12a–3.12f завершены.** Зависит от refresh 0A.4 и
 typed-контрактов 1.7 (для 3.12c — также 1.6).
 Каждая подзадача меняет один storage-контракт; schema, public API и security
 policy не объединяются. Rust по-прежнему ведёт только собственную пустую БД
-(fresh v15) и Rust-owned additive upgrade/legacy fixtures; Python state не
-читается и не мигрируется.
+(fresh v15) и Rust-owned additive upgrade/legacy fixtures (v6/v11/v14);
+Python state не читается и не мигрируется.
 
 - **3.12a. Additive columns/table DDL (завершено).** `rounds.structured_findings` (v7),
   `tasks.budget_json` (v8), `tasks.workflow_id`/`depends_on` (v9),
@@ -646,15 +651,16 @@ policy не объединяются. Rust по-прежнему ведёт то
   bound через проверку внутри writer transaction, после request replay.
   **Границы:** generic `initialize` сохраняет исторический v6 fixture contract;
   runtime Rust state использует guarded layout initializer. Python state не
-  читается и не мигрируется. Ledger остаётся пустым: reconcile/reservations,
-  typed row mapping новых полей и runtime consumers — следующие задачи.
+  читается и не мигрируется. В 3.12a ledger оставался пустым; 3.12d добавляет
+  backfill/reconcile/reservations. Typed row mapping новых полей и runtime
+  consumers — следующие задачи.
   **Проверено:** 200 storage tests (7 новых), четыре Rust-owned legacy fixture
   upgrades с сохранением всех прежних columns, defaults/NULL semantics,
   idempotency, fresh/concurrent upgrade, transaction rollback и retry,
   single-task admission/replay regression, wrong defaults/predicate rejection;
   SQLite `verify.py` проверил 5 fixtures read-only; workspace clippy, format,
   `git diff --check` и все 956 workspace tests.
-- **3.12b. Writer-status indexes: historical v11/v14 vs final v15.**
+- **3.12b. Writer-status indexes: historical v11/v14 vs final v15 (завершено).**
   Промежуточные `ux_tasks_active` (`tasks(project_id)` WHERE writer statuses;
   `storage.py:140-145`) и `ux_active_writers_project`
   (`active_writers(project_id)`; `storage.py:2037`) создаются только миграциями
@@ -668,13 +674,59 @@ policy не объединяются. Rust по-прежнему ведёт то
   допускает несколько disjoint parallel writers; legacy v6/v11/v14 rows
   сохраняют смысл; `ux_tasks_active` отсутствует в v15. Check: storage index
   tests + `verify.py`.
-- **3.12c. Waiting-dependency activation.** `waiting_dependencies` статус,
+- **Результат 3.12b:** строгие отдельные structural contracts для v11 и v14;
+  v11 `ux_tasks_active` включает waiting status, v14 исключает его и имеет
+  `ux_active_writers_project`. Guarded Rust initializer обновляет v11/v14 до
+  v15 в одной транзакции, удаляет исторические UNIQUE indexes, добавляет
+  отсутствующие поля и final v15 lookup/partial indexes. Все прежние columns
+  и reservations сохраняются; v14 reservations получают `parallel=0`.
+  Guard проверяет весь predicate, defaults и согласованную version pair;
+  read-only ownership validation читает одну транзакционную schema snapshot,
+  чтобы не смешивать версии при concurrent upgrade. Foreign/unmarked state
+  не принимается, Python state не читается и не мигрируется.
+  **Проверено:** 207 storage tests (7 новых), independent intermediate fixtures
+  из копии frozen v15 (без production migration DDL), v11/v14 status matrix,
+  fresh/v6/v11/v14→v15 singleton/parallel index matrix, project/task identity,
+  сохранение всех legacy columns/reservations, idempotency, wrong predicates,
+  ownership/version mismatch, rollback/retry и concurrent upgrade;
+  SQLite `verify.py` (5 fixtures read-only), все 963 workspace tests,
+  workspace all-targets clippy, format и `git diff --check`.
+  **Границы:** индекс допускает несколько parallel reservations, но проверку
+  disjoint scopes реализован в 3.12d. Reconcile/admission не входили в 3.12b;
+  runtime parallelism остаётся у consumers, defaults не ослаблены.
+- **3.12c. Waiting-dependency activation (завершено).** `waiting_dependencies` статус,
   `activate_waiting_dependencies` (atomic single winner, conditional UPDATE
   rowcount==1), `refresh_task_baseline`, `dependencies_satisfied` event.
   Source: `storage.py:103,2807-2878`. Acceptance: explicit activation only, no
   startup auto-activation; idempotent. Depends on 1.6. Check: test_storage
   `test_activate_waiting_dependencies_is_atomic_and_idempotent:1145`.
-- **3.12d. active_writers reservation + admission.** Reservation insert/release
+  **Результат:** `activate_waiting_dependencies(task_id, project_id)` — explicit
+  API для schema v15: caller устанавливает accepted dependency readiness;
+  scoped waiting-row lookup, domain `DependenciesSatisfied` transition,
+  conditional UPDATE (`rowcount==1`) и точное round-1 event
+  `dependencies_satisfied` / `accepted dependencies unlocked the task` находятся
+  в одном `BEGIN IMMEDIATE`. Winner возвращает true, repeat/missing/foreign/
+  nonwaiting/busy — false без writes. Task timestamp совпадает с event timestamp.
+  `refresh_task_baseline` принимает object snapshot и optional base head,
+  меняет только baseline/timestamp через project/status-fenced UPDATE;
+  activated/closed task не получает stale baseline. Без event/round writes.
+  Typed `DependencyUpdateError` не раскрывает inputs/SQL/trigger text в
+  Display/Debug; underlying error доступен только через `source`.
+  **Границы:** открытие/инициализация не активируют задачи; workers/prompts,
+  создание/attempt round, accepted-dependency resolution и combined refresh/
+  activation orchestration не входят. До 3.12d сохраняется single-writer guard
+  по actual writer statuses + ledger чужих задач; own stale reservation
+  исключается и сохраняется. Scope overlap/normalization, reservation insert/
+  release/reconcile добавлены в 3.12d; modern Python runtime parity ещё не
+  заявлен. Python runtime state не читался и не изменялся.
+  **Проверено:** 216 storage tests (9 новых): explicit-only startup/reopen,
+  exact event/timestamp, immutable rounds/attempted, refresh pin/fence,
+  missing/foreign/all-status no-op matrix, writer/ledger blocking и project
+  isolation, 8 concurrent callers с одним winner, competing waiting tasks,
+  refresh-vs-activation race, event/baseline failure rollback/retry и redaction,
+  invalid snapshots/corrupt rows fail closed; workspace all-targets clippy,
+  SQLite verifier (5 fixtures read-only), format и `git diff --check`.
+- **3.12d. active_writers reservation + admission (завершено).** Reservation insert/release
   внутри `create_task`/`update_task_status`, `get_active_writers`,
   `writer_activity_present` (ledger + real writer statuses),
   `_check_writer_scope_admission_in_conn`, `_reconcile_active_writers_in_conn`,
@@ -684,17 +736,93 @@ policy не объединяются. Rust по-прежнему ведёт то
   Acceptance: `max_active_tasks=1` default; `allow_parallel_writers=false`
   default; true только для worktree; corrupt scope fail closed. Depends on
   1.6, 2.11, 3.12a.
-- **3.12e. worktrees/worktree_quarantine lifecycle storage.**
+  **Результат:** private-field `AdmissionSettings` validates positive task bound
+  и worktree-only parallel opt-in; defaults `1/false/direct`. Новый
+  `create_task_with_admission` сохраняет request replay перед admission,
+  считает все unfinished statuses, допускает initial writer/waiting status,
+  сохраняет execution mode и атомарно пишет ready-writer reservation вместе с
+  task/initial round/event. Waiting submit не резервирует слот; parallel waiting
+  submit проверяет overlap. Default `create_task` сохраняет historical v6 API
+  и на v15 использует новый ledger; opt-in settings предназначены для v15.
+  `activate_waiting_dependencies_with_admission` проверяет worktree mode,
+  canonical scope admission и резервирует slot в status/event transaction;
+  повторный/blocked вызов не пишет. Совпадающий own crash-window reservation
+  переиспользуется, чужая identity/scopes/flag fail closed.
+  `update_task_status`, `finish_round` (включая pending-close override) и
+  `complete_requested_close` освобождают slot только при terminal status,
+  атомарно с остальными writes. Generic waiting→writer transition запрещён.
+  **Scope contract:** normalized relative/absolute scopes, trailing `/` = dir;
+  malformed JSON/non-list/non-string/empty/ambiguous paths fail closed.
+  Component-aware overlap использует symlink-resolved longest existing prefix
+  и missing suffix; siblings не конфликтуют, directory descendants и aliases
+  конфликтуют. Broken/cyclic/unresolvable paths не сравниваются лексически.
+  Parallel admission проверяет incoming canonical identities даже без peers.
+  Scope authorization остаётся у path-policy consumer, workspace — trusted
+  project config input; permission/scope allowlists не расширяются.
+  **Reads/recovery:** strict typed `get_active_writers` (timestamps/task-id order),
+  `writer_activity_present` по ledger + реальным writer statuses, независимо от
+  config и потерянной reservation. Explicit `reconcile_active_writers` удаляет
+  orphan/terminal rows и backfills writers, сохраняет существующие scopes/flags
+  при config downgrade. Corrupt/conflicting repair откатывается целиком, а не
+  скрывает constraint errors. Rust-owned v6/v11/v14 upgrade выполняет default
+  single-writer backfill до commit; v15 init остаётся read-only/idempotent,
+  configured startup recovery вызывает explicit reconcile API.
+  **Границы:** storage only; config/CLI/MCP/worker wiring, dependency resolver,
+  per-task locks и runtime parallel workers остаются у consumers. Python state
+  не читался и не мигрировался; reference HEAD подтверждён по manifest.
+  **Проверено:** 233 storage tests (17 новых, обновлены staged ledger assertions),
+  all-status count/bounds и replay-at-capacity, B1 queues/B2 disjoint writers,
+  filesystem alias/directory/missing-leaf/absolute-path matrix, broken/looped
+  aliases и corrupt ledger/real scopes fail closed, lost-ledger/config downgrade,
+  terminal release и transactional rollback/retry/redaction, idempotent repair,
+  concurrent submit task bound и overlapping/disjoint submit/activation;
+  все 989 workspace tests, all-targets clippy, SQLite verifier (5 fixtures
+  read-only), format и `git diff --check`.
+- **3.12e. worktrees/worktree_quarantine lifecycle storage (завершено).**
   `register_worktree`, `update_worktree_status`, `update_worktree_server`,
   `update_worktree_baseline`, `set_worktree_delivery`; quarantine registry
   (`register_worktree_quarantine`, `transition_worktree_quarantine`,
   `list_worktree_quarantine_readonly`, `has_worktree_quarantine_table`).
   Source: `storage.py:226-249,3319-3929`. Acceptance: fail-closed transition
   maps; read-only quarantine listing. Depends on 3.12a.
-- **3.12f. Budget persistence/parse.** `tasks.budget_json` persist + strict
+  Реализовано в `bridge-storage/worktrees.rs`: typed statuses и строгий
+  mapping всех полей, project/task/worktree-mode fence, BEGIN IMMEDIATE для
+  переходов и metadata updates. Status/delivery events записываются атомарно;
+  повтор worktree/delivery status не меняет metadata, quarantine same-status
+  может уточнять путь, как Python implementation. Quarantine expected status
+  и original path сравниваются под write lock; drift не меняет реестр.
+  Baseline/process/path metadata остаются opaque, server port — 1..65535.
+  Read-only listing/table probe и strict worktree read используют mode=ro и
+  один snapshot: missing DB не создаётся, supported schema без quarantine
+  table даёт empty/false, incompatible/corrupt state возвращает safe error.
+  Читается текущий WAL без WAL flip/migration; SQLite может затронуть свои
+  transient WAL/SHM sidecars. Filesystem create/move/remove, Git worktrees,
+  server startup и применение delivery остаются задачами consumers/runtime.
+  Проверено: **246 storage tests**, exhaustive persisted transition matrices,
+  atomic rollback/redaction, metadata/idempotence, readonly legacy/live-WAL,
+  drift и concurrent quarantine transitions; **1002 workspace tests**, all-targets
+  clippy, SQLite verifier (5 fixtures read-only), format и diff check.
+- **3.12f. Budget persistence/parse (завершено).** `tasks.budget_json` persist + strict
   reader (`validate_budget`/`normalize_persisted_budget` live in
   `usage.py:156-244`). Source: `usage.py`; `mcp_server.py:2289-2291`.
   Acceptance: NULL = no budget; corrupt budget fail closed. Depends on 3.12a.
+  `bridge-storage/budgets.rs`: immutable `TaskBudget`, public validation,
+  guarded persisted normalization и snapshot read-only budget reader. Limits
+  input/output/reasoning/cache_read/cache_write/cost — positive finite numbers,
+  bool и unknown fields запрещены; warning_threshold ∈ (0,1], default 0.8.
+  Public JSON null означает optional absence, но persisted JSON null — corrupt;
+  SQL NULL и historical v6 без колонки означают no budget. Modern task reads
+  включают budget_json и возвращают typed `InvalidBudget` при повреждении.
+  `create_task_with_budget` сохраняет бюджет в одной транзакции с task/round/
+  event/reservation; default APIs пишут SQL NULL. Replay сохраняет исходный
+  бюджет, trusted consumer включает budget в payload_hash; legacy v6 не
+  принимает новый непустой бюджет. Read-only API не создаёт state, не мигрирует
+  и не меняет journal mode, различает missing task/DB и task без бюджета.
+  Проверено: **254 storage tests**, validation/defaults/numeric boundaries,
+  strict corrupt reads/replay/mutations, atomic rollback/redaction, readonly
+  legacy/live-WAL и default creation; **1010 workspace tests**, all-targets clippy,
+  SQLite verifier (5 fixtures read-only), format и diff check. Usage aggregation,
+  warning/exhaustion state, override/gates и MCP wiring остаются в 7.14.
 
 **Готовность потока (после 0A/3.12):** target — **fresh Rust-owned schema v15**
 (пустая БД), additive upgrade — только Rust-owned legacy v6; Python- и
@@ -722,8 +850,12 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   Завершённые этапы 0–6 и 7.1–7.6 — foundation старого контракта schema v6.
   **Поток 0A, domain 1.6/1.7 и config 2.10–2.12 завершены**;
   **3.12a завершён** (fresh v15 и guarded additive v6→v15);
-  ближайшая задача — **3.12b**,
-  затем foundations v15;
+  **3.12b завершён** (historical writer indexes и v11/v14 upgrade);
+  **3.12c завершён** (explicit activation и fenced baseline refresh);
+  **3.12d завершён** (writer reservations/scope admission/reconcile);
+  **3.12e завершён** (worktrees/quarantine lifecycle);
+  **3.12f завершён** (budget persistence/parse);
+  ближайшая задача — **7.13** (structured findings validation);
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v15 в Rust не завершены.
 
@@ -2994,12 +3126,11 @@ improvement**. Limitation не выдаётся за реализованное 
 
 ## Порядок и готовность
 
-1. **Поток 0A, domain 1.6/1.7, config 2.10–2.12 и storage 3.12a завершены. Ближайшая задача — 3.12b: writer-status indexes.**
-2. Оставшиеся foundations — storage 3.12,
-   затем потребители (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15).
+1. **Поток 0A, domain 1.6/1.7, config 2.10–2.12 и storage 3.12a–3.12f завершены. Ближайшая задача — 7.13: structured findings validation.**
+2. Storage foundations 3.12 завершены; далее потребители (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15).
 3. **Все новые возможности (v7–v15) в Rust НЕ завершены**; завершены только
    0–6 и 7.1–7.6 как foundation старого контракта v6, плюс pure-domain 1.6/1.7
-   и config 2.10–2.12/storage DDL 3.12a по v15-контракту. 7.6 accepted сохраняется.
+   и config 2.10–2.12/storage 3.12a–3.12f по v15-контракту. 7.6 accepted сохраняется.
 4. Следующий незавершённый исторический шаг 7.7 (Question blocker) выполняется
    после завершённого 0A; порядок и зависимости новых задач — по ссылкам выше.
 

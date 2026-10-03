@@ -280,6 +280,7 @@ mod tests {
             revision_count: 0,
             close_requested_at: None,
             close_reason: None,
+            budget: None,
         }
     }
 

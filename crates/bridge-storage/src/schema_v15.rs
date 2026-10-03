@@ -1,4 +1,4 @@
-//! Additive v6 → v15 DDL for guarded Rust state only.
+//! Additive v6/v11/v14 → v15 DDL for guarded Rust state only.
 
 use super::{Contract, ForeignKey, Index, InspectError, SchemaMismatch, Table, column, index};
 use rusqlite::{Connection, params};
@@ -60,6 +60,90 @@ UPDATE meta SET value='15' WHERE key='schema_version';
 /// No row data is rewritten or fabricated; ledger reconciliation is task 3.12d.
 pub(super) fn upgrade(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(ADDITIVE_DDL)
+}
+
+/// Upgrades strictly validated intermediate Rust-owned schemas. Existing
+/// reservations are preserved and acquire the historical single-writer flag.
+pub(super) fn upgrade_intermediate(connection: &Connection, version: i64) -> rusqlite::Result<()> {
+    if version == 11 {
+        connection.execute_batch(
+            r#"
+            ALTER TABLE rounds ADD COLUMN checkpoint_json TEXT;
+            ALTER TABLE tasks ADD COLUMN profile TEXT;
+            ALTER TABLE tasks ADD COLUMN profile_json TEXT;
+            ALTER TABLE tasks ADD COLUMN profile_hash TEXT;
+            ALTER TABLE tasks ADD COLUMN profile_source TEXT;
+            CREATE TABLE active_writers (
+                task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                scopes_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                parallel INTEGER NOT NULL DEFAULT 0
+            );
+        "#,
+        )?;
+    } else {
+        connection.execute_batch("ALTER TABLE active_writers ADD COLUMN parallel INTEGER NOT NULL DEFAULT 0; DROP INDEX ux_active_writers_project;")?;
+    }
+    connection.execute_batch(
+        r#"
+        DROP INDEX ux_tasks_active;
+        CREATE UNIQUE INDEX ux_active_writers_single ON active_writers(project_id) WHERE parallel=0;
+        CREATE INDEX ix_active_writers_project ON active_writers(project_id);
+        CREATE INDEX ix_tasks_project_status ON tasks(project_id, status);
+        PRAGMA user_version=15;
+        UPDATE meta SET value='15' WHERE key='schema_version';
+    "#,
+    )
+}
+
+fn contract_for(version: i64) -> Contract {
+    let mut contract = contract();
+    if version == 15 {
+        return contract;
+    }
+    if version == 11 {
+        contract
+            .tables
+            .retain(|table| table.name != "active_writers");
+        for table in &mut contract.tables {
+            table.columns.retain(|column| match table.name.as_str() {
+                "tasks" => !matches!(
+                    column.name.as_str(),
+                    "profile" | "profile_json" | "profile_hash" | "profile_source"
+                ),
+                "rounds" => column.name != "checkpoint_json",
+                _ => true,
+            });
+        }
+    } else {
+        for table in &mut contract.tables {
+            if table.name == "active_writers" {
+                table.columns.retain(|column| column.name != "parallel");
+            }
+        }
+    }
+    contract.indexes.retain(|entry| {
+        !matches!(
+            entry.name.as_str(),
+            "ix_tasks_project_status" | "ix_active_writers_project" | "ux_active_writers_single"
+        )
+    });
+    contract.indexes.push(index(
+        "ux_tasks_active",
+        "tasks",
+        &["project_id"],
+        true,
+        true,
+    ));
+    if version == 14 {
+        contract.indexes.push(index(
+            "ux_active_writers_project",
+            "active_writers",
+            &["project_id"],
+            true,
+            false,
+        ));
+    }
+    contract
 }
 
 pub(super) fn contract() -> Contract {
@@ -174,8 +258,9 @@ pub(super) fn validate(
     tables: &[Table],
     indexes: &[Index],
     foreign_keys: &[ForeignKey],
+    version: i64,
 ) -> Result<(), InspectError> {
-    let contract = contract();
+    let contract = contract_for(version);
     super::validate_tables(&contract.tables, tables).map_err(InspectError::IncompatibleSchema)?;
     super::validate_indexes(&contract.indexes, indexes)
         .map_err(InspectError::IncompatibleSchema)?;
@@ -208,10 +293,21 @@ pub(super) fn validate(
             }
         }
     }
+    let (name, predicate) = match version {
+        11 => (
+            "ux_tasks_active",
+            "statusin('waiting_dependencies','implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
+        ),
+        14 => (
+            "ux_tasks_active",
+            "statusin('implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
+        ),
+        _ => ("ux_active_writers_single", "parallel=0"),
+    };
     let sql: String = connection
         .query_row(
-            "SELECT sql FROM sqlite_master WHERE name='ux_active_writers_single'",
-            [],
+            "SELECT sql FROM sqlite_master WHERE name=?1",
+            [name],
             |row| row.get(0),
         )
         .map_err(super::classify_error)?;
@@ -220,11 +316,9 @@ pub(super) fn validate(
         .filter(|ch| !ch.is_whitespace())
         .flat_map(char::to_lowercase)
         .collect();
-    if !normalized.ends_with("whereparallel=0") {
+    if normalized.split_once("where").map(|(_, actual)| actual) != Some(predicate) {
         return Err(InspectError::IncompatibleSchema(
-            SchemaMismatch::IndexDefinition {
-                index: "ux_active_writers_single".into(),
-            },
+            SchemaMismatch::IndexDefinition { index: name.into() },
         ));
     }
     Ok(())

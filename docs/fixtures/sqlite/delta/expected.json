@@ -1,0 +1,3826 @@
+{
+  "databases": {
+    "fresh-v17.sqlite": {
+      "indexes": {
+        "ix_active_writers_project": {
+          "partial": 0,
+          "sql": "createindexix_active_writers_projectonactive_writers(project_id)",
+          "table": "active_writers",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ix_events_task": {
+          "partial": 0,
+          "sql": "createindexix_events_taskonevents(task_id,id)",
+          "table": "events",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "task_id",
+              "seqno": 0
+            },
+            {
+              "cid": 0,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ix_tasks_project_status": {
+          "partial": 0,
+          "sql": "createindexix_tasks_project_statusontasks(project_id,status)",
+          "table": "tasks",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "status",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ux_active_writers_single": {
+          "partial": 1,
+          "sql": "createuniqueindexux_active_writers_singleonactive_writers(project_id)whereparallel=0",
+          "table": "active_writers",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_automation_unfinished": {
+          "partial": 1,
+          "sql": "createuniqueindexux_automation_unfinishedonautomation_runs((1))wherestatusnotin('completed','ready','stopped')",
+          "table": "automation_runs",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": -2,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": null,
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_rounds_request": {
+          "partial": 0,
+          "sql": "createuniqueindexux_rounds_requestonrounds(project_id,request_id)",
+          "table": "rounds",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "request_id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        }
+      },
+      "rows": {
+        "active_writers": [],
+        "automation_runs": [],
+        "events": [],
+        "meta": [
+          {
+            "key": "schema_version",
+            "value": "17"
+          }
+        ],
+        "rounds": [],
+        "tasks": [],
+        "worktree_quarantine": [],
+        "worktrees": []
+      },
+      "schema": {
+        "active_writers": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "parallel",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "scopes_json",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "automation_runs": {
+          "columns": [
+            {
+              "dflt_value": "'run'",
+              "name": "control",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "document",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "run_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "events": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "message",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "meta": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "key",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "value",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "rounds": {
+          "columns": [
+            {
+              "dflt_value": "0",
+              "name": "attempted",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "checkpoint_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "error_code",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "outbound_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "payload_hash",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "request_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "result_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 1,
+              "pk": 2,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "structured_findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_deadline_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_started_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        },
+        "tasks": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "allowed_paths",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "budget_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_requested_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'manual'",
+              "name": "delivery_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "depends_on",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'direct'",
+              "name": "execution_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_hash",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_source",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "revision_count",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "snapshot",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "test_commands",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workflow_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workspace",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktree_quarantine": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "entry_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "found_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "original_path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "quarantined_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktrees": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "baseline_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "cleanup_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivered_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_journal_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "removed_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "runtime_dir",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_endpoint",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_port",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_process_record",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        }
+      },
+      "version": 17
+    },
+    "owned-v15.sqlite": {
+      "indexes": {
+        "ix_active_writers_project": {
+          "partial": 0,
+          "sql": "createindexix_active_writers_projectonactive_writers(project_id)",
+          "table": "active_writers",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ix_events_task": {
+          "partial": 0,
+          "sql": "createindexix_events_taskonevents(task_id,id)",
+          "table": "events",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "task_id",
+              "seqno": 0
+            },
+            {
+              "cid": 0,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ix_tasks_project_status": {
+          "partial": 0,
+          "sql": "createindexix_tasks_project_statusontasks(project_id,status)",
+          "table": "tasks",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "status",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ux_active_writers_single": {
+          "partial": 1,
+          "sql": "createuniqueindexux_active_writers_singleonactive_writers(project_id)whereparallel=0",
+          "table": "active_writers",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_rounds_request": {
+          "partial": 0,
+          "sql": "createuniqueindexux_rounds_requestonrounds(project_id,request_id)",
+          "table": "rounds",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "request_id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        }
+      },
+      "rows": {
+        "active_writers": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "parallel": 0,
+            "project_id": "proj",
+            "scopes_json": "[\"module.py\"]",
+            "task_id": "task-direct"
+          }
+        ],
+        "events": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 11,
+            "kind": "needs_user",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-direct"
+          },
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 29,
+            "kind": "accepted",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-worktree"
+          }
+        ],
+        "meta": [
+          {
+            "key": "fixture_metadata",
+            "value": "preserve-me"
+          },
+          {
+            "key": "runtime_owner",
+            "value": "rust"
+          },
+          {
+            "key": "schema_version",
+            "value": "15"
+          }
+        ],
+        "rounds": [
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-direct",
+            "project_id": "proj",
+            "request_id": "req-task-direct",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "needs_user",
+            "structured_findings": null,
+            "task_id": "task-direct",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          },
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-worktree",
+            "project_id": "proj",
+            "request_id": "req-task-worktree",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "complete",
+            "structured_findings": null,
+            "task_id": "task-worktree",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          }
+        ],
+        "tasks": [
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "depends_on": null,
+            "execution_mode": "direct",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "needs_user",
+            "task": "Synthetic migration contract",
+            "task_id": "task-direct",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          },
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "depends_on": null,
+            "execution_mode": "worktree",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "accepted",
+            "task": "Synthetic migration contract",
+            "task_id": "task-worktree",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          }
+        ],
+        "worktree_quarantine": [
+          {
+            "entry_id": "quarantine-1",
+            "found_at": "2026-01-01T00:00:00.000+00:00",
+            "original_path": "/fixture/orphan",
+            "quarantined_path": null,
+            "reason": "synthetic orphan",
+            "status": "quarantined"
+          }
+        ],
+        "worktrees": [
+          {
+            "base_head": null,
+            "baseline_json": "{\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "cleanup_reason": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivered_at": null,
+            "delivery_journal_path": null,
+            "delivery_state": "none",
+            "path": "/fixture/state/proj/worktrees/task-worktree",
+            "removed_at": null,
+            "runtime_dir": null,
+            "server_endpoint": null,
+            "server_port": null,
+            "server_process_record": null,
+            "status": "created",
+            "task_id": "task-worktree",
+            "updated_at": null
+          }
+        ]
+      },
+      "schema": {
+        "active_writers": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "parallel",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "scopes_json",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "events": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "message",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "meta": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "key",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "value",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "rounds": {
+          "columns": [
+            {
+              "dflt_value": "0",
+              "name": "attempted",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "checkpoint_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "error_code",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "outbound_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "payload_hash",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "request_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "result_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 1,
+              "pk": 2,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "structured_findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_deadline_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_started_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        },
+        "tasks": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "allowed_paths",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "budget_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_requested_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "depends_on",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'direct'",
+              "name": "execution_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_hash",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_source",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "revision_count",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "snapshot",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "test_commands",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workflow_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workspace",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktree_quarantine": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "entry_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "found_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "original_path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "quarantined_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktrees": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "baseline_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "cleanup_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivered_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_journal_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "removed_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "runtime_dir",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_endpoint",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_port",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_process_record",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        }
+      },
+      "version": 15
+    },
+    "owned-v16.sqlite": {
+      "indexes": {
+        "ix_active_writers_project": {
+          "partial": 0,
+          "sql": "createindexix_active_writers_projectonactive_writers(project_id)",
+          "table": "active_writers",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ix_events_task": {
+          "partial": 0,
+          "sql": "createindexix_events_taskonevents(task_id,id)",
+          "table": "events",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "task_id",
+              "seqno": 0
+            },
+            {
+              "cid": 0,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ix_tasks_project_status": {
+          "partial": 0,
+          "sql": "createindexix_tasks_project_statusontasks(project_id,status)",
+          "table": "tasks",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "status",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ux_active_writers_single": {
+          "partial": 1,
+          "sql": "createuniqueindexux_active_writers_singleonactive_writers(project_id)whereparallel=0",
+          "table": "active_writers",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_rounds_request": {
+          "partial": 0,
+          "sql": "createuniqueindexux_rounds_requestonrounds(project_id,request_id)",
+          "table": "rounds",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "request_id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        }
+      },
+      "rows": {
+        "active_writers": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "parallel": 0,
+            "project_id": "proj",
+            "scopes_json": "[\"module.py\"]",
+            "task_id": "task-direct"
+          }
+        ],
+        "events": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 11,
+            "kind": "needs_user",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-direct"
+          },
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 29,
+            "kind": "accepted",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-worktree"
+          }
+        ],
+        "meta": [
+          {
+            "key": "fixture_metadata",
+            "value": "preserve-me"
+          },
+          {
+            "key": "runtime_owner",
+            "value": "rust"
+          },
+          {
+            "key": "schema_version",
+            "value": "16"
+          }
+        ],
+        "rounds": [
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-direct",
+            "project_id": "proj",
+            "request_id": "req-task-direct",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "needs_user",
+            "structured_findings": null,
+            "task_id": "task-direct",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          },
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-worktree",
+            "project_id": "proj",
+            "request_id": "req-task-worktree",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "complete",
+            "structured_findings": null,
+            "task_id": "task-worktree",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          }
+        ],
+        "tasks": [
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivery_mode": "manual",
+            "depends_on": null,
+            "execution_mode": "direct",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "needs_user",
+            "task": "Synthetic migration contract",
+            "task_id": "task-direct",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          },
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivery_mode": "on_accept",
+            "depends_on": null,
+            "execution_mode": "worktree",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "accepted",
+            "task": "Synthetic migration contract",
+            "task_id": "task-worktree",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          }
+        ],
+        "worktree_quarantine": [
+          {
+            "entry_id": "quarantine-1",
+            "found_at": "2026-01-01T00:00:00.000+00:00",
+            "original_path": "/fixture/orphan",
+            "quarantined_path": null,
+            "reason": "synthetic orphan",
+            "status": "quarantined"
+          }
+        ],
+        "worktrees": [
+          {
+            "base_head": null,
+            "baseline_json": "{\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "cleanup_reason": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivered_at": null,
+            "delivery_journal_path": null,
+            "delivery_state": "none",
+            "path": "/fixture/state/proj/worktrees/task-worktree",
+            "removed_at": null,
+            "runtime_dir": null,
+            "server_endpoint": null,
+            "server_port": null,
+            "server_process_record": null,
+            "status": "created",
+            "task_id": "task-worktree",
+            "updated_at": null
+          }
+        ]
+      },
+      "schema": {
+        "active_writers": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "parallel",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "scopes_json",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "events": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "message",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "meta": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "key",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "value",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "rounds": {
+          "columns": [
+            {
+              "dflt_value": "0",
+              "name": "attempted",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "checkpoint_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "error_code",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "outbound_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "payload_hash",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "request_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "result_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 1,
+              "pk": 2,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "structured_findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_deadline_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_started_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        },
+        "tasks": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "allowed_paths",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "budget_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_requested_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'manual'",
+              "name": "delivery_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "depends_on",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'direct'",
+              "name": "execution_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_hash",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_source",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "revision_count",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "snapshot",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "test_commands",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workflow_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workspace",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktree_quarantine": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "entry_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "found_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "original_path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "quarantined_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktrees": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "baseline_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "cleanup_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivered_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_journal_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "removed_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "runtime_dir",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_endpoint",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_port",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_process_record",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        }
+      },
+      "version": 16
+    },
+    "owned-v17.sqlite": {
+      "indexes": {
+        "ix_active_writers_project": {
+          "partial": 0,
+          "sql": "createindexix_active_writers_projectonactive_writers(project_id)",
+          "table": "active_writers",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ix_events_task": {
+          "partial": 0,
+          "sql": "createindexix_events_taskonevents(task_id,id)",
+          "table": "events",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "task_id",
+              "seqno": 0
+            },
+            {
+              "cid": 0,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ix_tasks_project_status": {
+          "partial": 0,
+          "sql": "createindexix_tasks_project_statusontasks(project_id,status)",
+          "table": "tasks",
+          "unique": 0,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "status",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        },
+        "ux_active_writers_single": {
+          "partial": 1,
+          "sql": "createuniqueindexux_active_writers_singleonactive_writers(project_id)whereparallel=0",
+          "table": "active_writers",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_automation_unfinished": {
+          "partial": 1,
+          "sql": "createuniqueindexux_automation_unfinishedonautomation_runs((1))wherestatusnotin('completed','ready','stopped')",
+          "table": "automation_runs",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": -2,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": null,
+              "seqno": 0
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 1
+            }
+          ]
+        },
+        "ux_rounds_request": {
+          "partial": 0,
+          "sql": "createuniqueindexux_rounds_requestonrounds(project_id,request_id)",
+          "table": "rounds",
+          "unique": 1,
+          "xinfo": [
+            {
+              "cid": 1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "project_id",
+              "seqno": 0
+            },
+            {
+              "cid": 3,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 1,
+              "name": "request_id",
+              "seqno": 1
+            },
+            {
+              "cid": -1,
+              "coll": "BINARY",
+              "desc": 0,
+              "key": 0,
+              "name": null,
+              "seqno": 2
+            }
+          ]
+        }
+      },
+      "rows": {
+        "active_writers": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "parallel": 0,
+            "project_id": "proj",
+            "scopes_json": "[\"module.py\"]",
+            "task_id": "task-direct"
+          }
+        ],
+        "automation_runs": [],
+        "events": [
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 11,
+            "kind": "needs_user",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-direct"
+          },
+          {
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "id": 29,
+            "kind": "accepted",
+            "message": "Synthetic history",
+            "round_number": 1,
+            "task_id": "task-worktree"
+          }
+        ],
+        "meta": [
+          {
+            "key": "fixture_metadata",
+            "value": "preserve-me"
+          },
+          {
+            "key": "runtime_owner",
+            "value": "rust"
+          },
+          {
+            "key": "schema_version",
+            "value": "17"
+          }
+        ],
+        "rounds": [
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-direct",
+            "project_id": "proj",
+            "request_id": "req-task-direct",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "needs_user",
+            "structured_findings": null,
+            "task_id": "task-direct",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          },
+          {
+            "attempted": 1,
+            "checkpoint_json": "{\"version\":1}",
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "error_code": null,
+            "findings": null,
+            "kind": "initial",
+            "outbound_message_id": null,
+            "payload_hash": "hash-task-worktree",
+            "project_id": "proj",
+            "request_id": "req-task-worktree",
+            "response": "Synthetic result",
+            "response_message_id": null,
+            "result_json": "{\"changed_paths\":[\"module.py\"]}",
+            "round_number": 1,
+            "session_id": null,
+            "status": "complete",
+            "structured_findings": null,
+            "task_id": "task-worktree",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "verifier_json": null,
+            "verifier_state": null,
+            "worker_deadline_at": null,
+            "worker_started_at": null
+          }
+        ],
+        "tasks": [
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivery_mode": "manual",
+            "depends_on": null,
+            "execution_mode": "direct",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "needs_user",
+            "task": "Synthetic migration contract",
+            "task_id": "task-direct",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          },
+          {
+            "allowed_paths": "[\"module.py\"]",
+            "base_head": null,
+            "budget_json": "{\"max_cost_usd\":1}",
+            "close_reason": null,
+            "close_requested_at": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivery_mode": "on_accept",
+            "depends_on": null,
+            "execution_mode": "worktree",
+            "profile": null,
+            "profile_hash": null,
+            "profile_json": null,
+            "profile_source": null,
+            "project_id": "proj",
+            "revision_count": 0,
+            "session_id": null,
+            "snapshot": null,
+            "status": "accepted",
+            "task": "Synthetic migration contract",
+            "task_id": "task-worktree",
+            "test_commands": "[\"python -m unittest\"]",
+            "updated_at": "2026-01-01T00:00:00.000+00:00",
+            "workflow_id": "flow-1",
+            "workspace": "/fixture/workspace"
+          }
+        ],
+        "worktree_quarantine": [
+          {
+            "entry_id": "quarantine-1",
+            "found_at": "2026-01-01T00:00:00.000+00:00",
+            "original_path": "/fixture/orphan",
+            "quarantined_path": null,
+            "reason": "synthetic orphan",
+            "status": "quarantined"
+          }
+        ],
+        "worktrees": [
+          {
+            "base_head": null,
+            "baseline_json": "{\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "cleanup_reason": null,
+            "created_at": "2026-01-01T00:00:00.000+00:00",
+            "delivered_at": null,
+            "delivery_journal_path": null,
+            "delivery_state": "none",
+            "path": "/fixture/state/proj/worktrees/task-worktree",
+            "removed_at": null,
+            "runtime_dir": null,
+            "server_endpoint": null,
+            "server_port": null,
+            "server_process_record": null,
+            "status": "created",
+            "task_id": "task-worktree",
+            "updated_at": null
+          }
+        ]
+      },
+      "schema": {
+        "active_writers": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "parallel",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "scopes_json",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "automation_runs": {
+          "columns": [
+            {
+              "dflt_value": "'run'",
+              "name": "control",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "document",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "run_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "events": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "message",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "meta": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "key",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "value",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "rounds": {
+          "columns": [
+            {
+              "dflt_value": "0",
+              "name": "attempted",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "checkpoint_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "error_code",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "kind",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "outbound_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "payload_hash",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "request_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "response_message_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "result_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "round_number",
+              "notnull": 1,
+              "pk": 2,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "structured_findings",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 1,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "verifier_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_deadline_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "worker_started_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        },
+        "tasks": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "allowed_paths",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "budget_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "close_requested_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'manual'",
+              "name": "delivery_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "depends_on",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "'direct'",
+              "name": "execution_mode",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_hash",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "profile_source",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "project_id",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": "0",
+              "name": "revision_count",
+              "notnull": 1,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "session_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "snapshot",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "test_commands",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workflow_id",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "workspace",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktree_quarantine": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "entry_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "found_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "original_path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "quarantined_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": []
+        },
+        "worktrees": {
+          "columns": [
+            {
+              "dflt_value": null,
+              "name": "base_head",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "baseline_json",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "cleanup_reason",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "created_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivered_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_journal_path",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "delivery_state",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "path",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "removed_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "runtime_dir",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_endpoint",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_port",
+              "notnull": 0,
+              "pk": 0,
+              "type": "INTEGER"
+            },
+            {
+              "dflt_value": null,
+              "name": "server_process_record",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "status",
+              "notnull": 1,
+              "pk": 0,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "task_id",
+              "notnull": 0,
+              "pk": 1,
+              "type": "TEXT"
+            },
+            {
+              "dflt_value": null,
+              "name": "updated_at",
+              "notnull": 0,
+              "pk": 0,
+              "type": "TEXT"
+            }
+          ],
+          "foreign_keys": [
+            {
+              "from": "task_id",
+              "id": 0,
+              "match": "NONE",
+              "on_delete": "NO ACTION",
+              "on_update": "NO ACTION",
+              "seq": 0,
+              "table": "tasks",
+              "to": "task_id"
+            }
+          ]
+        }
+      },
+      "version": 17
+    }
+  },
+  "fixture_version": 1,
+  "ownership_marker_template": {
+    "format_version": 1,
+    "implementation": "rust",
+    "project_id": "proj",
+    "state_root": "${ISOLATED_RUST_STATE}"
+  },
+  "source_commit": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc"
+}

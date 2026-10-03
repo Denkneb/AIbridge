@@ -33,25 +33,37 @@ Targeted checks:
 
 ## Источник истины и расхождение версий
 
-- Источник Python-контракта (READ-ONLY): `/home/denis/Python/agent_bridge`,
-  точный HEAD `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`
-  (`Add parallel worktree smoke checks`), чистый на момент согласования. При
-  другом HEAD версия источника должна быть пересмотрена и отмечена явно;
-  недоказанные claims не принимаются. Runtime Python SQLite/history не
-  читается, не импортируется и не изменяется.
-- Актуальная Python schema — **v15**: `storage.py:41 SCHEMA_VERSION = 15`,
-  `storage.py:42 MIGRATABLE_VERSIONS = (0..14)`,
-  `storage.py:72 SUPPORTED_SCHEMA_VERSIONS`.
+- Проверенный текущий источник (READ-ONLY): `/home/denis/Python/agent_bridge`,
+  HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc`
+  (`feat: add autonomous plan execution with Codex review`), рабочее дерево
+  чистое при сверке 2026-10-03. Текущая Python schema — **v17**
+  (`storage.py:41`); v16 добавляет frozen `tasks.delivery_mode`, v17 —
+  `automation_runs`. Изменения сверены по исходникам и Git diff, Python suite
+  в этой сверке не запускалась. Runtime SQLite/history не читались,
+  не импортировались и не изменялись.
+- **Зафиксированный контракт 0A остаётся v15**, HEAD
+  `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`.
+  `docs/contract-manifest.json` обновлён до v17 в 0B.1; fixtures 0A сохраняют
+  свой v15 pin. Config/permission delta 0B.2 и SQLite delta 0B.3 проверены отдельно;
+  MCP и runtime/automation delta 0B.4/0B.5 также завершены. Завершённые результаты 0A/1.6–1.7/2.10–2.12/3.12 относятся
+  именно к этому baseline; новые source line references ниже помечены v17,
+  старые line references читаются на frozen v15 commit.
+- Rust создаёт и открывает собственный **v15** state. Обновление плана само
+  по себе не расширяет schema guard: v16/v17 остаются неподдерживаемыми до
+  задач 3.13. Python migrations (0..16) не становятся Rust allowlist; upgrades
+  допускаются только для явно поддержанных Rust-owned contracts.
 - Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) опирается на **старый
   контракт schema v6**: исторический manifest до refresh,
   `docs/fixtures/sqlite/*-v6.sqlite` и `docs/fixtures/sqlite/expected.json`.
-  Актуальный `docs/contract-manifest.json` уже описывает reference v15.
+  Завершённый 0A manifest описывал v15; текущий manifest описывает v17,
+  historical fixture pins не переписаны.
   Эти этапы остаются честно завершённым **foundation v6**, а не паритетом с
   современным Python; их исторические описания сохраняются без переписывания.
 - Современный Python/Rust parity не заявлен. Все возможности Python после v6
   (structured findings, budgets, workflow/dependencies, checkpoints,
   worktree execution, executor profiles, parallel writers, quarantine,
-  delivery, diagnostics/hook, config migration) в Rust **не завершены**.
+  delivery, diagnostics/hook, config migration, on_accept и automatic plan
+  execution) в Rust **не завершены**.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
@@ -61,9 +73,31 @@ Targeted checks:
   **3.12d завершён** (writer reservations/scope admission/reconcile).
   **3.12e завершён** (worktrees/quarantine lifecycle).
   **3.12f завершён** (budget persistence/parse).
-  Ближайший шаг — **7.13 (structured findings validation)**,
-  далее потребители по зависимостям. Исторический шаг 7.7 больше не заблокирован
-  refresh-контрактом.
+  **0B.1 завершён** (manifest и source verification v17).
+  **0B.2 завершён** (config/permission delta fixtures, 87 source-parity cases).
+  **0B.3 завершён** (4 SQLite delta fixtures, actual v17 migration parity).
+  **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
+  **0B.5 завершён** (77 runtime/automation cases, без skips).
+  **Delta fixtures 0B завершены.** Ближайший шаг — **7.13
+  (Structured findings validation)**; новые v16/v17 задачи идут по зависимостям.
+  Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
+  permission контракты используют delta fixtures 0B.
+
+## Изменения reference после завершённого 0A (2026-10-03)
+
+Сверка `86c65b5..e52a461`: 3 коммита, 29 изменённых файлов. Это новый
+контракт v16/v17, а не только уточнение line numbers.
+
+| Коммит | Изменение | Задачи Rust |
+| --- | --- | --- |
+| `d298478` | on-accept delivery, state-directory permissions, atomic needs_user recovery | 1.8, 2.13–2.14, 3.13a–b, 3.15, 7.8, 7.10, 8.19–8.20, 9.18e |
+| `f7cae1a` | bounded manager-lock wait для worktree startup | 9.7a, 7.16b, 15.3 |
+| `e52a461` | approved plan, detached coordinator, Codex review, inherited checkout, schema17 | 3.13c, 3.14, поток 16, 15.5 |
+
+Delta реализация остаётся открытой; **0B.1–0B.5 завершены**: manifest v17,
+AST/source verification, config/permission, SQLite, MCP и runtime/automation delta corpora.
+Fixtures 0A и Rust implementation сохраняют v15 baseline. Contract delta
+refresh завершён; реализация потребителей продолжается с 7.13.
 
 ## Поток 0. Контрактная база
 
@@ -249,6 +283,138 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
 API/security policy не объединены в одну задачу. Только после этого
 начинаются schema/domain/config foundations, затем потребители.
 
+## Поток 0B. Refresh текущего reference до schema v17 (завершён)
+
+Это delta к завершённому 0A, с сохранением v6/v11/v14/v15 исторических
+fixtures и результатов. Python source доступен read-only; все тестовые БД,
+worktrees, configs и subprocess doubles создаются в synthetic Rust fixtures.
+
+### 0B.1. Manifest и source pin v17 (завершено)
+
+- **Цель:** зафиксировать HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc`,
+  CLI/config/MCP/storage delta и новые automation paths.
+- **Source:** `storage.py:41,190,1748,2114-2131`, `cli.build_parser`,
+  `config.ProjectConfig`, `automation.py`, `codex_client.py` (current v17).
+- **Приёмка:** schema17 target явно отделён от текущего Rust v15; delivery
+  config/task modes отделены от plan `delivery=apply|manual`; automation
+  inheritance/run id — внутренние inputs, не новые public MCP arguments.
+- **Результат:** manifest v17, `contract_baselines` явно отделяет Rust v15
+  и historical fixtures v15; 25 CLI commands, 6 public MCP tools, 8 tables и
+  6 indexes; frozen delivery policy, permission opt-in, lease recovery,
+  automation plan/run/provenance/review/delivery и private runtime paths.
+- **Проверки:** `python3 docs/verify_contract_manifest.py`: pinned clean source,
+  AST CLI/options/MCP signatures/defaults, config defaults, literal DDL в RAM
+  SQLite, exact columns/defaults/PK/FK/index predicates, Codex output schema и
+  runtime bounds. Negative checks: stale pin, missing CLI, missing delivery
+  column, wrong automation predicate, public automation input — reject.
+  Python app/suite/models/runtime state не запускались; historical SQLite
+  fixture verifier и diff check прошли. Открывает 0B.2–0B.5.
+
+### 0B.2. Config и permission fixtures (завершено)
+
+- **Цель:** defaults/invalid values для `delivery_mode` и
+  `auto_approve_state_directory`; controller и worker policy cases.
+- **Source:** `tests/test_config.py`, `tests/test_launchers.py`,
+  `tests/test_worker.py` (v17).
+- **Приёмка:** on_accept только worktree; state opt-in не расширяет trusted
+  external Git/linked-project roots; `/`, `*`, `?`, symlink/traversal/glob
+  escape отвергаются в соответствующих config/policy boundaries.
+- **Результат:** `docs/fixtures/config-permission-v17.json`, отдельный verifier
+  `docs/fixtures/config/verify_v17.py`; historical v15 corpora/pins сохранены.
+  87 cases: config35 + immutable1 + no-state-creation1 + controller6 +
+  worker42 + boundaries2. Реальные load_project/build_controller_config/
+  _permission_decision/load_linked_projects/validate_allowed_paths вызываются
+  только на synthetic temporary dirs/repos; SQLite/network запрещены,
+  bytecode выключен, source HEAD/import path/clean tree проверены.
+- **Проверки:** **87/87 source-parity cases, no skips**; negative harness
+  cases stale pin/duplicate ids/false escape allow/numeric bool reject,
+  manifest source verifier, historical SQLite verifier и diff check.
+  Rust config/security implementation не меняется. Depends on 0B.1;
+  открывает 2.13/2.14/7.8a/b. SQLite delta 0B.3 также завершён.
+
+### 0B.3. SQLite v16/v17 fixtures (завершено)
+
+- **Цель:** fresh17, additive Rust-owned v15→v16→v17 и intermediate16;
+  описание delivery default и automation partial unique index.
+- **Source:** `Storage.initialize`, `Storage._migrate`,
+  `tests/test_storage.py`, `tests/test_automation.py::test_schema_seventeen_upgrades_v16_additively`.
+- **Приёмка:** v15 fixtures не переписываются; legacy task backfill manual;
+  `automation_runs` и exact index predicate проверяются; ownership guards,
+  rollback и read-only inspection не ослабевают.
+- **Проверки:** SQLite schema/fixture verifier. Зависит от 0B.1.
+- **Результат:** отдельные `docs/fixtures/sqlite/delta/{fresh-v17,owned-v15,owned-v16,owned-v17}.sqlite`;
+  independent generator/expectations, immutable inspection и actual pinned
+  `Storage.initialize`/`_migrate` parity на temporary copies. Полная история,
+  event ids, extra meta и synthetic Rust ownership сохраняются; legacy manual,
+  explicit on_accept, exact automation expression/predicate/default проверены.
+  Failure injection после additive DDL доказывает rollback v15/v16 и успешный
+  retry; reinitialize идемпотентен, future18 отвергается, сети/runtime state нет.
+  Intermediate16 независимо построен: текущий Python мигрирует прямо в17.
+  Rust v16/v17 guards/migrations не реализованы и остаются задачами 3.13.
+- **Верификация:** оба delta verifiers прошли без skips; byte-identical повторная
+  generation; 4 negative harness cases (stale pin/history/predicate/sidecar)
+  отвергнуты; historical SQLite (5 fixtures), manifest и diff check прошли.
+  Подробнее: `docs/sqlite-fixtures.md`. MCP delta 0B.4 также завершён.
+
+### 0B.4. MCP delivery/recovery fixtures (завершено)
+
+- **Цель:** first/repeat accept, отказ/partial apply/current state,
+  zero-wait recovery, spawn lease и automation-managed actions.
+- **Source:** `tests/test_delivery_on_accept.py`, `tests/test_mcp.py`,
+  `tests/test_storage.py` (v17).
+- **Приёмка:** manual ответы сохраняются; accepted ≠ delivered; wait=0 может
+  восстановить needs_user, но не failed; concurrent claims дают один spawn;
+  unknown/state_unavailable и private-path redaction представлены явно.
+- **Проверки:** MCP source-parity corpus. Зависит от 0B.1.
+- **Результат:** отдельный `docs/fixtures/mcp-delivery-recovery-v17.json` и
+  `docs/fixtures/mcp/verify_v17.py`: 47/47 cases без skips (25 delivery,
+  15 MCP recovery, 5 storage claim/release, 2 managed-action guards).
+  Independent response projections/exact manual objects, exception types и spawn
+  counts сверены поверх actual pinned source integration scenarios; исходные
+  assertions дополнительно проверяют filesystem/history/lock effects.
+  Real temporary Git/SQLite, fake HTTP/model/spawn, запрет socket connections,
+  SQLite/Git confinement, bytecode/cache/plugins disabled, HEAD/clean-tree и
+  fixture hash guards; runtime state не читается. Три failed-terminal scenarios
+  используют явный healthy-server double, чтобы исключить live localhost probe.
+- **Верификация:** 47 passed; 5 negative corpus harness cases отвергнуты
+  (stale pin, duplicate, missing scenario, wrong spawn count, bool/int confusion).
+  JSON deterministic, manifest/SQLite/diff checks прошли; historical v15 MCP
+  corpus/verifier и Rust target v15 сохранены. Подробнее: `docs/mcp-fixtures.md`.
+  Runtime/automation delta 0B.5 также завершён; полный automation workflow
+  с обеими реальными моделями не заявлен.
+
+### 0B.5. Runtime/automation fixtures и границы доказательства (завершено)
+
+- **Цель:** bounded startup wait, strict plan/review schema, inherited
+  baseline, durable intents/control, review fingerprint и итоговая доставка.
+- **Source:** `tests/test_runtime.py`, `tests/test_worktree_runtime.py`,
+  `tests/test_automation.py`, `tests/test_codex_client.py` (v17).
+- **Приёмка:** runtime corpus отделяет startup serialization от concurrent
+  execution; automation fixtures используют model doubles и crash injection.
+  Source `docs/automatic-mode-plan.md:67–73` сообщает отдельный live Codex
+  prepare и OpenCode smoke (README ссылается на документ),
+  но полного real-model workflow на пользовательском проекте не доказывает.
+- **Проверки:** runtime/automation corpus; без запуска реальных моделей или
+  обращения к Python runtime state. Зависит от 0B.1.
+- **Результат:** `docs/fixtures/runtime-automation-v17.json` и
+  `docs/fixtures/runtime/verify_v17.py`: **77/77 без skips** (30 plan, 16 answer,
+  1 runtime bounds, 1 fake-child launch lease, 1 durable blocked run, 28 source
+  integration scenarios). Independent expectations проверяют plan/review gates,
+  persisted run/task/round/delivery inventories, engine/child/start counts.
+  Source asserts проверяют inherited baseline/scope, durable intents/crash
+  resume, review fingerprint, controls и final delivery. Runtime startup
+  serialization отделена от concurrent lifetime stand-in children.
+  Adapter использует temporary fake executable, timeout/cancel/exit checks;
+  настоящие модели/OpenCode/coordinator child не запускаются.
+- **Верификация:** 6 negative harness cases отвергнуты (pin/id/default/bound/
+  invalid accept/manual ready). SQLite/Git confinement, network connect guard,
+  tracked-child cleanup, fixture hashes/HEAD/clean-tree, bytecode/cache/plugins
+  disabled; manifest/historical SQLite/diff checks прошли. Restricted sandbox
+  сначала запретил socket port probes для 3 worktree scenarios; разрешённый
+  запуск вне sandbox прошёл все cases без подмены allocation/skip.
+  Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
+  **0B завершён; ближайшая задача — 7.13.**
+
 ## Поток 1. Rust foundation
 
 ### 1.1. Cargo workspace skeleton
@@ -348,6 +514,16 @@ Data model и serde compatibility без runtime logic.
   hashes, Unicode, inherited model, tampering, optional/legacy shapes, bounds,
   missing/unknown/malformed fields, duplicate dependencies и redaction;
   workspace/all-targets clippy, format и `git diff --check`.
+
+### 1.8. DeliveryMode (v16, не завершено)
+
+- **Цель:** typed `manual|on_accept`, historical default manual, раздельный
+  config parse и persisted normalization.
+- **Source:** `config._parse_delivery_mode`, `storage._normalize_delivery_mode` (v17).
+- **Приёмка:** config unknown/non-string/whitespace fail closed; persisted
+  absent/corrupt value деградирует в manual, как Python, и никогда не включает
+  автоматическую доставку. Это отличается от strict budget parsing.
+- **Проверки:** table-driven enum/normalization tests. Зависит от 0B.1.
 
 ## Поток 2. Конфигурация
 
@@ -461,6 +637,24 @@ Data model и serde compatibility без runtime logic.
 **Готовность потока:** весь config corpus совпадает с Python семантически;
 новые persisted-настройки (execution_mode, admission defaults, profiles) имеют
 собственные узкие задачи до потребителей.
+
+### 2.13. State-directory approval opt-in (не завершено)
+
+- **Цель:** boolean `auto_approve_state_directory`, default false.
+- **Source:** `config._parse_auto_approve_state_directory`,
+  `state_directory_permission_pattern` (v17).
+- **Приёмка:** real bool only; opt-in требует narrowly scoped state root,
+  запрещает `/` и wildcard characters `*|?`; trusted external Git roots не
+  меняются. Здесь только config validation; worker/controller — 7.8a/b.
+- **Проверки:** config fixtures. Зависит от 0B.2. Открывает 7.8a/b.
+
+### 2.14. delivery_mode config (v16, не завершено)
+
+- **Цель:** manual default; on_accept разрешён только с execution_mode=worktree.
+- **Source:** `config._parse_delivery_mode`, `load_all_projects` (v17).
+- **Приёмка:** strict type/enum/whitespace и cross-field checks; config не
+  меняет policy уже созданной задачи.
+- **Проверки:** delivery-mode config fixtures. Зависит от 1.8, 0B.2.
 
 ## Поток 3. SQLite storage
 
@@ -855,9 +1049,60 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12d завершён** (writer reservations/scope admission/reconcile);
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
-  ближайшая задача — **7.13** (structured findings validation);
+  **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
+  ближайшая задача — **7.13**;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
-  новые возможности v7–v15 в Rust не завершены.
+  новые возможности v7–v17 в Rust не завершены.
+
+### 3.13. Schema v16/v17 extension (не завершено)
+
+Завершённый 3.12 остаётся foundation v15. Каждый шаг здесь сохраняет sidecar,
+namespace, meta/runtime_owner и Rust/Python isolation guards; поддержка новых
+версий появляется только с проверенным полным schema contract.
+
+- **3.13a. Additive schema16.** `tasks.delivery_mode TEXT NOT NULL DEFAULT
+  'manual'`; fresh target16 и Rust-owned v15→16, historical supported upgrades
+  доводятся до нового target без потери строк. Read-only v15 не мигрируется.
+  Source: `Storage._migrate` (v17). Checks: defaults/row preservation,
+  exact contract, ownership и transactional failure. Depends on 0B.3.
+- **3.13b. Frozen delivery policy persistence.** Mapping/create/replay/read-only
+  читают эффективный task mode; existing rows manual, new rows получают
+  submit-time config. Live config не влияет на repeat accept. Source:
+  `Storage.create_task_with_round`, `_row_to_task`, `_row_to_task_readonly`,
+  `_normalize_delivery_mode`. Checks: legacy/default/frozen/replay/corrupt
+  normalization. Depends on 3.13a, 1.8. Opens 8.19a.
+- **3.13c. Additive schema17.** `automation_runs(run_id,status,control,document,
+  created_at,updated_at)`, control default run; unique expression index
+  `ux_automation_unfinished ON automation_runs((1)) WHERE status NOT IN
+  ('completed','ready','stopped')`. Fresh17 и Rust-owned16→17; paused/blocked
+  удерживают unfinished slot. Checks: exact DDL/default/predicate, guard,
+  migration rollback, preserved task/delivery rows. Depends on 3.13a, 0B.3.
+
+### 3.14. Automation run storage (v17, не завершено)
+
+- **Цель:** create/load/latest/save/control, typed run identity/status/control
+  и persisted document, один unfinished run на project DB. Run statuses:
+  running/paused/blocked/completed/ready/stopped; control: run/pause/stop.
+- **Source:** `automation.RunStore:158-230` (v17).
+- **Приёмка:** read-only load не создаёт state; UUID/document identity
+  проверяются; unsupported/corrupt state возвращает error; terminal controls
+  отвергаются; repeated/concurrent create не обходят unique fence.
+- **Проверки:** storage CRUD/readonly/rollback/race fixtures.
+- **Зависит от:** 3.13c, 0B.5. Открывает поток 16.
+
+### 3.15. Atomic needs_user recovery claim/release (не завершено)
+
+- **Цель:** сохранить текущий round, взять spawn claim и снять его при
+  failed spawn только по совпадающей lease.
+- **Source:** `Storage.claim_needs_user_recovery:2994-3080`,
+  `release_needs_user_recovery:3079-3124` (v17).
+- **Приёмка:** ровно один caller переводит task в implementing/revising;
+  parked needs_user round → observing, pending round остаётся pending;
+  worker_started_at/event атомарны. Close-request gate; no new round,
+  revision_count/outbound message не меняются. Lease overwritten by started
+  worker не откатывается. Это API поверх существующих полей, без новой DDL.
+- **Проверки:** claim/release/concurrency/rollback/no-resend storage tests.
+- **Зависит от:** 0B.4, 3.9, 3.12d. Открывает 7.10a/b, 8.20.
 
 ## Поток 4. Security и Git
 
@@ -2452,9 +2697,34 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
 
 ### 7.8. Auto-approval integration
 
+- **7.8a. Worker state-directory permissions (не завершено).**
+  `_external_permission_roots` добавляет opt-in state_root только к permission
+  checks, не к external Git/linked roots. Literal/glob/symlink/traversal
+  confinement сохраняется; default false — прежнее поведение. Source:
+  `worker.py:868-916` (v17). Checks: `tests/test_worker.py` state approval
+  cases. Depends on 2.13, 6.7, 0B.2.
+- **7.8b. Controller permissions (не завершено).** Generated OpenCode config:
+  external_directory `*→ask`, `<state_root>/*→allow` при opt-in; edit/task deny
+  и bash ask сохраняются. Source: `opencode_launcher.controller_agent_permission`
+  (v17). Checks: `tests/test_launchers.py`; unsupported pattern fail closed.
+  Depends on 2.13, 0B.2, 9.13.
+
 ### 7.9. Failed/delivery_unknown
 
 ### 7.10. Continuation recovery
+
+- **7.10a. Recovery spawn lease/probes (не завершено).** Task+project lock
+  probes сериализуются внутри процесса, исключая ложный busy от двух probe;
+  startup grace закрывает spawn-before-worker-lock window, expired lease
+  допускает crash recovery. Source: `mcp_server._task_worker_running`,
+  `_spawn_lease_pending`, `_maybe_spawn` (v17). Checks: concurrent probes,
+  lease expiry и mark_worker_started overwrite. Depends on 3.15, 7.2.
+- **7.10b. Resume existing session (не завершено).** Explicit needs_user
+  recovery проверяет endpoint identity, claim/spawn/release; observation
+  delivered round без повторного prompt. Background/review actions сохраняют
+  blocker gate. Source: `mcp_server._maybe_spawn` (v17).
+  Checks: spawn failure, live/dead server, stale/real blockers/no-resend.
+  Depends on 7.10a, 6.2, 6.6. Opens 8.20.
 
 ### 7.11. Verification integration
 
@@ -2532,8 +2802,12 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
     `mcp_server.py:2259-2378,2502-2523`.
   - **Критерии приёмки:** runtime files вне checkout; чужой checkout fail
     closed.
-  - **Targeted checks:** worktree_runtime tests.
-  - **Зависит от:** 7.16a, 6.1. **Открывает:** 7.16c, 15.2.
+  - **Delta v17:** startup берёт manager lock с bounded wait 60s
+    (`3 * READY_TIMEOUT`, READY_TIMEOUT=20s); lock timeout происходит до
+    spawn/reservation/record. Runtime files/identity checks остаются под lock.
+    Source: `worktree_runtime.start_worktree_server:450-485` (v17).
+  - **Targeted checks:** worktree_runtime concurrency/timeout/cleanup tests.
+  - **Зависит от:** 7.16a, 6.1, 9.7a. **Открывает:** 7.16c, 15.2.
 - **7.16c. Revision reuse и verifier/change collection cwd.**
   - **Цель:** revision reuse checkout + verifier/change collection cwd.
   - **Source evidence:** `worker.py:344-490,1366-1529`; `git_worktree.py`.
@@ -2731,6 +3005,38 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
 
 Одна tool-задача содержит только один handler и его contract fixtures.
 
+### 8.19. On-accept delivery MCP (v16, не завершено)
+
+- **8.19a. Accept orchestration.** Task-frozen on_accept policy. Lock order:
+  project worker → task lifecycle → admission; admission берётся до server stop
+  и accepted/reservation release и удерживается через build/apply. Busy first
+  accept оставляет awaiting_review; other writer fence действует после release
+  собственного reservation. Source: `mcp_server._accept_awaiting_review`,
+  `_accepted_result`, `_accept_already_accepted`, `_retry_on_accept_locked`
+  (v17). Already-delivered repeat — read-only, manual/direct repeat сохраняет
+  прежний ответ без locks. Checks: `tests/test_delivery_on_accept.py` first/
+  repeat/busy/live-config/crash cases. Depends on 3.13b, 2.14, 9.18e, 0B.4.
+- **8.19b. Status/refusal surfaces.** Frozen delivery_mode в task result,
+  project_info config mode; pending/refused/applying/delivered summary с
+  последней попыткой, реальный persisted state. OSError/SQLite failure после
+  accept → accepted + refusal (`delivery_io_error`/`state_unavailable`),
+  unreadable state → unknown, private absolute paths редактируются. Process
+  termination/crash injection не маскируются. Source: `_delivery_summary`,
+  `_auto_delivery_payload`, `_delivery_failure_detail` (v17). Checks: I/O,
+  partial apply, stale refusal, state read failure и redaction. Depends on
+  8.19a. Opens 12.16.
+
+### 8.20. task_status explicit recovery (не завершено)
+
+- **Цель:** wait_seconds=0 делает один needs_user recovery attempt и возвращает
+  фактический persisted implementing/revising/awaiting_review/needs_user status.
+- **Source:** `mcp_server.task_status_impl:2120-2300` (v17).
+- **Приёмка:** проигравший claim re-reads task; repeated/concurrent calls не
+  spawn duplicate в lease window. Failed recovery требует positive wait;
+  review/background opt out сохраняют gate. No prompt resend/auto permission.
+- **Проверки:** zero-wait/concurrent recovery MCP fixtures.
+- **Зависит от:** 7.10b, 0B.4.
+
 ## Поток 9. Runtime CLI
 
 ### 9.1. CLI parser и общие flags
@@ -2739,6 +3045,9 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
 
 ### 9.3. `doctor`
 
+Delta v17: вывод execution/delivery modes из validated config
+(`cli.cmd_doctor`); добавить output fixtures после 2.14.
+
 ### 9.4. `serve-opencode`
 
 ### 9.5. `serve-mcp` и `mcp`
@@ -2746,6 +3055,14 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
 ### 9.6. Process ownership и pidfd primitives
 
 ### 9.7. `start` одного проекта
+
+- **9.7a. Optional bounded manager-lock wait (не завершено).** Canonical sorted
+  roots, all-or-nothing nonblocking acquisition, monotonic deadline и poll
+  backoff 20ms..200ms; все fd закрываются при timeout/error/interrupt.
+  Обычные start/status/stop сохраняют wait=0; только worktree startup задаёт
+  timeout. Source: `runtime._try_acquire_locks`, `_manager_lock:292-332`
+  (v17). Checks: `tests/test_runtime.py` wait/acquire/timeout/default tests.
+  Depends on 0B.5, 9.6. Opens 7.16b.
 
 ### 9.8. Multi-project start и rollback
 
@@ -2842,6 +3159,15 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
   - **Критерии приёмки:** deliver blocked при active/reserved writer.
   - **Targeted checks:** delivery writer-gate tests.
   - **Зависит от:** 7.17d, 9.18a.
+
+- **9.18e. Automatic build/apply wrapper (не завершено).** Reuse существующего
+  materializer: none — build artifact if missing + apply, applying — resume
+  journal без rebuild, delivered — no-op. Accepted task/artifact/checkout
+  остаются доступны после отказа, partial apply без rollback. Helper сам не
+  берёт locks, caller держит lifecycle/admission. Source:
+  `delivery.run_auto_delivery:1158-1205` (v17). Checks:
+  `tests/test_delivery_on_accept.py`, existing crash injection. Depends on
+  9.18c/d, 0B.4. Opens 8.19a.
 
 ### 9.19. Runtime status/diagnostics/hook/console (не завершено)
 
@@ -2979,6 +3305,14 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 **Готовность потока:** паритет с curses dashboard, UI read-only.
 
+### 12.16. Delivery и automation run cards (не завершено)
+
+- **Цель:** read-only delivery state/last refusal и run/step/control/blocker
+  progress, distinct ready/completed.
+- **Приёмка:** accepted не отображается как delivered; applying и unknown
+  честные; private logs/credentials/path metadata не раскрываются.
+- **Проверки:** card model fixtures. Depends on 8.19b, 16.9.
+
 ## Поток 13. Embedded terminal
 
 ### 13.1. Выбор terminal engine
@@ -3086,9 +3420,10 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   released.
 - **Критерии приёмки:** staggered startup + model rendezvous доказывают
   **concurrent execution**, не simultaneous start. Production worktree runtime
-  одновременно сериализует START task servers nonblocking `runtime.lock`,
-  поэтому collision может fail; smoke ждёт первый `server_port` перед вторым
-  submit. Depends on 7.17b.
+  сериализует START task servers через `runtime.lock`. Delta v17: bounded
+  startup wait снижает кратковременные collision, timeout всё ещё может fail;
+  текущий staggered smoke сам по себе не доказывает simultaneous startup.
+  Добавить отдельный concurrent-start lock test. Depends on 7.17b, 9.7a.
 
 ### 15.4. Explicit local service lifecycle и полная CI matrix
 
@@ -3096,6 +3431,138 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   (существующие 9.2/9.3/9.7–9.10) и полный Rust workspace test/clippy, все v15
   fixtures verifier-ы, compatibility smoke direct/worktree/parallel.
   Запускается только на границе потока/в CI, не внутри каждой задачи.
+
+### 15.5. Automation workflow proof (не завершено)
+
+- **Цель:** synthetic multi-step Git workflow с deterministic model doubles,
+  production verifier/lifecycle/materializer; отдельно optional live proof.
+- **Приёмка:** crash после submit/revision/accept не дублирует операции;
+  predecessor inheritance/current-step scope, stale review, failed checks,
+  pause/stop/resume/limits и refusal/retry final delivery покрыты. Full real
+  Codex+OpenCode run отмечается только при отдельном фактическом запуске.
+- **Source:** `tests/test_automation.py`, `tests/test_codex_client.py` (v17).
+- **Зависит от:** поток 16, 15.2, 0B.5.
+
+## Поток 16. Approved automatic plan execution (v17, не завершён)
+
+Source: `automation.py`, `automation_checkout.py`, `codex_client.py`,
+`docs/automatic-mode-plan.md`, `docs/automatic-plan.example.json` (v17).
+Один проект, последовательный topological order; отдельный existing task и
+worktree на шаг. Approval — явный launch-codex --auto --plan, scope/criteria/
+limits не расширяются по модельному ответу. Автоматизация принудительно
+использует worktree + task delivery_mode=manual; plan delivery=apply|manual
+управляет только итоговой доставкой. Никакого auto commit/push/deploy.
+
+### 16.1. Approved plan validation
+
+- **Контракт:** version1/known keys, 1..100 safe unique steps, acyclic known
+  dependencies, relative authorized scopes, безопасные nonempty step/final
+  test commands, acceptance criteria/profile. max_seconds 1..604800,
+  max_revisions 1..20, codex_timeout 1..3600; type bool вместо int запрещён.
+- **Source:** `automation.validate_plan:41-155`.
+- **Приёмка:** invalid plan отвергается до создания run/state; нормализованный
+  порядок детерминирован. Checks: invalid-plan fixtures. Depends on 0B.5,
+  2.12, path/command policies.
+
+### 16.2. Run creation/binding
+
+- **Контракт:** project/config hash/workspace/origin fingerprint фиксируются;
+  clean main repo, no unfinished tasks и worktree repo support обязательны.
+  Под automation + admission lock создаётся run и final integration step с
+  union scopes/approved final commands.
+- **Source:** `automation.create_run:240-291`, `_binding`.
+- **Приёмка:** concurrent creation допускает один unfinished run; drift
+  config/main блокирует дальнейшие шаги. Checks: create/binding/drift cases.
+  Depends on 16.1, 3.14, 7.17a, 7.16a.
+
+### 16.3. Read-only Codex process adapter
+
+- **Контракт:** prepare/review schema, `codex exec` read-only, ignore user
+  config, multi_agent disabled; argv без shell, private schema/result/log,
+  timeout/cancellation/process-group termination, bounded log/result.
+  Ответы строго валидируются: accept без findings, request_changes с findings.
+- **Source:** `codex_client.py:20-180`.
+- **Приёмка:** malformed/nonzero/timeout/cancel не допускают accept; model
+  output не меняет scope/criteria/permissions и не считается trusted evidence.
+- **Checks:** subprocess doubles/structured output tests. Depends on 0B.5,
+  process ownership primitives. No real model invocation в unit suite.
+
+### 16.4. Inherited accepted checkout
+
+- **Контракт:** parent accepted + same workflow/base/common repo; artifact
+  owner/entries/fingerprint проверяются до/после inheritance. Symlink
+  ancestors/target conflicts отвергаются; итоговый manifest совпадает с parent.
+  Baseline нового checkout снимается после inheritance. Текущий step scope
+  проверяется отдельно от cumulative artifact/delivery scope; prompt сохраняет
+  inherited accepted files.
+- **Source:** `automation_checkout.inherit_checkout:8-57`,
+  `worker._resolve_worktree_context`, `prompts._git_rules`, `delivery.run_delivery`.
+- **Checks:** inherited files/tampering/scope/Git baseline tests. Depends on
+  7.16c, 9.18a/c, 0B.5.
+
+### 16.5. Detached coordinator lifecycle
+
+- **Контракт:** automation.lock + process record/run/project/workspace binding,
+  pid/start identity и launch lease; private supervisor log вне checkout.
+  Concurrent launch/resume отказывает до изменения состояния run.
+- **Source:** `automation.project_lock:295-316`, `launch:752-799`.
+- **Checks:** duplicate supervisor/stale identity/failed spawn/crash fixtures.
+  Depends on 3.14, 9.6, 16.2.
+
+### 16.6. Internal MCP provenance и managed revisions
+
+- **Контракт:** inherit_task_id/fingerprint/run id входят в internal submit
+  hash/snapshot; public MCP wrapper их не принимает. Parent accepted/same
+  workflow/worktree проверяется. request_changes постороннего caller для
+  managed task → automation_managed; coordinator использует pinned run id.
+- **Source:** `mcp_server.submit_task_impl:2359-2744`,
+  `request_changes_impl:2898-2937`.
+- **Checks:** parent mismatch/public-wrapper/hash replay/managed revision cases.
+  Depends on 8.14, 8.17, 8.18, 16.2, 16.4.
+
+### 16.7. Durable sequential coordinator
+
+- **Контракт:** prepare→submit→active→revise/accept→accepted, затем deliver.
+  Intent/request id сохраняется до submit/revision; existing request replay
+  закрывает crash-before-task-id-save. Bounded elapsed/revision/Codex retries;
+  unresolved question/permission/server/limit/model error → persisted blocked.
+- **Source:** `automation.Coordinator:410-750`.
+- **Checks:** crashes at phase boundaries, no duplicate outbound prompt,
+  revision limit/invalid review/blocker fixtures. Depends on 16.3, 16.5,
+  16.6, 16.8, 7.10b, verifier integration 7.11.
+
+### 16.8. Independent acceptance gate
+
+- **Контракт:** approved step scope, immutable HEAD/index, exact current round,
+  current passed verifier before=after=current fingerprint, no side effects,
+  all approved commands successful. Saved positive review of same fingerprint
+  required; public accept тоже проверяет managed run/control/phase.
+- **Source:** `automation.acceptance_checks:338-371`,
+  `automatic_acceptance_error:374-407`, `mcp_server._accept_awaiting_review`.
+- **Приёмка:** stale/changed/missing/failed evidence не принимает задачу;
+  accept только в running/control=run. Checks: MCP bypass/stale review/scope.
+  Depends on 16.6, 7.11, 8.7. Opens 16.7.
+
+### 16.9. CLI controls и recovery
+
+- **Контракт:** launch-codex --auto --plan, automation-status/pause/resume/stop,
+  private automation-worker. Plan file bounded 1MB; --plan требует --auto.
+  Pause сохраняет текущую фазу; resume явный после blocker/crash, stop
+  завершает existing tasks через cooperative close. Coordinator cancellation
+  прерывает read-only Codex call; terminal run не resume/не control.
+- **Source:** `cli.py:575-591,1452-1526`, `Coordinator.tick/run`.
+- **Checks:** detached terminal exit, control during review/startup, stop
+  paused/blocked run, cooperative task close. Depends on 16.5, 16.7, 7.12.
+
+### 16.10. Final verification/delivery
+
+- **Контракт:** final integration task проходит тот же verifier/review gate;
+  accepted cumulative artifact относительно original main. Final fingerprint
+  проверяется; existing materializer/apply под admission lock с crash resume.
+  plan delivery=manual → ready, completed только после durable delivered.
+- **Source:** `Coordinator._deliver:686-704`, `delivery.run_delivery`.
+- **Checks:** final failure/drift/partial apply/retry/manual-ready cases.
+  Depends on 16.7, 9.18c/d, 16.4. Opens 15.5, 12.16.
 
 ## Ограничения Python и честный статус
 
@@ -3108,31 +3575,45 @@ improvement**. Limitation не выдаётся за реализованное 
   closed (`git_worktree.py:455-497`); env/dependency setup и
   cherry-pick/merge — `docs/worktree-execution-design.md` §9 «Инкремент 3
   (отложенный)» (`:1238-1262`).
-- **Full patch archival/A2A/auto scheduler/accept/merge/push не implemented.**
-  A2A adapter отложен (`docs/a2abridge-improvement-plan.md` «Отложенные
-  возможности»); `deliver-task` намеренно не MCP tool и не auto-apply; auto
-  scheduler/auto-accept/auto-merge отсутствуют
-  (`docs/executor-profiles-design.md` §10, `:1120`).
-- **Production worktree runtime.** `runtime._manager_lock` (`runtime.py:252-263`)
-  неблокирующе сериализует START task servers; collision может fail. Smoke
-  доказывает concurrent execution через staggered startup + model rendezvous,
-  а не simultaneous start.
-- **Delivery proof.** `deliver-task` покрыт unit/git-fixture/crash-injection
-  (`tests/test_delivery.py`), live-runtime proof отсутствует
-  (`docs/a2abridge-improvement-plan.md` «Ограничения и отложенное»).
+- **A2A/full patch archival/auto merge/commit/push/deploy остаются deferred.**
+  Прежнее «auto scheduler/auto-accept/auto-apply отсутствуют» относится к
+  frozen v15: current v17 реализует approved sequential coordinator и v16
+  on_accept delivery. Это opt-in, а не безусловный общий background scheduler;
+  `deliver-task` по-прежнему отдельный CLI, не public MCP tool.
+- **Production startup serialization.** Current v17 manager lock имеет
+  bounded wait для worktree startup (60s); обычные start/status/stop остаются
+  nonblocking. Staggered parallel smoke доказывает concurrent execution,
+  concurrent-start lock tests — очередь startup, не simultaneous spawn.
+- **Proof boundary.** Новые `test_delivery_on_accept`, `test_automation` и
+  `test_codex_client` проверяют refusal/crash/recovery/model doubles. Python
+  docs сообщают live Codex prepare и OpenCode worktree smoke; full workflow
+  с обеими реальными моделями на пользовательском проекте не заявлен и в
+  этой source-сверке не запускался. 0B.4/0B.5 исполнили выбранные isolated
+  source scenarios и независимые expectations; это не live-model evidence.
 - **Historical defaults и isolation не ослабевают:** `max_active_tasks=1` и
   `allow_parallel_writers=false` остаются default; `execution_mode='direct'`
   default; Python/Rust state не смешиваются.
 
 ## Порядок и готовность
 
-1. **Поток 0A, domain 1.6/1.7, config 2.10–2.12 и storage 3.12a–3.12f завершены. Ближайшая задача — 7.13: structured findings validation.**
-2. Storage foundations 3.12 завершены; далее потребители (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15).
-3. **Все новые возможности (v7–v15) в Rust НЕ завершены**; завершены только
-   0–6 и 7.1–7.6 как foundation старого контракта v6, плюс pure-domain 1.6/1.7
-   и config 2.10–2.12/storage 3.12a–3.12f по v15-контракту. 7.6 accepted сохраняется.
-4. Следующий незавершённый исторический шаг 7.7 (Question blocker) выполняется
-   после завершённого 0A; порядок и зависимости новых задач — по ссылкам выше.
+1. **Завершённый baseline:** 0A, domain1.6/1.7, config2.10–2.12,
+   storage3.12a–f по frozen v15. **0B.1 завершён** (v17 manifest).
+   **0B.2 завершён** (87 config/permission cases).
+   **0B.3 завершён** (4 SQLite delta fixtures и migration parity).
+   **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
+   **0B.5 завершён** (77 runtime/automation cases).
+   **Ближайшая задача — 7.13**; delta fixtures refresh завершён.
+2. После delta fixtures продолжить 7.13 и потребителей existing v15
+   (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
+   schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;
+   recovery corrections 7.10/8.20 и startup wait 9.7a включены в свои потоки.
+3. On_accept 9.18e/8.19 зависит от existing crash-safe materializer и locks;
+   автономный поток16 — от worktree/lifecycle/verifier/MCP/delivery. Не
+   подменять эти prerequisites одним большим automation PR.
+4. **Modern v7–v17 parity не завершён.** Rust runtime/storage target остаётся
+   v15 до 3.13; завершённые задачи не переименовываются в v17-реализацию.
+   Исторический 7.7 остаётся следующим незавершённым foundation v6 шагом;
+   для затронутых новым source контрактов сначала соответствующие 0B fixtures.
 
 ## Экономия контекста
 

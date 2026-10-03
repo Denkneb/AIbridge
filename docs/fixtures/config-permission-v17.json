@@ -1,0 +1,1295 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "external_git_scope": null,
+        "external_roots": [],
+        "linked_projects": [],
+        "permission_state": true,
+        "state_git_scope": "outside_trusted_directories"
+      },
+      "id": "boundaries-state-permission-only",
+      "operation": "boundaries",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "external_git_scope": [
+          "${EXTERNAL}/file.py"
+        ],
+        "external_roots": [
+          "${EXTERNAL}"
+        ],
+        "linked_projects": [
+          "external"
+        ],
+        "permission_state": true,
+        "state_git_scope": "outside_trusted_directories"
+      },
+      "id": "boundaries-state-plus-external",
+      "operation": "boundaries",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true\nauto_approve_external_directories=[\"${EXTERNAL}\"]"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": true,
+        "delivery_mode": "on_accept",
+        "execution_mode": "worktree",
+        "external_roots": []
+      },
+      "id": "config-combined-on-accept-state",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"on_accept\"\nauto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-defaults-direct",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "worktree",
+        "external_roots": []
+      },
+      "id": "config-defaults-worktree",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\""
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-array",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=[]"
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-boolean",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=true"
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-float",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=0.8"
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-integer",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=1"
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-table",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode={}"
+    },
+    {
+      "expect": {
+        "error": "delivery_type"
+      },
+      "id": "config-delivery-type-zero",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=0"
+    },
+    {
+      "expect": {
+        "error": "delivery_value"
+      },
+      "id": "config-delivery-value-empty",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"\""
+    },
+    {
+      "expect": {
+        "error": "delivery_whitespace"
+      },
+      "id": "config-delivery-value-leading",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\" manual\""
+    },
+    {
+      "expect": {
+        "error": "delivery_whitespace"
+      },
+      "id": "config-delivery-value-tab",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"on_accept\\t\""
+    },
+    {
+      "expect": {
+        "error": "delivery_whitespace"
+      },
+      "id": "config-delivery-value-trailing",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"on_accept \""
+    },
+    {
+      "expect": {
+        "error": "delivery_value"
+      },
+      "id": "config-delivery-value-unknown",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"auto\""
+    },
+    {
+      "expect": {
+        "error": "delivery_value"
+      },
+      "id": "config-delivery-value-uppercase",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"ON_ACCEPT\""
+    },
+    {
+      "expect": {
+        "delivery_mode_immutable": true,
+        "state_approval_immutable": true
+      },
+      "id": "config-immutable",
+      "operation": "immutable",
+      "state_root": "${STATE}",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-manual-direct",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"direct\"\ndelivery_mode=\"manual\""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "worktree",
+        "external_roots": []
+      },
+      "id": "config-manual-worktree",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"manual\""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": true,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-no-created-state",
+      "operation": "no_state_creation",
+      "state_root": "${TMP}/not-created",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "error": "delivery_requires_worktree"
+      },
+      "id": "config-on-accept-default-direct",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "delivery_mode=\"on_accept\""
+    },
+    {
+      "expect": {
+        "error": "delivery_requires_worktree"
+      },
+      "id": "config-on-accept-explicit-direct",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"direct\"\ndelivery_mode=\"on_accept\""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "on_accept",
+        "execution_mode": "worktree",
+        "external_roots": []
+      },
+      "id": "config-on-accept-worktree",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "execution_mode=\"worktree\"\ndelivery_mode=\"on_accept\""
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-state-disabled-filesystem",
+      "operation": "config",
+      "state_root": "/",
+      "toml_extra": "auto_approve_state_directory=false"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-state-disabled-question",
+      "operation": "config",
+      "state_root": "${TMP}/st?ate",
+      "toml_extra": "auto_approve_state_directory=false"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-state-disabled-star",
+      "operation": "config",
+      "state_root": "${TMP}/st*ate",
+      "toml_extra": "auto_approve_state_directory=false"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": false,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-state-false",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=false"
+    },
+    {
+      "expect": {
+        "auto_approve_state_directory": true,
+        "delivery_mode": "manual",
+        "execution_mode": "direct",
+        "external_roots": []
+      },
+      "id": "config-state-true",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-array",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=[]"
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-float",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=0.0"
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-integer",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=1"
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-string-false",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=\"false\""
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-string-true",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=\"true\""
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-table",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory={}"
+    },
+    {
+      "expect": {
+        "error": "state_type"
+      },
+      "id": "config-state-type-zero",
+      "operation": "config",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=0"
+    },
+    {
+      "expect": {
+        "error": "state_root"
+      },
+      "id": "config-state-unsafe-filesystem",
+      "operation": "config",
+      "state_root": "/",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "error": "state_wildcard"
+      },
+      "id": "config-state-unsafe-question",
+      "operation": "config",
+      "state_root": "${TMP}/st?ate",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "error": "state_wildcard"
+      },
+      "id": "config-state-unsafe-star",
+      "operation": "config",
+      "state_root": "${TMP}/st*ate",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "error": "state_root"
+      },
+      "id": "controller-bypassed-config-unsafe-filesystem",
+      "operation": "controller",
+      "override_approval": true,
+      "override_state_root": "/",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "error": "state_wildcard"
+      },
+      "id": "controller-bypassed-config-unsafe-question",
+      "operation": "controller",
+      "override_approval": true,
+      "override_state_root": "${TMP}/st?ate",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "error": "state_wildcard"
+      },
+      "id": "controller-bypassed-config-unsafe-star",
+      "operation": "controller",
+      "override_approval": true,
+      "override_state_root": "${TMP}/st*ate",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "external_roots": [],
+        "permission": {
+          "bash": "ask",
+          "edit": "deny",
+          "external_directory": {
+            "${CUSTOM}/*": "allow",
+            "*": "ask"
+          },
+          "task": "deny"
+        },
+        "subagent_depth": 0
+      },
+      "id": "controller-custom",
+      "operation": "controller",
+      "state_root": "${CUSTOM}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "external_roots": [],
+        "permission": {
+          "bash": "ask",
+          "edit": "deny",
+          "task": "deny"
+        },
+        "subagent_depth": 0
+      },
+      "id": "controller-default",
+      "operation": "controller",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=false"
+    },
+    {
+      "expect": {
+        "external_roots": [],
+        "permission": {
+          "bash": "ask",
+          "edit": "deny",
+          "external_directory": {
+            "${STATE}/*": "allow",
+            "*": "ask"
+          },
+          "task": "deny"
+        },
+        "subagent_depth": 0
+      },
+      "id": "controller-enabled",
+      "operation": "controller",
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-both-external",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${EXTERNAL}/sub"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true\nauto_approve_external_directories=[\"${EXTERNAL}\"]"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-both-outside",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${OUTSIDE}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true\nauto_approve_external_directories=[\"${EXTERNAL}\"]"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-both-state",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true\nauto_approve_external_directories=[\"${EXTERNAL}\"]"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-broken-link",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/broken/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "broken_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-class",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/[p]roj/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-custom-root",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${CUSTOM}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${CUSTOM}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-descendant",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "missing_external_targets"
+      },
+      "id": "worker-empty-patterns",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-external-only-state-denied",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_external_directories=[\"${EXTERNAL}\"]"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-file-glob",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj/*.txt"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-file-literal",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj/fixture.txt"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-filesystem",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "/"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-filesystem-glob",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-loop-link",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/loop/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "loop_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "malformed_external_targets"
+      },
+      "id": "worker-metadata-malformed",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "metadata": {
+          "directories": "${STATE}/proj"
+        },
+        "patterns": [
+          "${STATE}/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-metadata-outside",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "metadata": {
+          "directories": [
+            "${OUTSIDE}"
+          ]
+        },
+        "patterns": [
+          "${STATE}/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-missing",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/missing"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "missing_request_id"
+      },
+      "id": "worker-missing-id",
+      "operation": "worker",
+      "permission": {
+        "patterns": [
+          "${STATE}"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-mixed-targets",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj",
+          "${OUTSIDE}"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "malformed_patterns"
+      },
+      "id": "worker-non-list-patterns",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": "${STATE}",
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-nul",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj\u0000"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "not_configured"
+      },
+      "id": "worker-ordinary-bash",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "fixture"
+        ],
+        "permission": "bash"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "not_configured"
+      },
+      "id": "worker-ordinary-edit",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "fixture"
+        ],
+        "permission": "edit"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "not_configured"
+      },
+      "id": "worker-ordinary-read",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "fixture"
+        ],
+        "permission": "read"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "not_configured"
+      },
+      "id": "worker-ordinary-task",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "fixture"
+        ],
+        "permission": "task"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-outside",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${OUTSIDE}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-parentdir-shape",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "metadata": {
+          "filepath": "${STATE}/proj/fixture.txt",
+          "parentDir": "${STATE}/proj"
+        },
+        "patterns": [
+          "${STATE}/proj/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-prefix-wildcard",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/pr*/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-question",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/pro?/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-recursive",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/**"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-relative",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "state/proj"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-root-glob",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "metadata": {
+          "directories": [
+            "${STATE}"
+          ]
+        },
+        "patterns": [
+          "${STATE}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-root-glob-escaping-child",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "escape_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-safe-symlink",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/alias/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "safe_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-sibling-prefix",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}-sibling/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_directory_not_configured"
+      },
+      "id": "worker-state-disabled",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": ""
+    },
+    {
+      "expect": {
+        "approve": true,
+        "reason": "external_directory_trusted"
+      },
+      "id": "worker-state-root",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-symlink-glob-escape",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/escape/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "escape_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-symlink-literal-escape",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/escape"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [
+        "escape_link"
+      ],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-traversal-back-in",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/proj/../proj/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-traversal-out",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "${STATE}/../outside/*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    },
+    {
+      "expect": {
+        "approve": false,
+        "reason": "external_target_out_of_root"
+      },
+      "id": "worker-universal",
+      "operation": "worker",
+      "permission": {
+        "id": "fixture-permission",
+        "patterns": [
+          "*"
+        ],
+        "permission": "external_directory"
+      },
+      "setup": [],
+      "state_root": "${STATE}",
+      "toml_extra": "auto_approve_state_directory=true"
+    }
+  ],
+  "corpus_version": 1,
+  "placeholder_conventions": {
+    "${CUSTOM}": "alternative state root",
+    "${EXTERNAL}": "explicit trusted external Git repository",
+    "${OUTSIDE}": "untrusted fixture directory",
+    "${STATE}": "temporary permission-only state root",
+    "${TMP}": "temporary fixture root",
+    "${WORKSPACE}": "main fixture workspace"
+  },
+  "schema_version": 17,
+  "scope": "0B.2 additive config/permission delta; historical v15 corpora unchanged; temporary configs/files/repos only, no runtime DB, models, or HTTP",
+  "source": {
+    "commit": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+    "modules": [
+      "config.py",
+      "worker.py",
+      "opencode_launcher.py",
+      "git_snapshot.py"
+    ],
+    "tests": [
+      "tests/test_config.py",
+      "tests/test_worker.py",
+      "tests/test_launchers.py"
+    ]
+  }
+}

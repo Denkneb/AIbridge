@@ -1,4 +1,281 @@
 {
+  "automation": {
+    "acceptance_gate": {
+      "evidence": "automation.acceptance_checks/automatic_acceptance_error",
+      "requirements": [
+        "current approved step scope",
+        "HEAD/index unchanged from execution baseline",
+        "latest round passed verifier without side effects",
+        "verifier before=after=current fingerprint",
+        "all approved command strings covered with successful non-timed-out exits",
+        "saved positive independent review of same fingerprint and round",
+        "run status running and control run, item phase accept"
+      ],
+      "stale": "changed checkout during/after review, wrong round, missing/failed/stale verifier or outstanding findings refuses acceptance"
+    },
+    "approval": "explicit launch-codex --auto --plan approves the bounded supplied plan; model output never widens scope, criteria, commands or permissions",
+    "codex": {
+      "argv_contract": [
+        "codex",
+        "exec",
+        "--ignore-user-config",
+        "--disable",
+        "multi_agent",
+        "--sandbox",
+        "read-only",
+        "--json",
+        "--color",
+        "never",
+        "-C",
+        "<workspace>",
+        "--output-schema",
+        "<private-schema>",
+        "-o",
+        "<private-result>",
+        "-c",
+        "<fixed-developer-instructions>",
+        "-"
+      ],
+      "cancellation": "timeout/control cancellation terminates process group, SIGTERM then SIGKILL after 3 seconds",
+      "input": "JSON context on stdin; optional --model; no shell",
+      "log_max_bytes": 8388608,
+      "operations": [
+        "prepare",
+        "review"
+      ],
+      "output_schemas": {
+        "prepare": {
+          "additionalProperties": false,
+          "properties": {
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        },
+        "review": {
+          "additionalProperties": false,
+          "properties": {
+            "decision": {
+              "enum": [
+                "accept",
+                "request_changes",
+                "blocked"
+              ],
+              "type": "string"
+            },
+            "findings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "summary",
+            "findings"
+          ],
+          "type": "object"
+        }
+      },
+      "privacy": "private schema/result/log in run directory; modes 0600 and directory 0700",
+      "result_max_bytes": 1000000,
+      "retries": 3,
+      "review_validation": "accept requires no findings; request_changes requires concrete findings; known exact keys, nonempty strings and bounded findings list; prepare task at most 60000 characters",
+      "trust": "repository files, executor reports and tool output are untrusted evidence; model response never authorizes widening approved plan"
+    },
+    "completion": {
+      "apply": "completed only after final fingerprint check and durable delivered marker from existing crash-safe materializer under admission lock",
+      "manual": "ready after accepted final integration result; no main apply",
+      "safety": "no automatic commit/push/deploy; main HEAD/index unchanged; delivery crash may leave partial writes and requires safe resume, never automatic rollback"
+    },
+    "evidence": "automation.py; automation_checkout.py; codex_client.py; cli.py:cmd_launch_codex/cmd_automation/cmd_automation_worker; mcp_server.py:submit_task_impl/request_changes_impl/_accept_awaiting_review",
+    "inheritance": {
+      "baseline": "new execution baseline captured after inheritance; delivery remains cumulative relative to original main snapshot",
+      "gates": [
+        "accepted predecessor in same workflow/base",
+        "created bound checkout with same repository identity",
+        "parent fingerprint unchanged before and after materialization",
+        "artifact owner/base/entries equal accepted cumulative result",
+        "target state and symlink ancestor checks",
+        "post-inheritance checkout manifest equals predecessor"
+      ],
+      "scope": "task artifact scope accumulates accepted steps; verifier/acceptance separately enforce only current approved step scope",
+      "source": "automation_checkout.inherit_checkout"
+    },
+    "internal_mcp": {
+      "acceptance": "public accept also enforces managed run/control/review gate under lifecycle lock",
+      "managed_revision": "another caller gets automation_managed; internal coordinator supplies matching automation_run_id",
+      "public_mcp_exposure": false,
+      "request_changes_inputs": [
+        "automation_run_id"
+      ],
+      "submit_inputs": [
+        "inherit_task_id",
+        "inherit_fingerprint",
+        "automation_run_id"
+      ],
+      "submit_provenance": "automation_parent, automation_parent_fingerprint and automation_run_id pinned into hash/snapshot; parent must be accepted worktree task in same workflow"
+    },
+    "plan": {
+      "allowed_keys": [
+        "version",
+        "goal",
+        "steps",
+        "final_test_commands",
+        "max_seconds",
+        "max_revisions",
+        "codex_timeout",
+        "codex_model",
+        "delivery"
+      ],
+      "cli_file_max_bytes": 1000000,
+      "codex_model": "optional nonempty string, at most 200 characters",
+      "delivery_default": "apply",
+      "delivery_values": [
+        "apply",
+        "manual"
+      ],
+      "dependency_order": "stable topological order; unknown/duplicate/self dependencies or cycles reject plan",
+      "goal_max_chars": 10000,
+      "integer_rule": "positive bounded int; bool rejected",
+      "limits": {
+        "codex_timeout": {
+          "default": 600,
+          "max": 3600,
+          "min": 1
+        },
+        "max_revisions": {
+          "default": "project.max_rounds",
+          "max": 20,
+          "min": 1
+        },
+        "max_seconds": {
+          "default": 86400,
+          "max": 604800,
+          "min": 1
+        }
+      },
+      "required_keys": [
+        "version",
+        "goal",
+        "steps",
+        "final_test_commands"
+      ],
+      "required_step_keys": [
+        "id",
+        "task",
+        "allowed_paths",
+        "test_commands",
+        "acceptance_criteria"
+      ],
+      "scope": "relative authorized paths, no absolute scopes; nonempty safe step and final verifier commands; configured known profiles only",
+      "step_allowed_keys": [
+        "id",
+        "task",
+        "allowed_paths",
+        "test_commands",
+        "acceptance_criteria",
+        "depends_on",
+        "profile"
+      ],
+      "step_id_pattern": "[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\\Z",
+      "steps_max": 100,
+      "steps_min": 1,
+      "string_list_item_max_chars": 4000,
+      "string_list_max_entries": 200,
+      "task_max_chars": 60000,
+      "version": 1
+    },
+    "proof_boundary": {
+      "not_proven": "full automatic workflow with both real models on a user project; source tests were not run by manifest AST verification",
+      "reported_live": "source docs report read-only Codex prepare and OpenCode worktree smoke separately",
+      "source_tests": [
+        "tests/test_automation.py",
+        "tests/test_codex_client.py",
+        "tests/test_delivery_on_accept.py"
+      ]
+    },
+    "recovery": {
+      "boot": "detached supervisor survives terminal exit; after process/reboot crash resume is explicit, no built-in boot autostart",
+      "config_main_drift": "bound config hash or original main fingerprint change blocks further steps",
+      "control": "pause saves phase and stops coordinator; explicit resume clears blocker and preserves progress; stop closes unfinished tasks cooperatively, including paused/blocked/crashed coordinator",
+      "intents": "persist submit/revision request ids before operation; replay existing request after crash instead of resending; accept repeat is idempotent then cumulative artifact rebuilt before advancing",
+      "limits": "elapsed time across resumes, per-step revisions and bounded Codex timeout/retries; failures persist a blocker"
+    },
+    "run": {
+      "binding_fields": [
+        "project",
+        "workspace",
+        "config_sha256"
+      ],
+      "controls": [
+        "run",
+        "pause",
+        "stop"
+      ],
+      "create_gates": [
+        "validated approved plan",
+        "automation lock and admission lock",
+        "no unfinished task",
+        "clean main workspace",
+        "supported main Git/worktree repository"
+      ],
+      "default_control": "run",
+      "document_keys": [
+        "run_id",
+        "plan",
+        "binding",
+        "origin",
+        "started",
+        "elapsed",
+        "steps",
+        "index",
+        "phase",
+        "blocker"
+      ],
+      "final_step": "__final__ integration task appended with union scopes and approved final_test_commands",
+      "load_validation": "exact schema17 and canonical UUID matching document.run_id; status/control authoritative from row; Python loader does not fully revalidate every persisted plan/phase field",
+      "one_unfinished": "unique expression index per project database includes paused and blocked",
+      "run_phases": [
+        "steps",
+        "deliver"
+      ],
+      "runtime_modes": {
+        "execution_mode": "worktree",
+        "task_delivery_mode": "manual"
+      },
+      "statuses": [
+        "running",
+        "paused",
+        "blocked",
+        "completed",
+        "ready",
+        "stopped"
+      ],
+      "step_phases": [
+        "prepare",
+        "submit",
+        "active",
+        "revise",
+        "accept",
+        "accepted"
+      ],
+      "table": "automation_runs",
+      "terminal": [
+        "completed",
+        "ready",
+        "stopped"
+      ]
+    }
+  },
   "checkpoint": {
     "bounds": {
       "max_count": 1000000,
@@ -187,6 +464,195 @@
           "--project",
           "--state-root"
         ],
+        "internal": false,
+        "name": "automation-pause",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "description": "run id; required for worker, otherwise latest run",
+            "name": "--run",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "automation pause"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "internal": false,
+        "name": "automation-resume",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "description": "run id; required for worker, otherwise latest run",
+            "name": "--run",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "automation resume"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "internal": false,
+        "name": "automation-status",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "description": "run id; required for worker, otherwise latest run",
+            "name": "--run",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "automation status"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "internal": false,
+        "name": "automation-stop",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "description": "run id; required for worker, otherwise latest run",
+            "name": "--run",
+            "required": false,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "automation stop"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
+        "internal": true,
+        "name": "automation-worker",
+        "options": [
+          {
+            "description": "path to projects.toml (default: <default_config_path>)",
+            "name": "--config",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "project id",
+            "name": "--project",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "description": "override state root (testing only)",
+            "name": "--state-root",
+            "required": false,
+            "type": "str"
+          },
+          {
+            "description": "run id; required for worker, otherwise latest run",
+            "name": "--run",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "project_required": true,
+        "summary": "private detached coordinator entry point"
+      },
+      {
+        "common_options": [
+          "--config",
+          "--project",
+          "--state-root"
+        ],
         "name": "console",
         "options": [
           {
@@ -337,6 +803,9 @@
             "type": "str"
           }
         ],
+        "output_notes": [
+          "prints configured execution and delivery modes"
+        ],
         "project_required": true,
         "summary": "validate config, credentials and server"
       },
@@ -386,6 +855,10 @@
           "--project",
           "--state-root"
         ],
+        "constraints": [
+          "--auto requires --plan; --plan without --auto is rejected",
+          "plan file is bounded to 1000000 bytes and must decode as JSON; plan validation precedes run creation"
+        ],
         "name": "launch-codex",
         "options": [
           {
@@ -405,6 +878,20 @@
             "name": "--state-root",
             "required": false,
             "type": "str"
+          },
+          {
+            "default": false,
+            "description": "launch an approved plan in a detached coordinator",
+            "name": "--auto",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "default": null,
+            "description": "approved JSON plan; requires --auto",
+            "name": "--plan",
+            "required": false,
+            "type": "Path"
           }
         ],
         "project_required": true,
@@ -920,7 +1407,9 @@
   "config": {
     "defaults": {
       "allow_parallel_writers": false,
+      "auto_approve_state_directory": false,
       "default_profile": "implementer",
+      "delivery_mode": "manual",
       "execution_mode": "direct",
       "max_active_tasks": 1
     },
@@ -934,7 +1423,9 @@
         "allow_parallel_writers",
         "auto_approve_external_directories",
         "auto_approve_permissions",
+        "auto_approve_state_directory",
         "default_profile",
+        "delivery_mode",
         "execution_mode",
         "max_active_tasks",
         "mcp_token_file",
@@ -953,20 +1444,85 @@
     "rules": [
       "allow_parallel_writers must be a boolean; false is the default and true is accepted only when execution_mode is 'worktree'",
       "auto_approve_external_directories entries must be existing absolute directories, canonicalized with resolve(strict=True), and '/' is rejected",
-      "auto_approve_permissions must not contain 'external_directory'; that permission is controlled only by auto_approve_external_directories",
+      "auto_approve_permissions must not contain 'external_directory'; that permission is controlled by explicit external roots and the opt-in auto_approve_state_directory flag",
+      "auto_approve_state_directory defaults to false and must be a real boolean; true rejects state_root '/' or a root containing '*' or '?'",
       "default_profile must be a non-empty string without surrounding whitespace and must name a builtin or custom profile",
+      "delivery_mode defaults to 'manual'; exact 'manual' or 'on_accept' only, no whitespace or non-string values; on_accept requires execution_mode='worktree'",
       "execution_mode is optional and defaults to 'direct'; the only accepted values are exactly 'direct' and 'worktree' (no normalization, no surrounding whitespace)",
-      "mcp_token_file must be a separate credential file from password_file and unique across projects",
-      "mcp_url and mcp_token_file must be set together; mcp_url must end with /mcp on 127.0.0.1 with an explicit port",
       "max_active_tasks is optional and defaults to 1; it must be a positive integer (booleans, zero, negatives and non-integers are rejected)",
       "max_rounds must be a positive integer",
+      "mcp_token_file must be a separate credential file from password_file and unique across projects",
+      "mcp_url and mcp_token_file must be set together; mcp_url must end with /mcp on 127.0.0.1 with an explicit port",
       "opencode_model must be '<providerID>/<modelID>', split on the first '/' only",
       "opencode_url must be http://127.0.0.1:<port> with an explicit port in 1..65535 and no path, query, fragment, username or password",
       "profiles is an optional [projects.<id>.profiles.<profile_id>] table; each entry must be a table, requires 'purpose' and accepts 'instructions' and 'model'; unknown keys are rejected",
       "project ids must match ^[a-z0-9][a-z0-9_-]{0,63}$",
+      "state directory access is a permission-only grant; state_root is not added to trusted external Git roots or linked-project routing",
       "workspace must be an existing directory; relative paths resolve against the config file directory",
       "workspaces, server endpoints and credential files must be unique across projects"
     ]
+  },
+  "contract_baselines": {
+    "fixtures_0A": {
+      "revision": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+      "schema_version": 15,
+      "status": "frozen historical baseline; additive v17 delta fixtures 0B.2-0B.5 verified separately; delta refresh complete, Rust implementation target remains v15"
+    },
+    "fixtures_0B_config_permissions": {
+      "cases": 87,
+      "corpus": "docs/fixtures/config-permission-v17.json",
+      "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+      "schema_version": 17,
+      "status": "verified source parity without skips; synthetic files/repos, SQLite and network forbidden",
+      "verifier": "docs/fixtures/config/verify_v17.py"
+    },
+    "fixtures_0B_mcp_delivery_recovery": {
+      "cases": 47,
+      "corpus": "docs/fixtures/mcp-delivery-recovery-v17.json",
+      "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+      "schema_version": 17,
+      "status": "verified independent responses/spawn counts over pinned source scenarios without skips; synthetic Git/SQLite and HTTP/model/spawn doubles, no user runtime state",
+      "verifier": "docs/fixtures/mcp/verify_v17.py"
+    },
+    "fixtures_0B_runtime_automation": {
+      "cases": 77,
+      "corpus": "docs/fixtures/runtime-automation-v17.json",
+      "live_evidence": "source docs/automatic-mode-plan.md:67-73 reports separate live Codex prepare/OpenCode smoke; combined real-model user-project workflow not demonstrated",
+      "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+      "schema_version": 17,
+      "source_scenarios": 28,
+      "status": "verified independent plan/review/runtime/persisted-state expectations and selected source integration scenarios without skips; synthetic processes/model doubles, no real models/user runtime state; local port probes require socket permission",
+      "verifier": "docs/fixtures/runtime/verify_v17.py"
+    },
+    "fixtures_0B_sqlite": {
+      "corpus": "docs/fixtures/sqlite/delta/expected.json",
+      "databases": 4,
+      "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+      "schema_versions": [
+        15,
+        16,
+        17
+      ],
+      "status": "verified immutable inspection and source parity without skips; synthetic copies only; Rust guard/migrations remain pending 3.13",
+      "verifiers": [
+        "docs/fixtures/sqlite/delta/verify.py",
+        "docs/fixtures/sqlite/delta/verify_parity.py"
+      ]
+    },
+    "reference_target": {
+      "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+      "schema_version": 17
+    },
+    "rust_storage": {
+      "note": "manifest refresh does not migrate Rust state or widen schema guards; Python runtime state/history are never imported",
+      "schema_version": 15,
+      "supported_contract_versions": [
+        6,
+        11,
+        14,
+        15
+      ]
+    }
   },
   "delivery": {
     "artifact": {
@@ -986,7 +1542,7 @@
       "--build writes only the private artifact; --apply requires an accepted task and a created worktree row",
       "an interrupted --apply may leave a partially materialized base/artifact mix; resume accepts a path only in exact base or exact artifact state and otherwise reports needs_manual_recovery",
       "there is no automatic rollback; --apply never mutates Git HEAD, refs or the index and post-verifies them unchanged",
-      "deliver-task is never automatic and never an MCP tool; it refuses while any writer reservation or writer-status task remains"
+      "deliver-task remains an explicit CLI, never an MCP tool; opt-in on_accept and approved automatic plans reuse its materializer; it refuses while any writer reservation or writer-status task remains"
     ],
     "modes": [
       "apply",
@@ -1060,7 +1616,21 @@
       "validated",
       "delivered",
       "refused"
-    ]
+    ],
+    "task_policy": {
+      "column": "tasks.delivery_mode",
+      "config_gate": "on_accept requires worktree",
+      "default": "manual",
+      "distinction": "CLI operation modes dry-run/build/apply and automatic plan delivery apply/manual are separate contracts",
+      "frozen": "effective policy copied from config at submit; live config changes never alter an existing task",
+      "helper_locks": "caller must hold project lifecycle and admission locks; helper never reacquires them",
+      "on_accept_helper": "run_auto_delivery: none builds missing artifact then applies; applying resumes existing journal without rebuild; delivered returns without reapply",
+      "persisted_normalization": "missing/unknown/corrupt value becomes manual",
+      "values": [
+        "manual",
+        "on_accept"
+      ]
+    }
   },
   "diagnostics": {
     "command": "agent-bridge status --json",
@@ -1167,18 +1737,18 @@
         "worktree": {
           "blocker": "no baseline blocker is produced by activation",
           "evidence": "mcp_server.py:_recompute_activation_baseline",
-          "rebaseline": "none; the worker derives the baseline from the task's persisted base_head in its own clean task-scoped checkout, never from the main working tree"
+          "rebaseline": "worker derives execution baseline from persisted base_head in task checkout; approved automation may seed validated accepted predecessor artifact before taking the new execution baseline"
         }
       },
       "gates": [
-        "the call is an explicit task_status activation (allow_waiting_activation); startup recovery and any scheduler never set it",
+        "the call is an explicit task_status activation (allow_waiting_activation); startup recovery never sets it; an approved automatic coordinator calls task_status explicitly",
         "admission.lock is held for the short activation critical section",
         "task.close_requested_at is null",
         "dependency_gate state == ready (every depends_on resolves to an accepted task in the same workflow and a linked project)",
         "single-writer mode: worker.lock is free; parallel mode: the atomic storage admission re-checks scope overlap instead",
         "storage.activate_waiting_dependencies is a conditional atomic update; exactly one caller wins and the loser does not spawn"
       ],
-      "note": "waiting_dependencies -> implementing is only via an explicit task_status call; startup recovery and scheduler never activate waiting tasks",
+      "note": "activation remains an explicit task_status action; approved coordinator may invoke it, ordinary startup recovery never activates waiting tasks",
       "trigger": "an explicit task_status call, gated by dependencies and admission; the required execution baseline depends on execution_mode and the task's own persisted policy (direct), or is derived from the persisted base_head (worktree)"
     },
     "dependency_gate": {
@@ -1197,6 +1767,19 @@
         "ready",
         "waiting"
       ]
+    },
+    "needs_user_recovery": {
+      "background": "review/background recovery keeps blocker gate; explicit needs_user recovery requires usable bound endpoint and re-observes history, never approves permissions or answers questions",
+      "claim": "one conditional needs_user task update wins; task becomes implementing/revising according to round kind; parked needs_user round becomes observing, undelivered pending round remains pending; close request refuses claim",
+      "events": [
+        "needs_user_recovery",
+        "needs_user_recovery_failed"
+      ],
+      "evidence": "storage.py:claim_needs_user_recovery/release_needs_user_recovery; mcp_server.py:_task_worker_running/_spawn_lease_pending/_maybe_spawn/task_status_impl",
+      "explicit_zero_wait": "wait_seconds=0 still attempts one needs_user recovery and returns actual persisted status, without waiting for completion; zero-wait never reopens failed tasks",
+      "lease": "worker_started_at stamped before spawn; 10-second startup grace prevents spawn-before-lock duplicates; mark_worker_started overwrites it; exact matching lease required for failed-spawn rollback",
+      "loser": "losing/repeated caller rereads task before returning; no duplicate prompt, round or revision_count change",
+      "probes": "task/project worker lock probes serialized inside process to avoid false busy from simultaneous probes; real cross-process holders remain detected"
     },
     "recoverable_failure": {
       "error_code": "assistant_error",
@@ -1277,6 +1860,14 @@
           "observing"
         ],
         "trigger": "prompt POST returns or delivery outcome is undefined"
+      },
+      {
+        "evidence": "storage.py:claim_needs_user_recovery",
+        "from": "needs_user",
+        "to": [
+          "observing"
+        ],
+        "trigger": "atomic recovery claim reuses parked round before spawn"
       }
     ],
     "task_statuses": {
@@ -1417,7 +2008,7 @@
         "trigger": "accept_task after needs_user resynchronisation reaches awaiting_review"
       },
       {
-        "evidence": "worker.py:_run_round, mcp_server.py:task_status_impl",
+        "evidence": "storage.py:claim_needs_user_recovery; mcp_server.py:task_status_impl",
         "from": "needs_user",
         "to": [
           "implementing"
@@ -1425,7 +2016,7 @@
         "trigger": "explicit task_status recovery of an open initial round"
       },
       {
-        "evidence": "worker.py:_run_round, mcp_server.py:task_status_impl",
+        "evidence": "storage.py:claim_needs_user_recovery; mcp_server.py:task_status_impl",
         "from": "needs_user",
         "to": [
           "revising"
@@ -1539,6 +2130,52 @@
   },
   "manifest_version": 1,
   "mcp": {
+    "accept_delivery": {
+      "admission_fence": "taken before server stop and accepted transition releases own reservation, held across build/apply; other writer reservations/tasks still block delivery",
+      "crash": "deliberate process termination and SimulationCrash are not caught as ordinary refusal",
+      "delivered_fields": [
+        "mode",
+        "state",
+        "delivered_at"
+      ],
+      "diagnostics": "OSError errno/strerror, path-like fragments redacted, whitespace collapsed, message bounded to 240 chars; filename surfaced only if safely project-workspace relative",
+      "event": "delivery_refused is best-effort and never masks the original failure",
+      "evidence": "mcp_server.py:_accept_awaiting_review/_accept_already_accepted/_retry_on_accept_locked/_accepted_result/_auto_delivery_payload",
+      "failure": "after accepted transition a DeliveryError/OSError/sqlite3.Error becomes accepted + structured refusal with real persisted delivery_state, or unknown when state is unreadable; artifact/journal/checkout survive; no rollback",
+      "failure_codes": [
+        "delivery_io_error",
+        "state_unavailable",
+        "admission_lock_busy"
+      ],
+      "first_busy": "awaiting_review with error admission_lock_busy; server is not stopped and no accepted transition occurs",
+      "lock_order": [
+        "project worker",
+        "task lifecycle",
+        "project admission"
+      ],
+      "manual_response_fields": [
+        "task_id",
+        "status"
+      ],
+      "on_accept_response_fields": [
+        "task_id",
+        "status",
+        "delivery_mode",
+        "delivery"
+      ],
+      "optional_delivered_fields": [
+        "operation_count"
+      ],
+      "refusal_fields": [
+        "mode",
+        "state",
+        "code",
+        "message",
+        "paths",
+        "delivery_state"
+      ],
+      "repeat": "manual/direct accepts and already-delivered on_accept return immediately; accepted undelivered on_accept acquires lifecycle/admission and retries/resumes"
+    },
     "budget": {
       "fields": [
         "input",
@@ -1562,17 +2199,31 @@
     },
     "internal_only": {
       "helpers": [
+        "Storage.claim_needs_user_recovery",
+        "Storage.release_needs_user_recovery",
         "_maybe_spawn.allow_waiting_activation",
         "_maybe_spawn.failed_recovery",
         "_maybe_spawn.needs_user_recovery",
         "_payload_for_revision",
         "_payload_for_submit",
+        "_spawn_lease_pending",
         "_task_result.full",
         "config",
         "storage"
       ],
+      "internal_result_codes": [
+        "invalid_automation_parent"
+      ],
       "note": "internal helpers and flags are not public tool arguments",
+      "request_changes_impl": [
+        "automation_run_id"
+      ],
       "request_changes_impl_argument_order": "allow_suspected_secrets precedes structured_findings internally; the public wrapper reorders",
+      "submit_task_impl": [
+        "inherit_task_id",
+        "inherit_fingerprint",
+        "automation_run_id"
+      ],
       "task_status_impl": [
         "needs_user_recovery"
       ]
@@ -1584,6 +2235,7 @@
       "active_writer_task_id",
       "active_writer_task_ids",
       "default_profile",
+      "delivery_mode",
       "endpoint",
       "execution_mode",
       "max_active_tasks",
@@ -1595,6 +2247,8 @@
     ],
     "result_codes": {
       "accept_task": [
+        "admission_lock_busy",
+        "automation_acceptance_refused",
         "not_awaiting_review",
         "server_busy",
         "server_unavailable",
@@ -1611,6 +2265,7 @@
       ],
       "project_info": [],
       "request_changes": [
+        "automation_managed",
         "budget_corrupt",
         "budget_exhausted",
         "invalid_allow_budget_override",
@@ -1741,6 +2396,7 @@
         "worker"
       ],
       "compact_optional_fields": [
+        "delivery_mode",
         "execution_mode",
         "profile",
         "profile_source",
@@ -1770,6 +2426,7 @@
         "close_requested",
         "close_requested_at",
         "committed_paths",
+        "delivery_mode",
         "error",
         "execution_mode",
         "git_policy_violations",
@@ -1785,9 +2442,9 @@
         "updated_at",
         "user_action",
         "verification",
+        "worker",
         "workflow",
         "workflow_gate",
-        "worker",
         "worktree",
         "worktree_state"
       ],
@@ -1796,7 +2453,9 @@
         "phase is 'verifying' while a verifier is running, otherwise 'agent'",
         "verification_progress is present only while a verifier is running and never contains command text or log paths",
         "the minimal awaiting_review budget block is trimmed to configured/warning/exhausted/exhausted_fields/gate/gate_reason",
-        "workflow_gate is surfaced only for waiting_dependencies"
+        "workflow_gate is surfaced only for waiting_dependencies",
+        "worktree status includes the frozen task delivery_mode and actual delivery_state; accepted on_accept tasks include a read-only delivery summary",
+        "summary states: pending/refused/applying/delivered; applying takes precedence over an older refusal; last_attempt surfaces the most recent delivery_refused event"
       ],
       "verbose_fields": [
         "allow_commit",
@@ -2097,6 +2756,13 @@
     },
     "files": {
       "admission_lock": "<state_dir>/admission.lock",
+      "automation_codex_log": "<state_dir>/automation/<run_id>/<prepare|review>-<token>.log",
+      "automation_codex_result": "<state_dir>/automation/<run_id>/<prepare|review>-<token>.result.json",
+      "automation_codex_schema": "<state_dir>/automation/<run_id>/<prepare|review>-<token>.schema.json",
+      "automation_lock": "<state_dir>/automation.lock",
+      "automation_process_record": "<state_dir>/automation/<run_id>/process.json",
+      "automation_run_dir": "<state_dir>/automation/<run_id>",
+      "automation_supervisor_log": "<state_dir>/automation/<run_id>/supervisor.log",
       "controller_config": "<state_dir>/controller-opencode.json",
       "database": "<state_dir>/state.sqlite",
       "delivery_artifact": "<state_dir>/worktrees/<task_id>/runtime/artifact",
@@ -2253,11 +2919,24 @@
         "detached": true,
         "module": "worker.run_worker",
         "name": "worker"
+      },
+      {
+        "command": "agent-bridge launch-codex --auto --plan PATH --project ID",
+        "detached": true,
+        "module": "cli.cmd_launch_codex/automation.launch",
+        "name": "automatic_plan_launcher"
+      },
+      {
+        "command": "agent-bridge automation-worker --project ID --run RUN_ID",
+        "detached": true,
+        "internal": true,
+        "module": "automation.Coordinator.run",
+        "name": "automatic_coordinator"
       }
     ],
     "limitations": [
-      "parallel worktree server startup serializes on the shared <state_root>/runtime.lock; the B2 smoke uses staggered startup (wait for the first task's persisted server_port) while a model rendezvous independently proves concurrent execution",
-      "no scheduler, background autostart, auto-unblock, auto-accept, auto merge/commit/push or A2A adapter is implemented"
+      "worktree startup serialized by runtime.lock with bounded 60-second wait; ordinary start/status/stop keep immediate failure; staggered parallel smoke proves concurrent execution, not simultaneous spawn",
+      "approved opt-in plans have detached sequential execution and review/accept; no boot-time autostart, arbitrary global scheduler, automatic merge/commit/push/deploy or A2A adapter"
     ],
     "locks": [
       {
@@ -2284,9 +2963,35 @@
         "mechanism": "fcntl.flock LOCK_EX|LOCK_NB",
         "path": "<state_root>/runtime.lock",
         "scope": "one start/stop/status operation and one worktree server startup across all projects sharing a state root"
+      },
+      {
+        "mechanism": "fcntl.flock LOCK_EX|LOCK_NB with optional bounded wait",
+        "path": "<state_dir>/automation.lock",
+        "scope": "one approved coordinator per project; run holds lock throughout coordinator lifetime, launcher writes process lease before child acquires lock"
       }
     ],
+    "manager_lock_wait": {
+      "deadline": "monotonic; roots acquired all-or-nothing in sorted canonical order; all fds closed on release/error/timeout/interrupt",
+      "default_seconds": 0,
+      "evidence": "runtime.py:_try_acquire_locks/_manager_lock; worktree_runtime.py:WORKTREE_START_LOCK_TIMEOUT/start_worktree_server",
+      "poll_initial_seconds": 0.02,
+      "poll_max_seconds": 0.2,
+      "timeout": "before worktree server spawn, port reservation or process record",
+      "worktree_start_seconds": 60
+    },
     "process_records": {
+      "automation": {
+        "binding_fields": [
+          "kind",
+          "project_id",
+          "run_id",
+          "workspace"
+        ],
+        "identity_field": "start",
+        "launch_lease": "record with pid/start/binding written before child obtains automation.lock; repeated launch/resume refuses live or starting coordinator",
+        "path": "<state_dir>/automation/<run_id>/process.json",
+        "pid_field": "pid"
+      },
       "binding_fields": [
         "endpoint",
         "kind",
@@ -2324,7 +3029,11 @@
       "sqlite_file_location_pragma_user_version_tables_key_columns_and_invariants",
       "status_json_diagnostics_readiness_envelope_and_exit_code",
       "task_and_round_status_vocabulary_and_provable_transitions",
-      "worktree_execution_root_task_scoped_server_and_runtime_paths"
+      "worktree_execution_root_task_scoped_server_and_runtime_paths",
+      "approved_plan_schema_limits_run_control_and_exact_review_acceptance_gate",
+      "config_delivery_mode_and_permission_only_state_directory_opt_in",
+      "frozen_task_delivery_policy_and_on_accept_refusal_resume_semantics",
+      "automation_provenance_internal_inputs_and_cumulative_artifact_baseline"
     ],
     "not_frozen": [
       "human-readable message and log wording",
@@ -2355,6 +3064,27 @@
       "note": "never returns the matched value or position"
     },
     "profile_instructions_secret_scan": true,
+    "state_directory_approval": {
+      "config_rejects": [
+        "non-boolean",
+        "filesystem root /",
+        "state root with * or ?"
+      ],
+      "controller": {
+        "bash": "ask",
+        "edit": "deny",
+        "opt_in_external_directory": {
+          "*": "ask",
+          "<state_root>/*": "allow"
+        },
+        "task": "deny"
+      },
+      "default": false,
+      "evidence": "config.py:_parse_auto_approve_state_directory/state_directory_permission_pattern; worker.py:_external_permission_roots; opencode_launcher.py:controller_agent_permission",
+      "matcher_boundary": "no wildcard escaping is assumed; narrowly scoped pattern is required, not a universal allow rule",
+      "permission_only": true,
+      "worker": "existing literal/glob/symlink/traversal confinement against external roots plus opt-in state_root; external Git roots and linked-project mapping unchanged"
+    },
     "worktree_path_policy": {
       "absolute_external_allowed_paths": "rejected with external_paths_not_supported_in_worktree_mode",
       "lfs": "rejected with lfs_not_supported_in_worktree_mode",
@@ -2369,8 +3099,8 @@
     "project": "agent-bridge",
     "python_requires": ">=3.11",
     "repository": "/home/denis/Python/agent_bridge",
-    "revision": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
-    "schema_version": 15
+    "revision": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+    "schema_version": 17
   },
   "storage": {
     "database": {
@@ -2403,14 +3133,19 @@
         "purpose": "at most one active writer reservation per project while parallel=0"
       },
       {
+        "definition": "UNIQUE automation_runs((1)) WHERE status NOT IN ('completed','ready','stopped')",
+        "name": "ux_automation_unfinished",
+        "purpose": "one unfinished run per database including paused and blocked runs"
+      },
+      {
         "definition": "UNIQUE rounds(project_id, request_id)",
         "name": "ux_rounds_request",
         "purpose": "request idempotency"
       }
     ],
     "invariants": [
-      "PRAGMA user_version is only changed by a migration; versions outside 0..15 are refused",
-      "fresh v15 has no UNIQUE tasks(project_id) index (ux_tasks_active); single-writer enforcement is the partial unique ux_active_writers_single plus atomic admission",
+      "PRAGMA user_version is only changed by a migration; versions outside 0..17 are refused",
+      "fresh v17 has no UNIQUE tasks(project_id) index (ux_tasks_active); single-writer enforcement is the partial unique ux_active_writers_single plus atomic admission",
       "admission counts both the reservation ledger and real persisted writer-status task rows inside BEGIN IMMEDIATE",
       "parallel writers require canonically scope-disjoint allowed_paths; overlap raises ScopeOverlap and corrupt scope data fails closed",
       "admission bound: count_unfinished_tasks() (including waiting_dependencies) must stay below max_active_tasks",
@@ -2425,7 +3160,11 @@
       "profile/profile_json/profile_hash/profile_source persist an immutable profile snapshot; profile_hash is the canonical snapshot hash",
       "verifier_state is 'running' or 'done'; a 'done' result is never overwritten and is reused by recovery",
       "worktree status transitions are fail-closed",
-      "reconcile_active_writers is idempotent: it drops orphan/terminal reservations and backfills reservations for persisted writer-status tasks"
+      "reconcile_active_writers is idempotent: it drops orphan/terminal reservations and backfills reservations for persisted writer-status tasks",
+      "tasks.delivery_mode is frozen at creation; absent/unknown/corrupt persisted values normalize to manual and never enable automatic delivery",
+      "automation_runs.document persists run identity, approved plan, binding, phases, intents and review evidence; run status/control are authoritative columns",
+      "automation_run terminal status is completed/ready/stopped; paused and blocked runs retain the unique unfinished slot",
+      "needs_user recovery claim stamps task/round/worker_started_at spawn lease/event atomically, reuses the round and never changes revision_count or outbound message; failed spawn release requires the exact unchanged lease"
     ],
     "migratable_versions": [
       0,
@@ -2442,7 +3181,9 @@
       11,
       12,
       13,
-      14
+      14,
+      15,
+      16
     ],
     "migration_map": [
       {
@@ -2513,6 +3254,19 @@
           "_reconcile_active_writers_in_conn runs again (idempotent)"
         ],
         "target_version": 15
+      },
+      {
+        "changes": [
+          "tasks.delivery_mode TEXT NOT NULL DEFAULT 'manual' added; existing tasks keep manual delivery"
+        ],
+        "target_version": 16
+      },
+      {
+        "changes": [
+          "automation_runs table added with control TEXT NOT NULL DEFAULT 'run'",
+          "unique expression index ux_automation_unfinished added; completed/ready/stopped excluded, paused/blocked still occupy the slot"
+        ],
+        "target_version": 17
       }
     ],
     "pragmas": {
@@ -2532,7 +3286,7 @@
         "BEGIN IMMEDIATE"
       ]
     },
-    "schema_version": 15,
+    "schema_version": 17,
     "tables": {
       "active_writers": {
         "columns": [
@@ -2567,6 +3321,46 @@
         "note": "logical reservation ledger; intentionally not foreign-key bound so reconcile can backfill/drop rows",
         "primary_key": [
           "task_id"
+        ]
+      },
+      "automation_runs": {
+        "columns": [
+          {
+            "default": "run",
+            "name": "control",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "document",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "run_id",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "status",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "name": "updated_at",
+            "nullable": false,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [],
+        "note": "document is JSON text; one unfinished automatic run per project database, independent of task ids",
+        "primary_key": [
+          "run_id"
         ]
       },
       "events": {
@@ -2779,6 +3573,12 @@
           },
           {
             "name": "created_at",
+            "nullable": false,
+            "type": "TEXT"
+          },
+          {
+            "default": "manual",
+            "name": "delivery_mode",
             "nullable": false,
             "type": "TEXT"
           },
@@ -3015,8 +3815,8 @@
     "limitations": [
       "external directories, submodules, Git LFS, sparse checkout and nested repositories are not supported and fail closed",
       "environment/dependency setup is not performed; agreed test_commands must supply their own environment",
-      "the task-scoped server starts under <state_root>/runtime.lock, so parallel worktree server startup is serialized (the smoke proves concurrency with a model rendezvous instead)",
-      "there is no scheduler, background autostart or auto-unblock of waiting tasks"
+      "task-scoped startup waits at most 60 seconds for shared runtime.lock; startup remains serialized, model rendezvous proves concurrent execution",
+      "ordinary startup never auto-activates waiting tasks; an approved coordinator explicitly invokes task_status and blocks on unresolved user actions"
     ],
     "port_range": "43000-43999",
     "runtime_dir": "<state_dir>/worktrees/<task_id>/runtime",

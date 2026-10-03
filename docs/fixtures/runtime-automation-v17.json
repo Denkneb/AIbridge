@@ -1,0 +1,1074 @@
+{
+  "base_plan": {
+    "final_test_commands": [
+      "python3 -B consumer.py"
+    ],
+    "goal": "Fix addition and add a consumer",
+    "steps": [
+      {
+        "acceptance_criteria": [
+          "addition works"
+        ],
+        "allowed_paths": [
+          "module.py"
+        ],
+        "id": "fix",
+        "task": "Fix add",
+        "test_commands": [
+          "python3 -B module.py"
+        ]
+      },
+      {
+        "acceptance_criteria": [
+          "consumer works"
+        ],
+        "allowed_paths": [
+          "consumer.py"
+        ],
+        "depends_on": [
+          "fix"
+        ],
+        "id": "consumer",
+        "task": "Add consumer",
+        "test_commands": [
+          "python3 -B consumer.py"
+        ]
+      }
+    ],
+    "version": 1
+  },
+  "cases": [
+    {
+      "expect": {
+        "adapter_error": "CodexCancelled",
+        "adapter_response": null,
+        "fake_codex_children": 1
+      },
+      "id": "adapter_cancellation_terminates_child",
+      "operation": "source_scenario",
+      "source_test": "test_codex_client.py::test_adapter_cancellation_terminates_child"
+    },
+    {
+      "expect": {
+        "adapter_error": "CodexError",
+        "adapter_response": null,
+        "fake_codex_children": 1
+      },
+      "id": "adapter_rejects_nonzero_exit_and_invalid_json",
+      "operation": "source_scenario",
+      "source_test": "test_codex_client.py::test_adapter_rejects_nonzero_exit_and_invalid_json"
+    },
+    {
+      "expect": {
+        "adapter_error": "CodexError",
+        "adapter_response": null,
+        "fake_codex_children": 1
+      },
+      "id": "adapter_timeout_terminates_child",
+      "operation": "source_scenario",
+      "source_test": "test_codex_client.py::test_adapter_timeout_terminates_child"
+    },
+    {
+      "expect": {
+        "adapter_error": null,
+        "adapter_response": {
+          "task": "Inspect the project"
+        },
+        "fake_codex_children": 1
+      },
+      "id": "adapter_uses_readonly_structured_subprocess",
+      "operation": "source_scenario",
+      "source_test": "test_codex_client.py::test_adapter_uses_readonly_structured_subprocess"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid task"
+      },
+      "id": "answer-prepare-empty",
+      "input": {
+        "task": " "
+      },
+      "kind": "prepare",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "response shape"
+      },
+      "id": "answer-prepare-extra",
+      "input": {
+        "extra": 1,
+        "task": "x"
+      },
+      "kind": "prepare",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid task"
+      },
+      "id": "answer-prepare-too-long",
+      "input": {
+        "task": {
+          "count": 60001,
+          "repeat_text": "x"
+        }
+      },
+      "kind": "prepare",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "exact": {
+          "task": "Inspect the project"
+        }
+      },
+      "id": "answer-prepare-valid",
+      "input": {
+        "task": "Inspect the project"
+      },
+      "kind": "prepare",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid task"
+      },
+      "id": "answer-prepare-wrong-type",
+      "input": {
+        "task": true
+      },
+      "kind": "prepare",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "exact": {
+          "decision": "accept",
+          "findings": [],
+          "summary": "Reviewed"
+        }
+      },
+      "id": "answer-review-accept",
+      "input": {
+        "decision": "accept",
+        "findings": [],
+        "summary": "Reviewed"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "outstanding findings"
+      },
+      "id": "answer-review-accept-findings",
+      "input": {
+        "decision": "accept",
+        "findings": [
+          "defect"
+        ],
+        "summary": "OK"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "explanation is required"
+      },
+      "id": "answer-review-blank-summary",
+      "input": {
+        "decision": "accept",
+        "findings": [],
+        "summary": " "
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "exact": {
+          "decision": "blocked",
+          "findings": [],
+          "summary": "Reviewed"
+        }
+      },
+      "id": "answer-review-blocked",
+      "input": {
+        "decision": "blocked",
+        "findings": [],
+        "summary": "Reviewed"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "concrete findings"
+      },
+      "id": "answer-review-changes-empty",
+      "input": {
+        "decision": "request_changes",
+        "findings": [],
+        "summary": "Bad"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "response shape"
+      },
+      "id": "answer-review-extra",
+      "input": {
+        "decision": "accept",
+        "extra": 1,
+        "findings": [],
+        "summary": "OK"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid review findings"
+      },
+      "id": "answer-review-finding-blank",
+      "input": {
+        "decision": "blocked",
+        "findings": [
+          " "
+        ],
+        "summary": "Bad"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid review findings"
+      },
+      "id": "answer-review-finding-too-long",
+      "input": {
+        "decision": "blocked",
+        "findings": [
+          {
+            "count": 4001,
+            "repeat_text": "x"
+          }
+        ],
+        "summary": "Bad"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid review findings"
+      },
+      "id": "answer-review-findings-wrong-type",
+      "input": {
+        "decision": "blocked",
+        "findings": "x",
+        "summary": "Bad"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "exact": {
+          "decision": "request_changes",
+          "findings": [
+            "fix it"
+          ],
+          "summary": "Reviewed"
+        }
+      },
+      "id": "answer-review-request_changes",
+      "input": {
+        "decision": "request_changes",
+        "findings": [
+          "fix it"
+        ],
+        "summary": "Reviewed"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "error_contains": "invalid review decision"
+      },
+      "id": "answer-review-unknown",
+      "input": {
+        "decision": "approve",
+        "findings": [],
+        "summary": "OK"
+      },
+      "kind": "review",
+      "operation": "answer"
+    },
+    {
+      "expect": {
+        "distinct_ports": 1,
+        "standin_children": 1,
+        "start_errors": 0,
+        "start_successes": 2
+      },
+      "id": "concurrent_same_task_start_spawns_exactly_one",
+      "operation": "source_scenario",
+      "source_test": "test_worktree_runtime.py::test_concurrent_same_task_start_spawns_exactly_one"
+    },
+    {
+      "expect": {
+        "distinct_ports": 3,
+        "standin_children": 3,
+        "start_errors": 0,
+        "start_successes": 3
+      },
+      "id": "concurrent_worktree_starts_get_distinct_ports",
+      "operation": "source_scenario",
+      "source_test": "test_worktree_runtime.py::test_concurrent_worktree_starts_get_distinct_ports"
+    },
+    {
+      "expect": {
+        "blocker_code": "CodexError",
+        "prepare_attempts": 3,
+        "status": "blocked",
+        "task_count": 0
+      },
+      "id": "coordinator-blocked-durable",
+      "operation": "blocked_run"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "crash_after_accept_is_idempotent",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_crash_after_accept_is_idempotent"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 4,
+        "phase": "deliver",
+        "rounds": 4,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "crash_after_revision_is_idempotent",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_crash_after_revision_is_idempotent"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "crash_after_submit_before_saving_task_id",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_crash_after_submit_before_saving_task_id"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "delivery_failure_preserves_accepted_result_for_retry",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_delivery_failure_preserves_accepted_result_for_retry"
+    },
+    {
+      "expect": {
+        "record_binding_matches": true,
+        "repeat_error_contains": "already starting/running",
+        "spawn_attempts": 1,
+        "status": "starting"
+      },
+      "id": "detached-launch-lease-fake-child",
+      "operation": "launch_lease"
+    },
+    {
+      "expect": {
+        "engine_calls": 1,
+        "status": "running",
+        "task_statuses": [
+          "awaiting_review"
+        ]
+      },
+      "id": "failed_tests_cannot_be_accepted",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_failed_tests_cannot_be_accepted"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 4,
+        "phase": "deliver",
+        "rounds": 4,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "full_cycle_inherits_revision_and_delivers",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_full_cycle_inherits_revision_and_delivers"
+    },
+    {
+      "expect": {
+        "engine_calls": 0,
+        "status": "running",
+        "task_statuses": []
+      },
+      "id": "main_drift_blocks_next_step",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_main_drift_blocks_next_step"
+    },
+    {
+      "expect": {
+        "lock_errors": 1,
+        "lock_successes": 2
+      },
+      "id": "manager_lock_wait_acquires_after_release",
+      "operation": "source_scenario",
+      "source_test": "test_runtime.py::test_manager_lock_wait_acquires_after_release"
+    },
+    {
+      "expect": {
+        "lock_errors": 1,
+        "lock_successes": 1
+      },
+      "id": "manager_lock_wait_times_out_with_clear_error",
+      "operation": "source_scenario",
+      "source_test": "test_runtime.py::test_manager_lock_wait_times_out_with_clear_error"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "none"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "ready",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "manual_delivery_is_ready_not_completed",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_manual_delivery_is_ready_not_completed"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "pause_and_resume_preserve_progress",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_pause_and_resume_preserve_progress"
+    },
+    {
+      "changes": {
+        "steps.0.allowed_paths": [
+          "/fixture/outside"
+        ]
+      },
+      "expect": {
+        "error_contains": "scope must be relative"
+      },
+      "id": "plan-absolute-scope",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "codex_timeout": true
+      },
+      "expect": {
+        "error_contains": "codex_timeout must be an integer"
+      },
+      "id": "plan-codex_timeout-bool",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "codex_timeout": 3601
+      },
+      "expect": {
+        "error_contains": "codex_timeout must be an integer"
+      },
+      "id": "plan-codex_timeout-over-max",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "codex_timeout": 0
+      },
+      "expect": {
+        "error_contains": "codex_timeout must be an integer"
+      },
+      "id": "plan-codex_timeout-zero",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.acceptance_criteria": []
+      },
+      "expect": {
+        "error_contains": "acceptance_criteria must be a nonempty list"
+      },
+      "id": "plan-criteria-empty",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.depends_on": [
+          "consumer"
+        ]
+      },
+      "expect": {
+        "error_contains": "cycle or an unknown dependency"
+      },
+      "id": "plan-cycle",
+      "operation": "plan"
+    },
+    {
+      "changes": {},
+      "expect": {
+        "values": {
+          "codex_model": null,
+          "codex_timeout": 600,
+          "delivery": "apply",
+          "max_revisions": 3,
+          "max_seconds": 86400,
+          "step_order": [
+            "fix",
+            "consumer"
+          ]
+        }
+      },
+      "id": "plan-defaults",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "delivery": "auto"
+      },
+      "expect": {
+        "error_contains": "delivery must be"
+      },
+      "id": "plan-delivery-invalid",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "final_test_commands": []
+      },
+      "expect": {
+        "error_contains": "final_test_commands must be a nonempty list"
+      },
+      "id": "plan-final-empty",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "goal": " "
+      },
+      "expect": {
+        "error_contains": "goal is required"
+      },
+      "id": "plan-goal-empty",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "codex_timeout": 3600,
+        "delivery": "manual",
+        "max_revisions": 20,
+        "max_seconds": 604800
+      },
+      "expect": {
+        "values": {
+          "codex_timeout": 3600,
+          "delivery": "manual",
+          "max_revisions": 20,
+          "max_seconds": 604800
+        }
+      },
+      "id": "plan-manual-maxima",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_revisions": true
+      },
+      "expect": {
+        "error_contains": "max_revisions must be an integer"
+      },
+      "id": "plan-max_revisions-bool",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_revisions": 21
+      },
+      "expect": {
+        "error_contains": "max_revisions must be an integer"
+      },
+      "id": "plan-max_revisions-over-max",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_revisions": 0
+      },
+      "expect": {
+        "error_contains": "max_revisions must be an integer"
+      },
+      "id": "plan-max_revisions-zero",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_seconds": true
+      },
+      "expect": {
+        "error_contains": "max_seconds must be an integer"
+      },
+      "id": "plan-max_seconds-bool",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_seconds": 604801
+      },
+      "expect": {
+        "error_contains": "max_seconds must be an integer"
+      },
+      "id": "plan-max_seconds-over-max",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "max_seconds": 0
+      },
+      "expect": {
+        "error_contains": "max_seconds must be an integer"
+      },
+      "id": "plan-max_seconds-zero",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "codex_model": " "
+      },
+      "expect": {
+        "error_contains": "invalid codex_model"
+      },
+      "id": "plan-model-blank",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.depends_on": [
+          "fix"
+        ]
+      },
+      "expect": {
+        "error_contains": "invalid dependencies"
+      },
+      "id": "plan-self-dependency",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.extra": true
+      },
+      "expect": {
+        "error_contains": "invalid step fields"
+      },
+      "id": "plan-step-extra",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.1.id": "fix"
+      },
+      "expect": {
+        "error_contains": "unique safe identifiers"
+      },
+      "id": "plan-step-id-duplicate",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps": []
+      },
+      "expect": {
+        "error_contains": "plan needs"
+      },
+      "id": "plan-steps-empty",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.task": " "
+      },
+      "expect": {
+        "error_contains": "task is required"
+      },
+      "id": "plan-task-empty",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps": [
+          {
+            "acceptance_criteria": [
+              "consumer works"
+            ],
+            "allowed_paths": [
+              "consumer.py"
+            ],
+            "depends_on": [
+              "fix"
+            ],
+            "id": "consumer",
+            "task": "Add consumer",
+            "test_commands": [
+              "python3 -B consumer.py"
+            ]
+          },
+          {
+            "acceptance_criteria": [
+              "addition works"
+            ],
+            "allowed_paths": [
+              "module.py"
+            ],
+            "id": "fix",
+            "task": "Fix add",
+            "test_commands": [
+              "python3 -B module.py"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "values": {
+          "step_order": [
+            "fix",
+            "consumer"
+          ]
+        }
+      },
+      "id": "plan-topological-order",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.allowed_paths": [
+          "../outside"
+        ]
+      },
+      "expect": {
+        "error_contains": "must not contain '..'"
+      },
+      "id": "plan-traversal-scope",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.depends_on": [
+          "absent"
+        ]
+      },
+      "expect": {
+        "error_contains": "cycle or an unknown dependency"
+      },
+      "id": "plan-unknown-dependency",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "extra": true
+      },
+      "expect": {
+        "error_contains": "unknown fields"
+      },
+      "id": "plan-unknown-field",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.profile": "missing-profile"
+      },
+      "expect": {
+        "error_contains": "unknown profile"
+      },
+      "id": "plan-unknown-profile",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "steps.0.test_commands": [
+          "git commit -m bad"
+        ]
+      },
+      "expect": {
+        "error_contains": "unsafe test commands"
+      },
+      "id": "plan-unsafe-command",
+      "operation": "plan"
+    },
+    {
+      "changes": {
+        "version": true
+      },
+      "expect": {
+        "error_contains": "unsupported plan version"
+      },
+      "id": "plan-version-bool",
+      "operation": "plan"
+    },
+    {
+      "expect": {
+        "engine_calls": 1,
+        "status": "running",
+        "task_statuses": [
+          "accepted",
+          "implementing"
+        ]
+      },
+      "id": "predecessor_tampering_refuses_inheritance",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_predecessor_tampering_refuses_inheritance"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "resume_does_not_duplicate_submission[accept]",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_resume_does_not_duplicate_submission[accept]"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "resume_does_not_duplicate_submission[active]",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_resume_does_not_duplicate_submission[active]"
+    },
+    {
+      "expect": {
+        "delivery_states": [
+          "none",
+          "none",
+          "delivered"
+        ],
+        "engine_calls": 3,
+        "phase": "deliver",
+        "rounds": 3,
+        "status": "completed",
+        "task_statuses": [
+          "accepted",
+          "accepted",
+          "accepted"
+        ]
+      },
+      "id": "resume_does_not_duplicate_submission[submit]",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_resume_does_not_duplicate_submission[submit]"
+    },
+    {
+      "expect": {
+        "manager_default_wait": 0.0,
+        "ready_timeout": 20.0,
+        "startup_lock_timeout": 60.0
+      },
+      "id": "runtime-default-bounds",
+      "operation": "runtime_bounds"
+    },
+    {
+      "expect": {
+        "lock_errors": 1,
+        "lock_successes": 1
+      },
+      "id": "runtime_lock_serializes_start_and_stop",
+      "operation": "source_scenario",
+      "source_test": "test_runtime.py::test_runtime_lock_serializes_start_and_stop"
+    },
+    {
+      "expect": {
+        "engine_calls": 0,
+        "status": "running",
+        "task_statuses": []
+      },
+      "id": "second_run_and_second_coordinator_are_refused",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_second_run_and_second_coordinator_are_refused"
+    },
+    {
+      "expect": {
+        "distinct_ports": 0,
+        "standin_children": 0,
+        "start_errors": 1,
+        "start_successes": 0
+      },
+      "id": "start_lock_timeout_has_no_spawn_record_or_port_side_effects",
+      "operation": "source_scenario",
+      "source_test": "test_worktree_runtime.py::test_start_lock_timeout_has_no_spawn_record_or_port_side_effects"
+    },
+    {
+      "expect": {
+        "distinct_ports": 0,
+        "standin_children": 0,
+        "start_errors": 1,
+        "start_successes": 0
+      },
+      "id": "start_lock_timeout_releases_partial_multi_root_locks",
+      "operation": "source_scenario",
+      "source_test": "test_worktree_runtime.py::test_start_lock_timeout_releases_partial_multi_root_locks"
+    },
+    {
+      "expect": {
+        "distinct_ports": 1,
+        "standin_children": 1,
+        "start_errors": 0,
+        "start_successes": 1
+      },
+      "id": "start_waits_for_busy_manager_lock_then_succeeds",
+      "operation": "source_scenario",
+      "source_test": "test_worktree_runtime.py::test_start_waits_for_busy_manager_lock_then_succeeds"
+    },
+    {
+      "expect": {
+        "engine_calls": 2,
+        "status": "running",
+        "task_statuses": [
+          "accepted",
+          "awaiting_review"
+        ]
+      },
+      "id": "step_scope_is_stricter_than_cumulative_delivery_scope",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_step_scope_is_stricter_than_cumulative_delivery_scope"
+    },
+    {
+      "expect": {
+        "engine_calls": 0,
+        "status": "stopped",
+        "task_statuses": []
+      },
+      "id": "stop_without_tasks",
+      "operation": "source_scenario",
+      "source_test": "test_automation.py::test_stop_without_tasks"
+    }
+  ],
+  "corpus_version": 1,
+  "schema_version": 17,
+  "scope": "Pinned source scenarios plus independent plan/review/lease/blocker cases; temporary Git/SQLite, FakeCodex, synthetic executable/sleep stand-ins, no real models or user runtime state. Startup serialization does not imply serialized execution.",
+  "source": {
+    "commit": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+    "evidence_document": "docs/automatic-mode-plan.md:67",
+    "live_evidence": "Reference reports separate live read-only Codex prepare and OpenCode worktree smoke; full workflow uses deterministic model answers. No combined real-model user-project workflow demonstrated."
+  }
+}

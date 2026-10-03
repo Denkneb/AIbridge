@@ -177,3 +177,83 @@ Rust начинает с собственной пустой БД и отдел�
   полные verification-логи и output;
 - `events.id` и физическая раскладка SQLite не фиксируются;
 - fixtures не заменяют полную Python test suite и targeted unit-тесты.
+
+## Delta v16/v17 (0B.3 завершён)
+
+Отдельный набор — [fixtures/sqlite/delta/expected.json](fixtures/sqlite/delta/expected.json),
+reference HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc` (schema17).
+Исторические четыре v6 и empty-v15 fixtures и их verifiers сохранены без изменений.
+Новый generator использует frozen v15 DDL и независимо заданные additive DDL v16/v17;
+он не импортирует Python reference и пишет только в `delta/`.
+
+| Fixture | Назначение |
+| --- | --- |
+| `delta/fresh-v17.sqlite` | fresh17, пустая история, без Rust ownership |
+| `delta/owned-v15.sqlite` | синтетический Rust-owned v15: direct/worktree tasks, rounds/events, writer reservation, worktree/quarantine |
+| `delta/owned-v16.sqlite` | intermediate16 с теми же историческими полями; delivery `manual` и явный `on_accept` |
+| `delta/owned-v17.sqlite` | такой же populated v17 и пустой `automation_runs` |
+
+Во всех owned fixtures `meta.runtime_owner='rust'` и дополнительная строка
+`fixture_metadata='preserve-me'`. Sidecar marker задаётся template в manifest и
+создаётся только рядом с временной копией, с фактическим временным state root.
+Это не копии пользовательского Rust/Python state.
+
+Контракт v16 — `tasks.delivery_mode TEXT NOT NULL DEFAULT 'manual'`.
+При upgrade legacy v15 **обе** задачи, включая worktree, получают `manual`.
+Существующие v16/v17 значения сохраняются: fixture с явным `on_accept` — отдельный
+persisted-state сценарий, а не результат автоматического backfill legacy task.
+Контракт v17 — таблица `automation_runs(run_id,status,control,document,created_at,updated_at)`;
+`control` default `'run'`; partial unique expression index:
+
+```sql
+CREATE UNIQUE INDEX ux_automation_unfinished
+ON automation_runs((1)) WHERE status NOT IN ('completed','ready','stopped');
+```
+
+`delta/verify.py` открывает БД с `mode=ro&immutable=1`, проверяет точные
+колонки/defaults/PK/FK actions, indexes (включая expression и полный predicate),
+все raw rows с event ids и оба schema markers. Проверяет integrity/quick/FK,
+отсутствие WAL/SHM/journal и SHA-256 до/после чтения. Колонки сравниваются по
+именам: физический ordinal при fresh/additive layout не является контрактом.
+
+`delta/verify_parity.py` импортирует **actual pinned** `Storage` с отключённым
+bytecode и проверяет HEAD/clean tree до/после. Все writable SQLite connections
+reference разрешены только внутри собственного temporary directory; сеть
+запрещена. Используется минимальный config double (`db_path`, `project_id`,
+`allow_parallel_writers`), без чтения конфигурации/паролей/runtime state.
+Проверки без skips:
+
+- actual fresh `Storage.initialize` совпадает с independently generated fresh17;
+- actual `initialize`/`_migrate` для копий owned15 и owned16 даёт exact17 schema/indexes;
+- все исторические поля/строки/ids и extra meta сохраняются; v15 backfill manual,
+  v16 explicit on_accept сохранён; повторная инициализация v17 идемпотентна;
+- marker sidecar не изменяется; default control, PK/NOT NULL и partial uniqueness
+  проверены insert/update операциями только на временных копиях;
+- completed/ready/stopped допускают несколько runs; running/paused/failed/unknown
+  занимают один слот; переход в ready освобождает слот;
+- SQLite authorizer отказывает при создании `ux_automation_unfinished`, после
+  добавления delivery column/automation table: для v15 и v16 весь upgrade
+  откатывается, включая DDL/history/meta/version; повтор после отказа успешен;
+- future schema18 отвергается без изменения логического содержимого;
+- байты всех девяти исторических и delta fixtures не меняются.
+
+Текущий Python всегда мигрирует прямо в17. Intermediate16 — независимо созданный
+контракт для будущих Rust-owned v15→v16→v17 migrations, а не заявленный запуск
+старого Python бинарника. **Rust target остаётся v15:** его ownership/schema guards
+не изменены; поддержка и enforcement v16/v17, включая missing/foreign/malformed
+markers и транзакционный повтор guard, остаются задачами 3.13. Python не проверяет
+Rust ownership: этот harness доказывает сохранение synthetic marker/meta, а не
+Rust guard acceptance. Fixtures не разрешают импорт Python history в Rust.
+
+```sh
+python3 docs/fixtures/sqlite/delta/verify.py
+python3 docs/fixtures/sqlite/delta/verify_parity.py
+# При намеренной регенерации только нового delta corpus:
+python3 docs/fixtures/sqlite/delta/generate.py
+```
+
+Оба verifiers прошли. Повторная delta regeneration дала byte-identical SQLite и
+JSON. Четыре negative harness проверки на временных копиях отвергли stale source
+pin, изменённую history row, неверный partial predicate (даже с согласованным
+изменением expectation) и наличие WAL sidecar. Исторический verifier (5 fixtures)
+и AST manifest verifier также прошли. Rust-код в 0B.3 не изменялся.

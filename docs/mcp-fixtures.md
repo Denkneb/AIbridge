@@ -190,3 +190,83 @@ HEAD/index/worktree fingerprints, а также human-readable `detail` и
 
 Такой harness воспроизводит corpus на текущей Python suite и позже становится
 общим differential-раннером Python/Rust.
+
+## Delta delivery/recovery v17 (0B.4 завершён)
+
+Отдельный corpus — [fixtures/mcp-delivery-recovery-v17.json](fixtures/mcp-delivery-recovery-v17.json),
+reference HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc` (schema17).
+Исторические `mcp-cases.json` и `mcp/verify.py` сохраняют frozen v15 pin и не
+переписываются. Rust MCP/runtime/storage реализация в этом шаге не изменяется.
+
+**47 сценариев:** 25 on_accept delivery, 15 MCP recovery (включая parametrized
+stale blocker и nonrecoverable failed), 5 storage claim/release и 2 automation
+managed-action guards. Verifier — `fixtures/mcp/verify_v17.py`.
+
+Каждый case закрепляет `source_test` и независимые `expect.responses` и
+`expect.spawn_attempts`. Это исполняемый corpus поверх выбранных integration
+сценариев закреплённого source checkout: исходная suite целиком не копируется
+и целиком не запускается. Source asserts дополнительно проверяют реальные
+filesystem/history/lock effects. Verifier перехватывает actual MCP implementations
+и storage claim/release returns, сравнивает проекции полей и точное число ответов;
+для manual answers — весь объект, для crash — тип исключения. Spawn spies считают
+вызовы **даже если fake spawn завершился ошибкой**. Concurrent responses сравниваются
+как multiset: порядок завершения callers не является контрактом. JSON equality
+отличает boolean от integer. Ожидания не захватываются из результатов запуска.
+
+Покрытые ветви:
+
+- first/repeated accept, delivered idempotence при drift checkout и busy worker
+  lock; first accept при busy worker не меняет awaiting_review;
+- manual worktree/direct ответы остаются ровно `{task_id,status:'accepted'}`;
+  frozen task mode сохраняется при смене live config в обе стороны;
+- accepted **не означает delivered**: dirty main, другие writers, scope/artifact
+  drift, admission busy, IO/state failure — явные отказ/actual persisted state;
+- admission fence удерживается через accepted transition и materialization;
+- crash между accepted и build, partial apply и IO failure после первого write:
+  artifact/journal/checkout сохраняются, повторный accept завершает результат,
+  HEAD/index/refs не меняются; SimulationCrash не превращается в обычный refusal;
+- `state_unavailable` и честное `delivery_state='unknown'` при недоступном state
+  после transition либо на repeat accept; private absolute paths отсутствуют в
+  response/status и persisted refusal events;
+- `wait_seconds=0` может восстановить needs_user, но не failed; stale permission
+  не вызывает повтор prompt; настоящий blocker снова паркует задачу; revision
+  использует bound session/round без новой revision;
+- sequential и четыре concurrent zero-wait callers дают один spawn; проигравший
+  claim перечитывает persisted status; spawn-before-lock lease и занятый worker
+  не допускают дубликат; failed spawn возвращает needs_user и снимает lease;
+- atomic six-caller storage claim имеет одного победителя; pending round сохраняет
+  pending; revision claim/release сохраняет round/count, stale release не откатывает
+  уже запущенного worker; cooperative close запрещает claim;
+- automation-managed direct accept без saved review или с изменившимся reviewed
+  result получает `automation_acceptance_refused`; external request_changes —
+  `automation_managed`. Полный coordinator workflow остаётся scope 0B.5.
+
+Harness запускает выбранные **actual pinned** pytest scenarios из Python checkout
+с source HEAD/clean-tree guard до/после (в том числе после отрицательного запуска).
+Все config/password files, Git repos/checkouts, artifacts и SQLite создаются под
+собственным temporary directory. SQLite connection и Git cwd проверяются на этот
+каталог; sockets не могут подключаться. OpenCode HTTP использует source respx
+fixtures/probe doubles; Codex — FakeCodex; detached spawn — in-process double.
+Три nonrecoverable failed scenarios получают явный healthy `_check_server` double:
+исходный test оставлял probe реальным, а здесь refusal проверяется при **доступном**
+server, без случайного localhost connection. Это setup, а не подмена recovery gate.
+
+Subprocess guard допускает только local Git и два synthetic `python3 -B
+module.py|consumer.py` checks в temporary workspace для managed-task fixtures;
+shell/server/model/detached-worker запуск запрещён. Bytecode, pytest cache и
+автоматическая загрузка сторонних pytest plugins отключены; reference interpreter
+берётся из `.venv`. User runtime DB/history не открываются. SHA-256 existing corpus
+и всех SQLite fixtures сверяются после каждого запуска. Skips, missing/duplicate
+collection или несовпадающие expectations делают запуск неуспешным.
+
+```sh
+python3 docs/fixtures/mcp/verify_v17.py
+# Другой checkout должен иметь тот же exact HEAD и clean tree:
+AGENT_BRIDGE_REFERENCE=/path/to/reference python3 docs/fixtures/mcp/verify_v17.py
+```
+
+Проверка дала **47/47, без skips**. Пять negative harness checks на временных corpus
+копиях отвергли stale source pin, duplicate case, отсутствующий source scenario,
+ложный expected count=2 для single concurrent spawn и подмену boolean release
+integer-значением. Corpus JSON детерминирован. MCP transport/real-model/live-runtime
+parity этим шагом не доказывается; исторические fixtures сохраняют свои границы.

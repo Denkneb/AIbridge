@@ -111,3 +111,45 @@ sibling project) не выражаются через `projects.toml`: глоб�
 
 Такой harness воспроизводит corpus на текущей Python suite и позже становится
 общим differential-раннером Python/Rust.
+
+## Delta config/permissions v17 (0B.2)
+
+Отдельный additive corpus:
+[fixtures/config-permission-v17.json](fixtures/config-permission-v17.json),
+source pin `e52a46158cbeb4f3ae35063d395c05ea0ce144bc`, schema17.
+Historical `config-cases.json` (121 cases, v15 pin) и его verifier сохранены.
+
+87 исполняемых cases: 35 config, 1 immutable config, 1 no-state-creation,
+6 controller, 42 worker decision и 2 Git/linked boundary checks. Config
+покрывает delivery_mode default/manual/on_accept/worktree gate, strict
+non-string/whitespace/unknown values, state boolean default/true/false,
+filesystem/wildcard roots и комбинацию двух опций. Controller проверяется
+через настоящий build_controller_config, включая narrowly scoped external
+allow rule, edit/task deny, bash ask, subagent_depth=0 и defensive rejection
+при обходе config validation.
+
+Worker cases вызывают настоящий _permission_decision: state root/descendant,
+OpenCode parentDir shape, literal/file/glob, custom root, state+external roots,
+default disabled, sibling/outside/filesystem, traversal, unsupported glob,
+escaping/broken/loop symlink, mixed targets/metadata и malformed requests.
+Ordinary read/edit/bash/task permissions не включаются самим state opt-in.
+Boundary cases вызывают load_linked_projects и validate_allowed_paths на
+synthetic repos: разрешение state доступа не добавляет state к external Git
+roots или registered linked projects; отдельно заданный external root
+сохраняет собственную scope/link семантику.
+
+```bash
+python3 docs/fixtures/config/verify_v17.py
+```
+
+Delta формат: corpus_version/schema_version/source/placeholder_conventions/
+cases; case содержит id, operation, toml_extra, expect и optional state_root,
+permission/setup или defensive override. Все paths задаются placeholders,
+все dirs/repos/symlinks создаются в `/tmp`, source imports — с bytecode
+отключённым через reference .venv. Verifier проверяет exact clean HEAD и
+реальный import path; SQLite connections и network sockets запрещены при
+наблюдении cases. Model/runtime/MCP серверы не запускаются; Python runtime DB
+не читается. Expected boolean отличается от integer. Ошибка/неисполняемый
+case — failure, skips нет. Проверены отрицательные случаи harness: stale pin,
+duplicate ids, неверное allow для symlink escape и numeric boolean expectation.
+Rust config/security implementation и исторические corpus этим шагом не меняются.

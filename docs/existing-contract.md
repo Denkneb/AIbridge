@@ -6,10 +6,13 @@
 источник — [contract-manifest.json](contract-manifest.json).
 
 Актуальная привязка источника: репозиторий `/home/denis/Python/agent_bridge`,
-exact Git revision `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`, **Python schema
-v15** (`PRAGMA user_version=15`). Это reference-описание Python; оно **не**
-заявляет паритет с Rust, который пока зафиксирован на foundations v6. Rust-код,
-runtime, schema и fixtures в этой задаче не меняются.
+exact Git revision `e52a46158cbeb4f3ae35063d395c05ea0ce144bc`, **Python schema
+v17** (`PRAGMA user_version=17`). Manifest описывает reference Python; Rust
+storage остаётся v15, historical foundations 0–6/7.1–7.6 — v6. Fixtures 0A
+сохраняют source pin `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a` и schema v15.
+Config/permission delta 0B.2 и SQLite delta 0B.3 проверены отдельно;
+MCP и runtime/automation delta 0B.4/0B.5 также завершены; refresh 0B завершён. Rust-код/runtime/schema и существующие
+fixtures в 0B.1 не меняются.
 
 ## Назначение
 
@@ -24,6 +27,8 @@ task/session/message ID. JSON-ключи отсортированы; масси�
 | Раздел | Содержимое |
 | --- | --- |
 | `manifest_version`, `source` | версия формата manifest, версия пакета, repository и exact revision |
+| `contract_baselines` | current reference v17, historical fixtures 0A/v15 и текущий Rust storage target v15 |
+| `automation` | approved plan, durable run/control/intents, inherited checkout, read-only Codex schemas, exact verifier/review gate и final delivery |
 | `scope` | что зафиксировано как совместимый контракт и что намеренно не зафиксировано |
 | `cli` | имя программы, точка входа, общие options, команды, exit codes |
 | `mcp` | имя сервера, ровно шесть tools с параметрами, transports, коды ошибок, internal-only детали |
@@ -53,10 +58,13 @@ Manifest построен по фактическому коду и тестам
 - `src/agent_bridge/delivery.py` — artifact/journal и `deliver-task`;
 - `src/agent_bridge/mcp_server.py` — шесть MCP tools, параметры и коды ошибок;
 - `src/agent_bridge/mcp_http.py` — authenticated Streamable HTTP transport;
-- `src/agent_bridge/storage.py` — schema v15, migration map v6→v15, tables,
+- `src/agent_bridge/storage.py` — schema v17, additive migration map v6→v17, tables,
   indexes, invariants, статусы и атомарные переходы;
 - `src/agent_bridge/worker.py` — task/round transitions, locks, worker error codes;
-- `src/agent_bridge/config.py` — `projects.toml` keys, `execution_mode`,
+- `src/agent_bridge/automation.py`, `automation_checkout.py`, `codex_client.py`
+  — approved plan, run lifecycle, inherited artifact и independent review;
+- `src/agent_bridge/config.py` — `projects.toml` keys, `delivery_mode`,
+  `auto_approve_state_directory`, `execution_mode`,
   `max_active_tasks`, `allow_parallel_writers`, `default_profile`;
 - `src/agent_bridge/profiles.py` — builtin/custom profiles и snapshot;
 - `src/agent_bridge/secret_scanner.py` — suspected-secret categories;
@@ -95,7 +103,7 @@ Manifest построен по фактическому коду и тестам
 - `execution_mode` (`direct`/`worktree`), `max_active_tasks`,
   `allow_parallel_writers` и профили (`default_profile`, custom profiles,
   immutable snapshot);
-- SQLite v15: расположение, `PRAGMA user_version`, tables, columns, indexes и
+- SQLite v17: расположение, `PRAGMA user_version`, tables, columns, indexes и
   invariants, включая финальный partial unique `ux_active_writers_single` и
   отсутствие исторических `ux_tasks_active`/`ux_active_writers_project`;
 - worktree execution root, task-scoped checkout/server и delivery
@@ -136,21 +144,50 @@ Manifest построен по фактическому коду и тестам
 ## Границы и ограничения
 
 - Document не включает секреты, реальные tokens/passwords и timestamps.
-- Manifest описывает reference Python v15 и **не** заявляет Rust parity: Rust
-  foundations пока v6, а manifest-обновление не меняет Rust code/runtime/schema/
-  fixtures.
+- Manifest описывает reference Python v17 и **не** заявляет Rust parity:
+  текущий Rust storage v15; historical foundations v6 сохраняют свой scope.
+  Manifest-обновление не меняет Rust code/runtime/schema/fixtures.
 - Python и Rust владеют отдельными runtime state/SQLite/history; canonical
   `projects.toml` общий только для чтения, запись — только активной реализацией
   при остановленном runtime. Доступ к Python runtime DB не подразумевается.
-- Неизвестные или не доказанные значения в manifest помечены явно; переходы,
-  которые не сохраняются в storage (например, промежуточный `observing` при
-  recovery `needs_user`), в списки не добавлены.
+- Переходы сверяются с текущим source: atomic needs_user recovery теперь
+  сохраняет observing и spawn lease перед запуском worker. wait=0 допускает
+  один needs_user recovery, но не failed recovery. Automation provenance
+  остаётся внутренним input, не расширяет публичные MCP signatures.
 - Явно вынесенные limitations (не implemented): worktree external directories/
   submodules/LFS/sparse/nested repos/environment setup; полный patch archival;
-  scheduler/A2A/auto accept/merge/push; resumable delivery может оставить
-  частично материализованное состояние при crash без automatic rollback;
-  parallel server startup сериализуется через `runtime.lock`, а smoke доказывает
-  concurrency через model rendezvous и staggered startup.
+  A2A/auto merge/commit/push/deploy. Approved plan coordinator и on_accept
+  delivery реализованы opt-in. Resumable delivery может оставить частично
+  материализованное состояние при crash без automatic rollback; parallel
+  startup сериализуется через runtime.lock с bounded wait 60s, ordinary
+  start/status/stop остаются nonblocking. Smoke доказывает concurrent execution
+  через model rendezvous и staggered startup, а не simultaneous spawn.
 - `docs/fixtures/sqlite/verify.py` проверяет fresh v15 и отдельные legacy v6
   fixtures. Source parity и Rust-owned additive upgrade проверяет
   `docs/fixtures/sqlite/parity/verify_parity.py`; это не импорт Python state.
+
+## Delta 0B.1 и проверка manifest
+
+`launch-codex --auto --plan` и automation-status/pause/resume/stop работают с
+approved JSON plan; automation-worker — private coordinator entry point.
+`delivery_mode=manual|on_accept` фиксируется на task, on_accept требует
+worktree. Project config mode и frozen task mode — разные наблюдаемые значения.
+CLI dry-run/build/apply, task manual/on_accept и plan apply/manual — отдельные
+контракты. Повтор accept undelivered on_accept возобновляет journal; manual и
+уже delivered ответы сохраняют идемпотентность. accepted не означает delivered.
+
+State-directory opt-in добавляет только permission root: external Git boundaries
+и linked projects не расширяются. Controller сохраняет edit/task deny и bash
+ask. Automation model calls read-only; публичный accept managed task требует
+passed current verifier и saved positive review того же round/fingerprint.
+plan delivery=manual завершается ready; completed требует durable delivered.
+
+Проверка: `python3 docs/verify_contract_manifest.py` (можно передать `--source`
+или `--manifest`). Проверяет точный HEAD/clean tree, полный CLI options set,
+шесть MCP signatures/defaults и internal-only inputs, config defaults, literal
+DDL tables/columns/defaults/keys/index predicates, Codex output schemas и
+runtime bounds. Использует только AST source и SQLite `:memory:`: не импортирует
+Python приложение, не запускает его migrations/models и не открывает runtime
+SQLite/history. Это source-contract проверка, не запуск Python suite и не
+доказательство runtime/model parity. Historical fixture verifier-ы используют
+свои pins; config/permission, SQLite, MCP и runtime/automation delta 0B.2–0B.5 выполнены; refresh завершён.

@@ -17,10 +17,13 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 ## Расхождение версий и ближайший шаг
 
 Источник истины — READ-ONLY Python-репозиторий `/home/denis/Python/agent_bridge`
-на HEAD `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a` (schema **v15**,
-`storage.py:41`). Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) построен
+на проверенном HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc` (schema **v17**).
+Manifest обновлён до v17 в 0B.1; fixtures 0A сохраняют frozen v15 HEAD
+`86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`. Config/permission delta 0B.2
+и SQLite/MCP/runtime/automation delta 0B.3–0B.5 проверены отдельно; refresh 0B завершён. Текущий Rust storage target — v15.
+Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) построен
 на старом контракте **schema v6** (исторические
-`docs/fixtures/sqlite/*-v6.sqlite`; актуальный manifest уже описывает v15) и не
+`docs/fixtures/sqlite/*-v6.sqlite`; текущий manifest описывает v17) и не
 является паритетом с современным Python. Возможности Python после v6 (structured findings, soft budgets,
 workflow/dependencies, per-round checkpoints, worktree execution, executor
 profiles, parallel writers, quarantine, delivery, diagnostics/hook, config
@@ -49,8 +52,25 @@ refresh baseline с status/project fence и событие `dependencies_satisfi
 **Шаг 3.12e завершён:** атомарный lifecycle реестров worktrees/quarantine,
 строгие переходы и read-only диагностика.
 **Шаг 3.12f завершён:** сохранение и строгий разбор бюджетов задач.
-Storage foundations 3.12 завершены. Ближайший шаг —
-**7.13: structured findings validation**, далее потребители (см.
+Storage foundations 3.12 завершены для frozen v15. Ближайший шаг —
+**7.13: Structured findings validation**; delta fixtures 0B завершены.
+**0B.1 завершён:** manifest v17 и `python3 docs/verify_contract_manifest.py`
+проверяют source pin, CLI/MCP/config/DDL/automation через AST и SQLite в памяти.
+**0B.2 завершён:** 87/87 config/permission source-parity cases, no skips;
+`python3 docs/fixtures/config/verify_v17.py`. Historical v15 corpora сохранены.
+**0B.3 завершён:** 4 SQLite delta fixtures v15/v16/v17; fresh/migration parity,
+история/defaults/indexes, rollback/retry и immutable inspection прошли.
+Команды — [docs/sqlite-fixtures.md](docs/sqlite-fixtures.md#delta-v16v17-0b3-завершён).
+**0B.4 завершён:** 47/47 MCP delivery/recovery/claim scenarios, без skips;
+`python3 docs/fixtures/mcp/verify_v17.py`. Ответы, spawn counts и source side effects
+проверены на temporary Git/SQLite с HTTP/model/spawn doubles.
+**0B.5 завершён:** 77/77 runtime/automation cases без skips;
+`python3 docs/fixtures/runtime/verify_v17.py`. Для local port probes нужен
+запуск в среде, разрешающей socket creation; isolated rerun прошёл.
+Границы model doubles/live evidence — [docs/runtime-fixtures.md](docs/runtime-fixtures.md).
+В план добавлены frozen on_accept delivery, state-directory approval,
+recovery/startup corrections и автономный approved-plan coordinator.
+Далее потребители (см.
 [docs/implementation-plan.md](docs/implementation-plan.md)). Новые возможности
 распределены по существующим потокам и выполняются после согласованного
 refresh; единого хвостового «когда-нибудь» нет.
@@ -350,7 +370,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   Default creation сохраняет прежнее поведение, replay не меняет бюджет.
   Проверено **254 storage tests**, **1010 workspace tests**, all-targets clippy, SQLite verifier,
   format и diff check. Usage aggregation и round budget gates — следующий
-  consumer 7.14; ближайший шаг общей очереди — 7.13.
+  consumer 7.14; перед продолжением очереди — delta refresh 0B.
 - Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
   Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
   базовой семантики Python `command_policy.py`: `split_command`
@@ -1332,11 +1352,17 @@ refresh; единого хвостового «когда-нибудь» нет.
   **шаг 3.12d завершён** (writer reservations/scope admission/reconcile);
   **шаг 3.12e завершён** (worktrees/quarantine lifecycle);
   **шаг 3.12f завершён** (budget persistence/parse);
-  ближайшая задача — **7.13** (structured findings validation);
+  **0B.1 завершён** (v17 reference manifest и source verification);
+  **0B.2 завершён** (87 config/permission source-parity cases);
+  **0B.3 завершён** (SQLite delta fixtures и actual migration parity);
+  **0B.4 завершён** (47 MCP source-parity scenarios);
+  **0B.5 завершён** (77 runtime/automation cases);
+  ближайшая задача — **7.13**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
-  возможности v7–v15 (structured findings, budgets, workflow/dependencies,
+  возможности v7–v17 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,
-  delivery, diagnostics/hook, config migration) в Rust **не завершены**.
+  delivery, diagnostics/hook, config migration, on_accept и automatic plan
+  execution) в Rust **не завершены**.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

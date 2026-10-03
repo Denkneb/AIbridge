@@ -1,0 +1,1020 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "error": "automation_acceptance_refused"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "changed_result_after_review_is_not_accepted",
+      "source_test": "test_automation.py::test_changed_result_after_review_is_not_accepted"
+    },
+    {
+      "expect": {
+        "responses": {
+          "claim": [
+            {
+              "values": {
+                "present": true,
+                "round_number": 1,
+                "status": "observing"
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            },
+            {
+              "values": {
+                "present": false
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "claim_needs_user_recovery_is_atomic_and_idempotent",
+      "source_test": "test_storage.py::test_claim_needs_user_recovery_is_atomic_and_idempotent"
+    },
+    {
+      "expect": {
+        "responses": {
+          "claim": [
+            {
+              "values": {
+                "present": true,
+                "round_number": 1,
+                "status": "pending"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "claim_needs_user_recovery_pending_round_keeps_status",
+      "source_test": "test_storage.py::test_claim_needs_user_recovery_pending_round_keeps_status"
+    },
+    {
+      "expect": {
+        "responses": {
+          "claim": [
+            {
+              "values": {
+                "present": false
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "claim_needs_user_recovery_refuses_close_requested",
+      "source_test": "test_storage.py::test_claim_needs_user_recovery_refuses_close_requested"
+    },
+    {
+      "expect": {
+        "responses": {
+          "claim": [
+            {
+              "values": {
+                "present": true,
+                "round_number": 2,
+                "status": "observing"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "claim_needs_user_revision_reuses_round_and_revision_count",
+      "source_test": "test_storage.py::test_claim_needs_user_revision_reuses_round_and_revision_count"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exact": {
+                "status": "accepted",
+                "task_id": "task-d"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "direct_accepted_repeat_accept_idempotent_under_busy_worker_lock",
+      "source_test": "test_delivery_on_accept.py::test_direct_accepted_repeat_accept_idempotent_under_busy_worker_lock"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "error": "automation_acceptance_refused"
+              }
+            }
+          ],
+          "request_changes": [
+            {
+              "values": {
+                "error": "automation_managed"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "direct_mcp_accept_requires_saved_review",
+      "source_test": "test_automation.py::test_direct_mcp_accept_requires_saved_review"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exact": {
+                "status": "accepted",
+                "task_id": "task-oa"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "legacy_manual_task_is_not_delivered_by_live_on_accept_config",
+      "source_test": "test_delivery_on_accept.py::test_legacy_manual_task_is_not_delivered_by_live_on_accept_config"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exact": {
+                "status": "accepted",
+                "task_id": "task-m"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "manual_accepted_repeat_accept_idempotent_under_busy_worker_lock",
+      "source_test": "test_delivery_on_accept.py::test_manual_accepted_repeat_accept_idempotent_under_busy_worker_lock"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exact": {
+                "status": "accepted",
+                "task_id": "task-manual"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "manual_worktree_accept_is_unchanged",
+      "source_test": "test_delivery_on_accept.py::test_manual_worktree_accept_is_unchanged"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_accept_builds_and_applies",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_accept_builds_and_applies"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.code": "admission_lock_busy",
+                "delivery.delivery_state": "applying",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_accepted_retry_admission_busy_reports_actual_state",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_accepted_retry_admission_busy_reports_actual_state"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "admission_lock_busy",
+                "delivery.state": "refused",
+                "error": "admission_lock_busy",
+                "status": "awaiting_review"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_admission_busy_first_accept_stays_awaiting_review",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_admission_busy_first_accept_stays_awaiting_review"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_admission_held_through_transition_and_delivery",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_admission_held_through_transition_and_delivery"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_already_delivered_is_idempotent_no_reapply",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_already_delivered_is_idempotent_no_reapply"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.code": "artifact_drift",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_artifact_drift_blocks_before_write",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_artifact_drift_blocks_before_write"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exception": "RuntimeError"
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_crash_accepted_before_build_then_retry",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_crash_accepted_before_build_then_retry"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_delivered_repeat_accept_idempotent_under_busy_worker_lock",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_delivered_repeat_accept_idempotent_under_busy_worker_lock"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.paths": [
+                  "user.txt"
+                ],
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_dirty_main_refused_then_retry_succeeds",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_dirty_main_refused_then_retry_succeeds"
+    },
+    {
+      "expect": {
+        "redact_state_paths": true,
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "delivery_io_error",
+                "delivery.paths": [],
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_failure_diagnostic_redacts_private_absolute_paths",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_failure_diagnostic_redacts_private_absolute_paths"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exact": {
+                "error": "worker_running"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_first_accept_busy_worker_lock_leaves_awaiting_review",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_first_accept_busy_worker_lock_leaves_awaiting_review"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_frozen_mode_survives_live_config_change",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_frozen_mode_survives_live_config_change"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "state_unavailable",
+                "delivery.delivery_state": "unknown",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_initial_accept_state_read_failure_after_transition",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_initial_accept_state_read_failure_after_transition"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.code": "delivery_io_error",
+                "delivery.delivery_state": "applying",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_oserror_after_partial_apply_reports_applying_and_resumes",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_oserror_after_partial_apply_reports_applying_and_resumes"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "delivery_io_error",
+                "delivery.delivery_state": "none",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_oserror_before_build_reports_accepted_not_delivered",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_oserror_before_build_reports_accepted_not_delivered"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "active_writers",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_other_writer_blocks_delivery",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_other_writer_blocks_delivery"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.state": "delivered",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_partial_apply_resumes_via_repeat_accept",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_partial_apply_resumes_via_repeat_accept"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "dirty_main_workspace",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            },
+            {
+              "values": {
+                "delivery.code": "state_unavailable",
+                "delivery.delivery_state": "unknown",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_repeat_accept_state_read_failure_reports_unknown",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_repeat_accept_state_read_failure_reports_unknown"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "out_of_scope_changes",
+                "delivery.paths": [
+                  "outside.txt"
+                ],
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_scope_violation_blocks_before_write",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_scope_violation_blocks_before_write"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "exception": "SimulationCrash"
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_simulation_crash_is_not_masked",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_simulation_crash_is_not_masked"
+    },
+    {
+      "expect": {
+        "responses": {
+          "accept_task": [
+            {
+              "values": {
+                "delivery.code": "state_unavailable",
+                "delivery.state": "refused",
+                "delivery_mode": "on_accept",
+                "status": "accepted"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "on_accept_sqlite_error_is_structured_refusal",
+      "source_test": "test_delivery_on_accept.py::test_on_accept_sqlite_error_is_structured_refusal"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "awaiting_review"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "positive_wait_needs_user_recovery_once_and_early_return",
+      "source_test": "test_mcp.py::test_positive_wait_needs_user_recovery_once_and_early_return"
+    },
+    {
+      "expect": {
+        "responses": {
+          "claim": [
+            {
+              "values": {
+                "present": true,
+                "round_number": 1,
+                "status": "observing"
+              }
+            },
+            {
+              "values": {
+                "present": true,
+                "round_number": 1,
+                "status": "observing"
+              }
+            }
+          ],
+          "release": [
+            {
+              "exact": true
+            },
+            {
+              "exact": false
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "release_needs_user_recovery_restores_parked_round",
+      "source_test": "test_storage.py::test_release_needs_user_recovery_restores_parked_round"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "failed"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "task_status_keeps_nonrecoverable_failed_terminal[session_directory_mismatch]",
+      "setup": {
+        "server_probe": "healthy"
+      },
+      "source_test": "test_mcp.py::test_task_status_keeps_nonrecoverable_failed_terminal[session_directory_mismatch]"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "failed"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "task_status_keeps_nonrecoverable_failed_terminal[session_not_found]",
+      "setup": {
+        "server_probe": "healthy"
+      },
+      "source_test": "test_mcp.py::test_task_status_keeps_nonrecoverable_failed_terminal[session_not_found]"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "failed"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "task_status_keeps_nonrecoverable_failed_terminal[workspace_mismatch]",
+      "setup": {
+        "server_probe": "healthy"
+      },
+      "source_test": "test_mcp.py::test_task_status_keeps_nonrecoverable_failed_terminal[workspace_mismatch]"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "implementing"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "worktree_zero_wait_needs_user_recovery_uses_scoped_endpoint",
+      "source_test": "test_mcp.py::test_worktree_zero_wait_needs_user_recovery_uses_scoped_endpoint"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "failed"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "zero_wait_does_not_claim_or_reopen_failed_round",
+      "source_test": "test_mcp.py::test_zero_wait_does_not_claim_or_reopen_failed_round"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "implementing"
+              }
+            },
+            {
+              "values": {
+                "status": "implementing"
+              }
+            },
+            {
+              "values": {
+                "status": "implementing"
+              }
+            },
+            {
+              "values": {
+                "status": "implementing"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_concurrent_only_one_spawn",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_concurrent_only_one_spawn"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "needs_user"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "zero_wait_needs_user_recovery_does_not_duplicate_running_worker",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_does_not_duplicate_running_worker"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "needs_user"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_keeps_real_blocker",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_keeps_real_blocker"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "implementing"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 0
+      },
+      "id": "zero_wait_needs_user_recovery_loser_re_reads_persisted_status",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_loser_re_reads_persisted_status"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "awaiting_review"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_recovers_stale_blocker[False]",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_recovers_stale_blocker[False]"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "awaiting_review"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_recovers_stale_blocker[True]",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_recovers_stale_blocker[True]"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "implementing"
+              }
+            },
+            {
+              "values": {
+                "status": "implementing"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_sequential_no_duplicate",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_sequential_no_duplicate"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "needs_user"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_recovery_spawn_failure_fails_closed",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_recovery_spawn_failure_fails_closed"
+    },
+    {
+      "expect": {
+        "responses": {
+          "task_status": [
+            {
+              "values": {
+                "status": "awaiting_review"
+              }
+            }
+          ]
+        },
+        "spawn_attempts": 1
+      },
+      "id": "zero_wait_needs_user_revision_recovery_uses_revising_status",
+      "source_test": "test_mcp.py::test_zero_wait_needs_user_revision_recovery_uses_revising_status"
+    }
+  ],
+  "corpus_version": 1,
+  "schema_version": 17,
+  "scope": "Independent MCP response/count expectations over pinned source integration scenarios; synthetic Git/SQLite only, HTTP/model/spawn doubles; source assertions also verify filesystem/history/locks. Historical v15 corpus unchanged.",
+  "source": {
+    "commit": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+    "modules": [
+      "mcp_server.py",
+      "storage.py",
+      "delivery.py",
+      "automation.py"
+    ],
+    "scenario_files": [
+      "tests/test_delivery_on_accept.py",
+      "tests/test_mcp.py",
+      "tests/test_storage.py",
+      "tests/test_automation.py"
+    ]
+  }
+}

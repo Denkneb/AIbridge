@@ -27,8 +27,21 @@ profiles, parallel writers, quarantine, delivery, diagnostics/hook, config
 migration) в Rust **не завершены**.
 
 **Поток 0A завершён:** contract manifest и config/MCP/SQLite/security/runtime
-fixtures зафиксированы от Python v15. Ближайший шаг — **1.6: dependency/waiting
-domain transitions**, затем остальные schema/domain/config foundations
+fixtures зафиксированы от Python v15. **Шаг 1.6 завершён:** доменный статус
+`waiting_dependencies`, явная активация по `dependencies_satisfied` и закрытие.
+**Шаг 1.7 завершён:** типизированные findings, budget, checkpoint, profile
+snapshot, execution mode и workflow metadata с serde validation и canonical
+profile hashing (pure domain, без storage/runtime wiring).
+**Шаг 2.10 завершён:** typed config `execution_mode` с default `direct`,
+строгим разбором `direct|worktree` и worktree-only gate для parallel writers.
+**Шаг 2.11 завершён:** typed admission settings `max_active_tasks=1` и
+`allow_parallel_writers=false` по умолчанию, строгие integer/boolean checks.
+**Шаг 2.12 завершён:** встроенные и пользовательские профили, `default_profile`,
+выбор профиля и effective snapshot с зафиксированной моделью.
+**Шаг 3.12a завершён:** новый Rust state создаётся со schema v15;
+Rust-owned legacy v6 обновляется атомарно с сохранением строк и ownership guards.
+Ближайший шаг — **3.12b: historical writer-status indexes и v15 invariants**,
+затем остальные storage foundations
 и потребители (см.
 [docs/implementation-plan.md](docs/implementation-plan.md)). Новые возможности
 распределены по существующим потокам и выполняются после согласованного
@@ -41,11 +54,37 @@ refresh; единого хвостового «когда-нибудь» нет.
   workspace/endpoints/token files, max rounds/model/optional paths,
   auto-approve permissions, trusted external directories, credentials reader,
   project env reader).
+- Завершён этап **2.10. execution_mode validation**: `ProjectEntry` возвращает
+  типизированный `ExecutionMode`, absent → `Direct`, принимаются только точные
+  `direct|worktree`. `allow_parallel_writers` обязан быть boolean, `true`
+  допускается только с `worktree`. Неверные значения отвергаются безопасным
+  `DomainError`/`InvalidInput`, raw TOML сохраняется. Прошли 159 config tests,
+  включая 16 v15 mode/gate fixtures и workspace all-targets clippy.
+  Typed admission settings — шаг 2.11; runtime wiring — последующие задачи.
+- Завершён этап **2.11. Admission defaults/settings**: `ProjectEntry` возвращает
+  положительный `max_active_tasks` (default `1`) и boolean
+  `allow_parallel_writers` (default `false`). Большой task bound не включает
+  parallel writers; `true` по-прежнему разрешён только с `worktree`. Raw TOML
+  сохраняется, неверные типы/неположительные лимиты отвергаются безопасно.
+  Прошли 162 config tests, включая все 23 v15 mode/admission fixtures,
+  workspace all-targets clippy, format и `git diff --check`.
+  Storage admission/writer reservations и runtime concurrency — следующие задачи.
+- Завершён этап **2.12. Profile definitions/default/effective snapshot model**:
+  четыре встроенных профиля объединяются с проверенными пользовательскими
+  definitions; выбор идёт от explicit request к project default и implementer.
+  Snapshot разделяет definition source и selection origin, фиксирует модель
+  профиля либо проекта и canonical hashes. Неверный default, дополнительные
+  поля, некорректные модели, управляющие символы и обнаруженные секреты в
+  instructions отвергаются безопасно. Прошли 173 config tests, включая все
+  33 profile corpus cases и четыре независимых Python snapshot/hash goldens;
+  все 949 workspace tests, all-targets clippy, format и `git diff --check`.
+  Persistence, runtime selection и prompt wiring — последующие задачи.
 - Завершён этап **3.1. Read-only schema inspection**: crate `bridge-storage`
   открывает существующую БД строго read-only (`mode=ro&immutable=1`),
   проверяет согласованную пару `PRAGMA user_version=6` и
   `meta.schema_version='6'` и сверяет tables/columns/indexes/foreign keys с
   schema v6, не создавая, не мигрируя и не изменяя БД.
+  Шаг 3.12a расширяет read-only inspection на frozen schema v15.
 - Завершён этап **3.2. WAL, foreign keys и busy timeout**: `bridge-storage`
   предоставляет runtime read-write подключение, которое создаёт отсутствующий
   parent directory, применяет и проверяет `PRAGMA journal_mode=WAL`,
@@ -240,6 +279,16 @@ refresh; единого хвостового «когда-нибудь» нет.
   `initialize`/`inspect`, `PRAGMA user_version=6`, DDL и contract fixtures не
   меняются. Типизированный `RustStateError` не раскрывает project id, namespace,
   marker contents, SQL, пути и secrets.
+- Завершён этап **3.12a. Schema v15 additive DDL**: guarded Rust initializer
+  создаёт fresh v15 и атомарно обновляет Rust-owned legacy v6, сохраняя все
+  task/round/event значения. Добавлены findings, budget, workflow/dependencies,
+  execution mode, checkpoints, profiles, worktrees/quarantine и writer ledger.
+  Read-only inspection принимает v6/v15; v15 defaults и index predicate входят
+  в schema guard. Generic fixture initializer остаётся v6. Writer ledger
+  reconciliation/reservations и новые typed row fields — следующие задачи;
+  текущий single-task bound сохраняется транзакционной проверкой.
+  Прошли **200 storage tests**, **956 workspace tests**, read-only проверка
+  пяти SQLite fixtures, all-targets clippy, format и `git diff --check`.
 - Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
   Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
   базовой семантики Python `command_policy.py`: `split_command`
@@ -1211,7 +1260,12 @@ refresh; единого хвостового «когда-нибудь» нет.
   **6.4**, **6.5**, **6.6**, **6.7**, **6.8**, **7.1**, **7.2**, **7.3**,
   **7.4**, **7.5** и **7.6** завершены как foundation старого контракта
   schema v6. **Поток 0A завершён** (reference-контракт schema v15);
-  ближайшая задача — **1.6** (dependency/waiting domain transitions);
+  **шаги 1.6/1.7 завершены** (pure domain, без SQLite/runtime wiring);
+  **шаг 2.10 завершён** (config execution_mode validation и parallel mode gate);
+  **шаг 2.11 завершён** (typed admission defaults/settings);
+  **шаг 2.12 завершён** (profile definitions/defaults/effective snapshots);
+  **шаг 3.12a завершён** (fresh v15 и guarded additive v6→v15);
+  ближайшая задача — **3.12b** (writer-status indexes);
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v15 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

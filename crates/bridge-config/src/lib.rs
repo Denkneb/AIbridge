@@ -69,6 +69,22 @@
 //! [`ProjectEntry::values`] so that a later task can inspect every key and value
 //! without re-parsing.
 //!
+//! The execution-mode group (task 2.10) exposes a typed [`ExecutionMode`] via
+//! [`ProjectEntry::execution_mode`]. An absent key defaults to `direct`; only
+//! exact `direct` and `worktree` strings are accepted. The optional boolean
+//! `allow_parallel_writers` may be true only in worktree mode. Admission
+//! settings (task 2.11) expose a positive `max_active_tasks` (default `1`) and
+//! the validated `allow_parallel_writers` flag (default `false`). These settings
+//! do not reserve writer slots or start concurrent workers.
+//!
+//! Executor profiles (task 2.12) merge built-in and validated custom
+//! [`ProfileDefinition`] values. [`ProjectEntry::resolve_profile`] chooses an
+//! explicit request, the project default or the historical implementer;
+//! [`ProjectEntry::profile_snapshot`] pins that selection and its effective
+//! model, preferring the profile model over the project model. Profile
+//! instructions reject detected secrets, disallowed controls and excessive
+//! length. Definitions cannot add permissions or expand task scope.
+//!
 //! Errors use the shared [`bridge_domain::DomainError`] and its
 //! [`bridge_domain::ErrorKind`] category. Their [`Display`](std::fmt::Display)
 //! and [`Debug`](std::fmt::Debug) output contains only static, developer
@@ -82,8 +98,15 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use bridge_domain::{DomainError, ProjectId, Result};
+use bridge_domain::{DomainError, ExecutionMode, ProjectId, Result};
 use url::Url;
+
+mod profile_secrets;
+mod profiles;
+pub use profiles::{
+    BUILTIN_PROFILE_VERSION, CUSTOM_PROFILE_VERSION, DEFAULT_PROFILE_ID, ProfileDefinition,
+    ResolvedProfile, builtin_profiles,
+};
 
 /// The top-level TOML table that holds the configured projects.
 pub const PROJECTS_TABLE: &str = "projects";
@@ -99,6 +122,18 @@ pub const MCP_URL_KEY: &str = "mcp_url";
 
 /// The required per-project key that bounds the number of worker rounds.
 pub const MAX_ROUNDS_KEY: &str = "max_rounds";
+
+/// The optional per-project key that selects direct or worktree execution.
+pub const EXECUTION_MODE_KEY: &str = "execution_mode";
+
+/// The optional opt-in key subject to the worktree-only parallel-writer gate.
+pub const ALLOW_PARALLEL_WRITERS_KEY: &str = "allow_parallel_writers";
+
+/// The optional per-project bound on unfinished tasks, including waiting tasks.
+pub const MAX_ACTIVE_TASKS_KEY: &str = "max_active_tasks";
+
+/// Historical admission default: at most one unfinished task per project.
+pub const DEFAULT_MAX_ACTIVE_TASKS: u64 = 1;
 
 /// The optional per-project key that selects the OpenCode model.
 pub const OPENCODE_MODEL_KEY: &str = "opencode_model";
@@ -471,7 +506,12 @@ impl fmt::Display for ProjectEnv {
 /// and the deduplicated, canonical `auto_approve_external_directories` list, so
 /// consumers never have to repeat the task 2.2–2.9 validation or re-parse raw
 /// values. The raw TOML table is preserved verbatim for any later validation
-/// group, which inspects every key and value.
+/// group, which inspects every key and value. Task 2.10 also validates and
+/// stores the execution mode, with `direct` as the historical default. Task
+/// 2.11 stores the positive unfinished-task bound and parallel-writer opt-in,
+/// defaulting to one unfinished task and no parallel writers.
+/// Task 2.12 stores merged profile definitions and the optional project default,
+/// with immutable profile resolution and effective snapshot creation.
 #[derive(Clone)]
 pub struct ProjectEntry {
     id: ProjectId,
@@ -479,6 +519,11 @@ pub struct ProjectEntry {
     opencode_endpoint: Endpoint,
     mcp_endpoint: Option<McpEndpoint>,
     max_rounds: u64,
+    execution_mode: ExecutionMode,
+    max_active_tasks: u64,
+    allow_parallel_writers: bool,
+    default_profile: Option<String>,
+    profile_definitions: BTreeMap<String, ProfileDefinition>,
     opencode_model: Option<OpenCodeModel>,
     opencode_env_file: Option<ProjectEnvFile>,
     password_file: Option<CredentialPath>,
@@ -517,6 +562,57 @@ impl ProjectEntry {
     #[must_use]
     pub fn max_rounds(&self) -> u64 {
         self.max_rounds
+    }
+
+    /// Returns the validated mode, defaulting to direct when the key is absent.
+    /// This setting alone does not start a worktree executor.
+    #[must_use]
+    pub fn execution_mode(&self) -> ExecutionMode {
+        self.execution_mode
+    }
+
+    /// Returns the positive bound on unfinished tasks, including waiting tasks.
+    /// Defaults to one. A larger bound does not by itself permit parallel writers.
+    #[must_use]
+    pub fn max_active_tasks(&self) -> u64 {
+        self.max_active_tasks
+    }
+
+    /// Returns the parallel-writer opt-in, defaulting to false.
+    /// A true value is valid only in worktree mode; runtime admission is separate.
+    #[must_use]
+    pub fn allow_parallel_writers(&self) -> bool {
+        self.allow_parallel_writers
+    }
+
+    /// Returns the configured default profile, absent for the historical default.
+    #[must_use]
+    pub fn default_profile(&self) -> Option<&str> {
+        self.default_profile.as_deref()
+    }
+
+    /// Known immutable definitions, with custom definitions overriding built-ins.
+    #[must_use]
+    pub fn profile_definitions(&self) -> &BTreeMap<String, ProfileDefinition> {
+        &self.profile_definitions
+    }
+
+    /// Resolves an explicit id, then the project default, then implementer.
+    /// Empty requests mean no explicit selection; unknown ids return None.
+    #[must_use]
+    pub fn resolve_profile(&self, requested: Option<&str>) -> Option<ResolvedProfile<'_>> {
+        profiles::resolve_profile(self, requested)
+    }
+
+    /// Builds a submit-time snapshot with the effective model pinned.
+    /// Unknown explicit selections return a safe NotFound error. No state is written.
+    pub fn profile_snapshot(
+        &self,
+        requested: Option<&str>,
+    ) -> Result<bridge_domain::ProfileSnapshot> {
+        self.resolve_profile(requested)
+            .map(|resolved| resolved.snapshot(self.opencode_model()))
+            .ok_or_else(|| DomainError::not_found("requested profile is unknown"))
     }
 
     /// Returns the validated optional OpenCode model.
@@ -746,6 +842,11 @@ impl fmt::Debug for Config {
 ///   are missing, have the wrong type or are not a loopback `http` endpoint
 ///   with an explicit port in `1..=65535` and the required path, when
 ///   `max_rounds` is missing, is not a TOML integer or is not positive, when
+///   `execution_mode` is not exactly `direct` or `worktree`, when
+///   `max_active_tasks` is not a positive TOML integer, when
+///   `allow_parallel_writers` is not a boolean or is true outside worktree mode, when
+///   profile definitions have invalid ids, fields, models, text or detected
+///   secrets, or `default_profile` does not name a known profile, when
 ///   `opencode_model` is not a string, is not `'<providerID>/<modelID>'` or has
 ///   surrounding whitespace around the value or a component, when
 ///   `opencode_env_file` is not a non-empty string, when
@@ -844,7 +945,12 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         }
 
         let max_rounds = validate_max_rounds(&values)?;
+        let execution_mode = validate_execution_mode(&values)?;
+        let max_active_tasks = validate_max_active_tasks(&values)?;
+        let allow_parallel_writers = validate_allow_parallel_writers(&values, execution_mode)?;
         let opencode_model = validate_opencode_model(&values)?;
+        let profile_definitions = profiles::parse_definitions(&values)?;
+        let default_profile = profiles::parse_default(&values, &profile_definitions)?;
         let opencode_env_file = validate_opencode_env_file(&values, config_dir)?;
         let auto_approve_permissions = validate_auto_approve_permissions(&values)?;
         let auto_approve_external_directories =
@@ -865,6 +971,11 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 opencode_endpoint,
                 mcp_endpoint,
                 max_rounds,
+                execution_mode,
+                max_active_tasks,
+                allow_parallel_writers,
+                default_profile,
+                profile_definitions,
                 opencode_model,
                 opencode_env_file: opencode_env_file.map(ProjectEnvFile::new),
                 password_file: password.map(CredentialPath::new),
@@ -879,6 +990,51 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
     validate_credentials(&credentials)?;
 
     Ok(Config { projects })
+}
+
+/// Parses the exact domain vocabulary without whitespace normalization.
+fn validate_execution_mode(values: &toml::Table) -> Result<ExecutionMode> {
+    let Some(value) = values.get(EXECUTION_MODE_KEY) else {
+        return Ok(ExecutionMode::default());
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| DomainError::invalid_input("project execution_mode must be a string"))?;
+    if raw.trim() != raw {
+        return Err(DomainError::invalid_input(
+            "project execution_mode must not have surrounding whitespace",
+        ));
+    }
+    ExecutionMode::try_from(raw.to_owned()).map_err(|_| {
+        DomainError::invalid_input("project execution_mode must be direct or worktree")
+    })
+}
+
+/// Parses the optional positive TOML integer without boolean/string coercion.
+fn validate_max_active_tasks(values: &toml::Table) -> Result<u64> {
+    let Some(value) = values.get(MAX_ACTIVE_TASKS_KEY) else {
+        return Ok(DEFAULT_MAX_ACTIVE_TASKS);
+    };
+    let count = value.as_integer().and_then(|raw| u64::try_from(raw).ok());
+    count.filter(|count| *count > 0).ok_or_else(|| {
+        DomainError::invalid_input("project max_active_tasks must be a positive integer")
+    })
+}
+
+/// Parses the opt-in with its historical default and the task 2.10 mode gate.
+fn validate_allow_parallel_writers(values: &toml::Table, mode: ExecutionMode) -> Result<bool> {
+    let Some(value) = values.get(ALLOW_PARALLEL_WRITERS_KEY) else {
+        return Ok(false);
+    };
+    let parallel = value.as_bool().ok_or_else(|| {
+        DomainError::invalid_input("project allow_parallel_writers must be a boolean")
+    })?;
+    if parallel && mode != ExecutionMode::Worktree {
+        return Err(DomainError::invalid_input(
+            "project allow_parallel_writers=true requires execution_mode=worktree",
+        ));
+    }
+    Ok(parallel)
 }
 
 /// The static error for a reused server endpoint.
@@ -2088,11 +2244,11 @@ fn parse_project_env(text: &str) -> Result<ProjectEnv> {
 mod tests {
     use super::{
         AUTO_APPROVE_EXTERNAL_DIRECTORIES_KEY, AUTO_APPROVE_PERMISSIONS_KEY, Config,
-        MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY, OPENCODE_URL_KEY,
-        PROJECTS_TABLE, PROTECTED_ENV_NAMES, ProjectEnv, WORKSPACE_KEY, load_config,
-        parse_project_env, parse_projects, split_env_lines,
+        EXECUTION_MODE_KEY, MAX_ROUNDS_KEY, MCP_URL_KEY, OPENCODE_ENV_FILE_KEY, OPENCODE_MODEL_KEY,
+        OPENCODE_URL_KEY, PROJECTS_TABLE, PROTECTED_ENV_NAMES, ProjectEnv, WORKSPACE_KEY,
+        load_config, parse_project_env, parse_projects, split_env_lines,
     };
-    use bridge_domain::{DomainError, ErrorKind, ProjectId};
+    use bridge_domain::{DomainError, ErrorKind, ExecutionMode, ProjectId};
     use std::error::Error;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2101,12 +2257,12 @@ mod tests {
     const MINIMAL: &str = "[projects.proj]\nworkspace = \"ws\"\nopencode_url = \"http://127.0.0.1:4101\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n";
 
     /// A temporary directory removed recursively on drop.
-    struct TempDir {
+    pub(super) struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
-        fn new(tag: &str) -> Self {
+        pub(super) fn new(tag: &str) -> Self {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock must be after the Unix epoch")
@@ -2123,13 +2279,13 @@ mod tests {
             &self.path
         }
 
-        fn mkdir(&self, name: &str) -> PathBuf {
+        pub(super) fn mkdir(&self, name: &str) -> PathBuf {
             let path = self.path.join(name);
             std::fs::create_dir_all(&path).expect("temporary subdirectory must be creatable");
             path
         }
 
-        fn write(&self, name: &str, text: &str) -> PathBuf {
+        pub(super) fn write(&self, name: &str, text: &str) -> PathBuf {
             let path = self.path.join(name);
             std::fs::write(&path, text).expect("temporary config must be writable");
             path
@@ -2167,7 +2323,12 @@ mod tests {
     }
 
     /// Builds a project table with an explicit `opencode_url` and extra keys.
-    fn project_toml_with(id: &str, workspace: &str, opencode_url: &str, extra: &str) -> String {
+    pub(super) fn project_toml_with(
+        id: &str,
+        workspace: &str,
+        opencode_url: &str,
+        extra: &str,
+    ) -> String {
         format!(
             "[projects.\"{id}\"]\nworkspace = \"{workspace}\"\nopencode_url = \"{opencode_url}\"\npassword_file = \"secrets/proj.password\"\nmax_rounds = 3\n{extra}"
         )
@@ -2198,6 +2359,430 @@ mod tests {
     fn crate_constants_name_the_projects_table_and_workspace_key() {
         assert_eq!(PROJECTS_TABLE, "projects");
         assert_eq!(WORKSPACE_KEY, "workspace");
+        assert_eq!(EXECUTION_MODE_KEY, "execution_mode");
+    }
+
+    #[test]
+    fn execution_mode_defaults_and_explicit_modes_preserve_raw_values() {
+        let dir = TempDir::new("execution-mode-valid");
+        let workspace = dir.mkdir("ws");
+        for (extra, expected, raw) in [
+            ("", ExecutionMode::Direct, None),
+            (
+                "execution_mode = 'direct'\n",
+                ExecutionMode::Direct,
+                Some("direct"),
+            ),
+            (
+                "execution_mode = 'worktree'\n",
+                ExecutionMode::Worktree,
+                Some("worktree"),
+            ),
+        ] {
+            let path = dir.write(
+                "projects.toml",
+                &project_toml_with(
+                    "proj",
+                    workspace.to_str().unwrap(),
+                    "http://127.0.0.1:4101",
+                    extra,
+                ),
+            );
+            let config = load_config(&path).expect("valid execution mode");
+            let entry = config.project("proj").unwrap();
+            assert_eq!(entry.execution_mode(), expected);
+            assert_eq!(entry.max_active_tasks(), 1);
+            assert!(!entry.allow_parallel_writers());
+            assert_eq!(
+                entry.get(EXECUTION_MODE_KEY).and_then(toml::Value::as_str),
+                raw
+            );
+            assert_eq!(entry.contains_key(EXECUTION_MODE_KEY), raw.is_some());
+            assert_eq!(entry.clone().execution_mode(), expected);
+        }
+    }
+
+    #[test]
+    fn execution_mode_rejects_non_strings() {
+        for raw in [
+            "true",
+            "false",
+            "3",
+            "1.5",
+            "[]",
+            "['worktree']",
+            "{}",
+            "1979-05-27",
+        ] {
+            let error = load_endpoint_config(
+                "proj",
+                "http://127.0.0.1:4101",
+                &format!("execution_mode = {raw}\n"),
+            );
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            assert_eq!(error.message(), "project execution_mode must be a string");
+        }
+    }
+
+    #[test]
+    fn execution_mode_rejects_whitespace_case_and_ambiguous_strings() {
+        for raw in [
+            "'direct '",
+            "' direct'",
+            "'worktree '",
+            "' worktree'",
+            "'Direct'",
+            "'WORKTREE'",
+            "'Worktree'",
+            "''",
+            "'none'",
+            "'default'",
+            "'auto'",
+            "\"direct\\t\"",
+            "\"worktree\\n\"",
+            "'direct\\t'",
+            "'direct\u{a0}'",
+        ] {
+            let error = load_endpoint_config(
+                "proj",
+                "http://127.0.0.1:4101",
+                &format!("execution_mode = {raw}\n"),
+            );
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            assert!(error.message().starts_with("project execution_mode"));
+        }
+    }
+
+    #[test]
+    fn parallel_writers_require_worktree_for_every_mode_and_boolean_combination() {
+        let dir = TempDir::new("execution-mode-parallel-gate");
+        let workspace = dir.mkdir("ws");
+        for (mode_toml, mode) in [
+            ("", ExecutionMode::Direct),
+            ("execution_mode = 'direct'\n", ExecutionMode::Direct),
+            ("execution_mode = 'worktree'\n", ExecutionMode::Worktree),
+        ] {
+            for parallel in [None, Some(false), Some(true)] {
+                let parallel_toml = parallel
+                    .map(|v| format!("allow_parallel_writers = {v}\n"))
+                    .unwrap_or_default();
+                let path = dir.write(
+                    "projects.toml",
+                    &project_toml_with(
+                        "proj",
+                        workspace.to_str().unwrap(),
+                        "http://127.0.0.1:4101",
+                        &format!("{mode_toml}{parallel_toml}"),
+                    ),
+                );
+                let result = load_config(&path);
+                if parallel == Some(true) && mode == ExecutionMode::Direct {
+                    let error = result.expect_err("parallel writers need a private worktree");
+                    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                    assert_eq!(
+                        error.message(),
+                        "project allow_parallel_writers=true requires execution_mode=worktree"
+                    );
+                } else {
+                    let config = result.expect("valid mode/parallel combination");
+                    let entry = config.project("proj").unwrap();
+                    assert_eq!(entry.execution_mode(), mode);
+                    assert_eq!(entry.allow_parallel_writers(), parallel.unwrap_or(false));
+                    assert_eq!(
+                        entry
+                            .get("allow_parallel_writers")
+                            .and_then(toml::Value::as_bool),
+                        parallel
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_writer_mode_gate_rejects_non_booleans_in_both_modes() {
+        for mode in ["direct", "worktree"] {
+            for raw in [
+                "'false'",
+                "'true'",
+                "0",
+                "1",
+                "0.0",
+                "[]",
+                "{}",
+                "1979-05-27",
+            ] {
+                let error = load_endpoint_config(
+                    "proj",
+                    "http://127.0.0.1:4101",
+                    &format!("execution_mode = '{mode}'\nallow_parallel_writers = {raw}\n"),
+                );
+                assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                assert_eq!(
+                    error.message(),
+                    "project allow_parallel_writers must be a boolean"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn execution_mode_validation_is_per_project_and_preserves_other_settings() {
+        let dir = TempDir::new("execution-mode-per-project");
+        let a = dir.mkdir("a");
+        let b = dir.mkdir("b");
+        let text = format!(
+            "{}\n{}",
+            project_toml_with("a", a.to_str().unwrap(), "http://127.0.0.1:4101", ""),
+            project_toml_with(
+                "b",
+                b.to_str().unwrap(),
+                "http://127.0.0.1:4102",
+                "execution_mode = 'worktree'\nallow_parallel_writers = true\nmax_active_tasks = 3\n"
+            )
+        );
+        let path = dir.write("projects.toml", &text);
+        let config = load_config(&path).expect("valid independent projects");
+        assert_eq!(
+            config.project("a").unwrap().execution_mode(),
+            ExecutionMode::Direct
+        );
+        let entry = config.project("b").unwrap();
+        assert_eq!(entry.execution_mode(), ExecutionMode::Worktree);
+        assert_eq!(entry.max_active_tasks(), 3);
+        assert!(entry.allow_parallel_writers());
+        assert_eq!(config.project("a").unwrap().max_active_tasks(), 1);
+        assert!(!config.project("a").unwrap().allow_parallel_writers());
+        assert_eq!(entry.max_rounds(), 3);
+        assert_eq!(
+            entry
+                .get("max_active_tasks")
+                .and_then(toml::Value::as_integer),
+            Some(3)
+        );
+        let invalid = text.replace("execution_mode = 'worktree'", "execution_mode = 'direct'");
+        let path = dir.write("projects.toml", &invalid);
+        assert!(
+            load_config(&path).is_err(),
+            "a bad mode in any project rejects the whole config"
+        );
+    }
+
+    #[test]
+    fn execution_mode_and_parallel_gate_errors_are_redacted() {
+        let dir = TempDir::new("execution-mode-private-config");
+        let workspace = dir.mkdir("private-workspace");
+        let private_input = "secret-execution-token";
+        for extra in [
+            format!("execution_mode = '{private_input}'\n"),
+            format!("allow_parallel_writers = '{private_input}'\n"),
+            format!("max_active_tasks = '{private_input}'\n"),
+            "allow_parallel_writers = true\n".to_owned(),
+        ] {
+            let path = dir.write(
+                "private-projects.toml",
+                &project_toml_with(
+                    "private_proj",
+                    workspace.to_str().unwrap(),
+                    "http://127.0.0.1:4101",
+                    &extra,
+                ),
+            );
+            let error = load_config(&path).expect_err("must reject invalid mode/gate");
+            let rendered = format!("{error} {error:?}");
+            for sensitive in [
+                private_input,
+                "private_proj",
+                workspace.to_str().unwrap(),
+                path.to_str().unwrap(),
+            ] {
+                assert!(
+                    !rendered.contains(sensitive),
+                    "error leaked input: {rendered}"
+                );
+            }
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn execution_mode_and_admission_match_frozen_v15_config_corpus() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/fixtures/config-cases.json")).unwrap();
+        let mut checked = 0;
+        for case in corpus["cases"].as_array().unwrap() {
+            if !matches!(
+                case["rule"].as_str(),
+                Some("execution_mode" | "allow_parallel_writers" | "max_active_tasks")
+            ) {
+                continue;
+            }
+            checked += 1;
+            let dir = TempDir::new("execution-mode-corpus");
+            let workspace = dir.mkdir("ws");
+            let text = case["toml"]
+                .as_str()
+                .unwrap()
+                .replace("${WORKSPACE}", workspace.to_str().unwrap());
+            let path = dir.write("projects.toml", &text);
+            let result = load_config(&path);
+            if case["expectation"] == "valid" {
+                let config = result.unwrap_or_else(|error| panic!("case {}: {error}", case["id"]));
+                let entry = config.project("proj").unwrap();
+                let expected = case["expect"]["execution_mode"]
+                    .as_str()
+                    .unwrap_or("direct");
+                assert_eq!(
+                    entry.execution_mode().as_str(),
+                    expected,
+                    "case {}",
+                    case["id"]
+                );
+                assert_eq!(
+                    entry.max_active_tasks(),
+                    case["expect"]["max_active_tasks"].as_u64().unwrap_or(1),
+                    "case {}",
+                    case["id"]
+                );
+                assert_eq!(
+                    entry.allow_parallel_writers(),
+                    case["expect"]["allow_parallel_writers"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    "case {}",
+                    case["id"]
+                );
+            } else {
+                let error = result.expect_err("invalid corpus case must fail");
+                assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                let message = match case["error_category"].as_str().unwrap() {
+                    "execution_mode_type" => "project execution_mode must be a string",
+                    "execution_mode_whitespace" => {
+                        "project execution_mode must not have surrounding whitespace"
+                    }
+                    "execution_mode_value" => "project execution_mode must be direct or worktree",
+                    "allow_parallel_writers_type" => {
+                        "project allow_parallel_writers must be a boolean"
+                    }
+                    "allow_parallel_writers_direct" => {
+                        "project allow_parallel_writers=true requires execution_mode=worktree"
+                    }
+                    "max_active_tasks_invalid" => {
+                        "project max_active_tasks must be a positive integer"
+                    }
+                    category => panic!("unexpected targeted category: {category}"),
+                };
+                assert_eq!(error.message(), message, "case {}", case["id"]);
+            }
+        }
+        assert_eq!(checked, 23, "all targeted frozen v15 cases must run");
+    }
+
+    #[test]
+    fn admission_defaults_and_positive_integer_counts_preserve_raw_values() {
+        let dir = TempDir::new("admission-valid-counts");
+        let workspace = dir.mkdir("ws");
+        for (extra, expected, raw) in [
+            ("".to_owned(), 1, None),
+            ("max_active_tasks = 1\n".to_owned(), 1, Some(1)),
+            ("max_active_tasks = 3\n".to_owned(), 3, Some(3)),
+            ("max_active_tasks = 0x10\n".to_owned(), 16, Some(16)),
+            ("max_active_tasks = 1_000\n".to_owned(), 1000, Some(1000)),
+            (
+                format!("max_active_tasks = {}\n", i64::MAX),
+                i64::MAX as u64,
+                Some(i64::MAX),
+            ),
+        ] {
+            let path = dir.write(
+                "projects.toml",
+                &project_toml_with(
+                    "proj",
+                    workspace.to_str().unwrap(),
+                    "http://127.0.0.1:4101",
+                    &extra,
+                ),
+            );
+            let config = load_config(&path).expect("positive TOML integer or absent default");
+            let entry = config.project("proj").unwrap();
+            assert_eq!(entry.max_active_tasks(), expected);
+            assert_eq!(
+                entry
+                    .get("max_active_tasks")
+                    .and_then(toml::Value::as_integer),
+                raw
+            );
+            assert!(!entry.allow_parallel_writers());
+            assert!(!entry.contains_key("allow_parallel_writers"));
+            assert_eq!(entry.clone().max_active_tasks(), expected);
+        }
+    }
+
+    #[test]
+    fn admission_counts_reject_nonpositive_and_noninteger_values_in_both_modes() {
+        for mode in ["direct", "worktree"] {
+            for raw in [
+                "0",
+                "-1",
+                "-9223372036854775808",
+                "true",
+                "false",
+                "1.0",
+                "1.5",
+                "'2'",
+                "[]",
+                "[1]",
+                "{}",
+                "1979-05-27",
+            ] {
+                let error = load_endpoint_config(
+                    "proj",
+                    "http://127.0.0.1:4101",
+                    &format!("execution_mode = '{mode}'\nmax_active_tasks = {raw}\n"),
+                );
+                assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                assert_eq!(
+                    error.message(),
+                    "project max_active_tasks must be a positive integer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn admission_task_bound_and_parallel_writer_opt_in_are_independent() {
+        let dir = TempDir::new("admission-independent-settings");
+        let workspace = dir.mkdir("ws");
+        for count in [1, 3] {
+            for mode in ["direct", "worktree"] {
+                for parallel in [false, true] {
+                    let extra = format!(
+                        "max_active_tasks = {count}\nexecution_mode = '{mode}'\nallow_parallel_writers = {parallel}\n"
+                    );
+                    let path = dir.write(
+                        "projects.toml",
+                        &project_toml_with(
+                            "proj",
+                            workspace.to_str().unwrap(),
+                            "http://127.0.0.1:4101",
+                            &extra,
+                        ),
+                    );
+                    let result = load_config(&path);
+                    if parallel && mode == "direct" {
+                        assert!(
+                            result.is_err(),
+                            "a higher task bound never bypasses the mode gate"
+                        );
+                    } else {
+                        let config = result.expect("independent settings are valid");
+                        let entry = config.project("proj").unwrap();
+                        assert_eq!(entry.max_active_tasks(), count);
+                        assert_eq!(entry.allow_parallel_writers(), parallel);
+                    }
+                }
+            }
+        }
     }
 
     // Corpus case `valid-minimal-project` (structural view).

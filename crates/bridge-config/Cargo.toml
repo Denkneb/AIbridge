@@ -9,5 +9,8 @@ workspace = true
 
 [dependencies]
 bridge-domain.workspace = true
+base64 = "0.22"
+regex = "1"
+serde_json.workspace = true
 toml = { workspace = true }
 url.workspace = true

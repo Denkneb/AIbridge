@@ -53,9 +53,12 @@ Targeted checks:
   worktree execution, executor profiles, parallel writers, quarantine,
   delivery, diagnostics/hook, config migration) в Rust **не завершены**.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
-  зафиксированы от Python v15. Ближайший шаг — **1.6 (dependency/waiting domain
-  transitions)**, затем 1.7, config/storage foundations и потребители по
-  зависимостям. Исторический шаг 7.7 больше не заблокирован refresh-контрактом.
+  зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
+  **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
+  **3.12a завершён** (fresh v15 и guarded additive v6→v15).
+  Ближайший шаг — **3.12b (writer-status indexes)**, затем storage foundations
+  и потребители по зависимостям. Исторический шаг 7.7 больше не заблокирован
+  refresh-контрактом.
 
 ## Поток 0. Контрактная база
 
@@ -263,7 +266,7 @@ Table-driven реализация допустимых и запрещённых
 
 Data model и serde compatibility без runtime logic.
 
-### 1.6. Dependency/waiting domain transitions (v11, не завершено)
+### 1.6. Dependency/waiting domain transitions (v11, завершено)
 
 - **Цель:** доменные `waiting_dependencies` статус и переходы без SQLite.
 - **Source evidence:** `storage.py:103,118,133,2807-2878`
@@ -281,12 +284,26 @@ Data model и serde compatibility без runtime logic.
   storage/MCP-задач (3.12c и MCP), не домена.
 - **Targeted checks:** domain transition tests.
 - **Зависит от:** 1.4. **Открывает:** 3.12c, 7.17a, 8.14.
+- **Результат:** `TaskStatus::WaitingDependencies` с parsing/serde и active
+  classification; generic transition table разрешает только `waiting -> closed`.
+  Отдельная `TASK_EVENT_TRANSITIONS` и `transition_on(DependenciesSatisfied)`
+  разрешают `waiting -> implementing`; обычный `require_transition` отвергает
+  активацию. Event spelling — `dependencies_satisfied`. Повтор события из
+  `implementing` запрещён. Dependency graph, atomic activation, writer
+  reservations и idempotency остаются в 3.12c/MCP; runtime/schema остаются v6.
+  Табличные тесты покрывают все status pairs и событие из каждого статуса,
+  strict parsing/serde, close и безопасные ошибки. Storage query regression
+  ожидает семь active statuses; production storage/schema не менялись.
+- **Проверено:** 56 domain, 193 storage и 143 worker tests; targeted clippy
+  (`bridge-domain`, `bridge-storage`, `bridge-worker`, all targets), format и
+  `git diff --check`. Worker tests запускались вне песочницы для loopback HTTP.
 
-### 1.7. Typed contracts новых persisted полей (v7–v13, не завершено)
+### 1.7. Typed contracts новых persisted полей (v7–v13, завершено)
 
 - **Цель:** serde-модели новых persisted полей без runtime logic.
-- **Source evidence:** `storage.py:1705-1805`; `git_snapshot.py:32-458`;
-  `usage.py:156-244`; `profiles.py:37-416`.
+- **Source evidence:** `storage.py:705-1055,1705-1805`; `git_snapshot.py:29-49`;
+  `usage.py:156-244`; `profiles.py:37-487`; `mcp_server.py:172-334`;
+  `worker.py:1400-1530,1549-1654`. HEAD проверен: `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`.
 - **Содержание:** `StructuredFinding` (severity/path/line/code/message),
   `Budget` (limits input/output/reasoning/cache_read/cache_write/cost +
   `warning_threshold`), `RoundCheckpoint` (fingerprints + diff-stat),
@@ -295,6 +312,37 @@ Data model и serde compatibility без runtime logic.
 - **Критерии приёмки:** round-trip serde; canonical hash; corrupt fail closed.
 - **Targeted checks:** domain model serde tests.
 - **Зависит от:** 1.3, 1.5. **Открывает:** 3.12a, 7.13–7.18.
+- **Результат:** модуль `persisted` в `bridge-domain` (типы re-exported из crate root)
+  содержит `StructuredFinding`/bounded `StructuredFindings`, `Budget` с typed
+  usage fields и positive finite JSON numbers, `RoundCheckpoint` со всеми
+  repository/state/diff-stat моделями, `ProfileSnapshot`, `ExecutionMode` и
+  `WorkflowMetadata`/`DependencyReference`. Deserialize проверяет весь payload,
+  а не сохраняет уцелевший поднабор; invalid data даёт безопасную ошибку.
+  Checkpoint refs нормализуются в lowercase; state/topology/mirrored workspace
+  fingerprints и bounds проверяются. Runtime/schema остаются foundation v6.
+- **Контракт для потребителей:** поле `ProfileSnapshot.source` — `builtin|config`,
+  а persisted `tasks.profile_source` — origin (`argument|project_default|builtin_default`).
+  `validate_identity` сравнивает row id/hash/origin с snapshot. Snapshot SHA-256
+  использует sorted compact UTF-8 JSON; definition SHA-256 — sorted UTF-8 JSON
+  с Python-default пробелами после separators и собственную модель definition,
+  до наследования project model. `sha2` добавлена как dependency; `serde_json`
+  теперь production dependency домена. Golden cases вычислены Python-кодом
+  зафиксированного HEAD, без чтения runtime state.
+- **Границы:** публично собранные/изменённые модели требуют `validate` перед
+  использованием. Findings проверяют shape и lexical запреты; scope/symlink/
+  trusted-root authorization и secret scanning остаются у потребителей.
+  Dependency task IDs — safe tokens до 128 символов, не UUID `TaskId`; strict
+  duplicate-edge rejection не заменяет linked-project/cycle checks. Budget
+  сохраняет integer/float JSON encoding, отсутствие budget/profile/checkpoint
+  представляет внешний `Option<T>`, не повреждённая модель по умолчанию.
+  Checkpoint игнорирует неизвестные поля как reference reader, но неверный тип
+  известного поля отвергается даже у unavailable repository; пустой repository
+  list отвергается. Builtins/config resolution, migrations и runtime consumers
+  не входят в задачу.
+- **Проверено:** 74 domain tests (18 новых), включая round-trip, Python golden
+  hashes, Unicode, inherited model, tampering, optional/legacy shapes, bounds,
+  missing/unknown/malformed fields, duplicate dependencies и redaction;
+  workspace/all-targets clippy, format и `git diff --check`.
 
 ## Поток 2. Конфигурация
 
@@ -316,29 +364,62 @@ Data model и serde compatibility без runtime logic.
 
 ### 2.9. Project env reader
 
-### 2.10. execution_mode validation (v10, не завершено)
+### 2.10. execution_mode validation (v10, завершено)
 
 - **Цель:** config validation `execution_mode=direct|worktree`.
-- **Source evidence:** `config.py:44,247-280,626`;
-  `tests/test_config.py:286-390`.
+- **Source evidence:** `config.py:249-280,443-466,626`;
+  `tests/test_config.py:286-390`. Source HEAD проверен: `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`.
 - **Содержание:** absent→`direct`; `worktree`; surrounding whitespace/invalid
   fail closed; `allow_parallel_writers=true` только при `worktree`.
 - **Критерии приёмки:** default `direct` не меняется; fail-closed типизирован.
 - **Targeted checks:** config execution_mode tests.
 - **Зависит от:** 2.1, 0A.2. **Открывает:** 7.16a, 8.17.
+- **Результат:** `ProjectEntry::execution_mode() -> bridge_domain::ExecutionMode`;
+  absent → `Direct`, exact `direct|worktree`, no trim/coercion. Loader также
+  проверяет тип `allow_parallel_writers` (только TOML boolean) и worktree-only
+  gate для `true`. Errors — `DomainError`/`InvalidInput`, статические безопасные
+  сообщения с разделением type/whitespace/value/gate. Validation действует
+  отдельно для каждого проекта; ошибка любого проекта отвергает весь config.
+  Сырая TOML-таблица сохраняется без вставки defaults и нормализации.
+- **Границы:** typed admission settings (`max_active_tasks`,
+  `allow_parallel_writers` getter/defaults) остаются задачей 2.11; mode gate
+  уже проверен в 2.10. Worktree execution/storage/runtime wiring не входят;
+  конфигурация `worktree` сама по себе не запускает worktree executor.
+- **Проверено:** 159 config tests (8 новых), включая все 16 targeted v15
+  corpus cases без skips, mode/type/whitespace/case/boolean matrix,
+  per-project isolation, raw-value preservation и redaction; workspace
+  all-targets clippy, format, `git diff --check`. `serde_json` добавлен только
+  как config dev-dependency для чтения frozen corpus; fixtures не менялись.
 
-### 2.11. max_active_tasks / allow_parallel_writers defaults (v14 B1 / v15 B2, не завершено)
+### 2.11. max_active_tasks / allow_parallel_writers defaults (v14 B1 / v15 B2, завершено)
 
 - **Цель:** B1/B2 config defaults и gate.
 - **Source evidence:** `config.py:51-56,416-466`;
-  `tests/test_config.py:800-866`.
+  `tests/test_config.py:338-392`. HEAD проверен: `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`.
 - **Содержание:** `max_active_tasks=1` default, positive int (bool/0/negative
   rejected); `allow_parallel_writers=false` default, true только worktree.
 - **Критерии приёмки:** historical defaults не ослаблены; worktree-only gate.
 - **Targeted checks:** config admission-defaults tests.
 - **Зависит от:** 2.10, 0A.2. **Открывает:** 3.12d, 7.17a, 7.17b.
+- **Результат:** `ProjectEntry::max_active_tasks() -> u64` с default `1` и
+  `ProjectEntry::allow_parallel_writers() -> bool` с default `false`.
+  Лимит принимается только как положительный TOML integer (без bool/string/float
+  coercion); хранится без сужения в `u64`, проверена граница `i64::MAX` TOML.
+  Общий с 2.10 parser возвращает проверенный boolean и сохраняет worktree-only
+  gate для `true`. Настройки независимы: большой task bound не включает parallel
+  writers, а parallel opt-in разрешён в worktree и при task bound `1`.
+  Defaults не вставляются в raw TOML; getters одинаково работают после clone.
+  Invalid values дают безопасный `DomainError`/`InvalidInput`, без input/path/id.
+- **Границы:** config только хранит admission settings; counting/reservations,
+  writer ledger, dependency activation, SQLite/schema и runtime concurrency
+  остаются у storage/worker/MCP consumers. Ни один default не ослаблен.
+- **Проверено:** 162 config tests (3 новых, расширены mode/gate, per-project и
+  redaction regressions), все 23 targeted v15 config cases без skips; native
+  TOML integer forms/boundary, nonpositive/wrong-type values в обоих режимах,
+  independent-settings matrix, raw-value preservation и typed per-project
+  defaults; workspace all-targets clippy, format и `git diff --check`.
 
-### 2.12. Profile definitions/default/effective snapshot model (v13, не завершено)
+### 2.12. Profile definitions/default/effective snapshot model (v13, завершено)
 
 - **Цель:** config profile definitions и resolution.
 - **Source evidence:** `config.py:45-61,344-413`; `profiles.py:37-416`;
@@ -350,6 +431,25 @@ Data model и serde compatibility без runtime logic.
   implementer backward compatible.
 - **Targeted checks:** config/profile resolution tests.
 - **Зависит от:** 2.1, 0A.2. **Открывает:** 7.18, 8.18.
+- **Результат:** immutable definitions объединяют четыре точных Python builtins
+  и пользовательские profiles; строгие ID, purpose/instructions/model checks,
+  запрет дополнительных полей и неизвестного default. Приоритет выбора:
+  непустой argument → project default → builtin implementer. Source definition
+  отделён от selection origin; effective model берётся из profile либо project,
+  а snapshot фиксирует значения и canonical definition/snapshot hashes через
+  domain 1.7. Переопределённый implementer не считается historical builtin.
+  Defaults не вставляются в raw TOML; ошибки и Debug не раскрывают inputs.
+- **Security:** private instruction gate проверяет девять категорий секретов
+  по reference patterns и frozen fixtures; добавлены production `regex` и
+  `base64`, `serde_json` перенесён в production dependencies.
+- **Границы:** только config definitions/resolution/snapshots; persistence,
+  runtime selection, prompt/UI wiring остаются у 3.12/7.18/8.18. Python runtime
+  state не читался и не изменялся; reference HEAD подтверждён по manifest.
+- **Проверено:** 173 config tests, все 33 profile corpus cases без skips,
+  четыре независимых Python canonical snapshot/hash goldens, effective-model
+  и origin/source matrix, bounds/Unicode/controls, frozen secret categories,
+  redaction и per-project isolation; все 949 workspace tests, workspace
+  all-targets clippy, format и `git diff --check`.
 
 Каждая задача переносит только указанную группу правил и её fixtures.
 
@@ -516,14 +616,14 @@ Data model и serde compatibility без runtime logic.
 
 ### 3.12. Schema v15 storage target (после 0A, не завершено)
 
-Не реализуется в текущей задаче. Зависит от согласованного refresh 0A.4 и
+**3.12a завершён; 3.12b–3.12f остаются открыты.** Зависит от refresh 0A.4 и
 typed-контрактов 1.7 (для 3.12c — также 1.6).
 Каждая подзадача меняет один storage-контракт; schema, public API и security
 policy не объединяются. Rust по-прежнему ведёт только собственную пустую БД
 (fresh v15) и Rust-owned additive upgrade/legacy fixtures; Python state не
 читается и не мигрируется.
 
-- **3.12a. Additive columns/table DDL.** `rounds.structured_findings` (v7),
+- **3.12a. Additive columns/table DDL (завершено).** `rounds.structured_findings` (v7),
   `tasks.budget_json` (v8), `tasks.workflow_id`/`depends_on` (v9),
   `tasks.execution_mode` + `worktrees`/`worktree_quarantine` (v10),
   `rounds.checkpoint_json` (v12), `tasks.profile*` (v13), `active_writers`
@@ -531,6 +631,29 @@ policy не объединяются. Rust по-прежнему ведёт то
   1908-2091`. Acceptance: fresh v15 DDL и additive v6→v15 на Rust-owned
   legacy fixture; `meta.schema_version='15'`. Depends on 1.7. Check: storage
   tests + `verify.py`.
+  **Результат:** `RustStateLayout::initialize` создаёт fresh v15 либо обновляет
+  строго Rust-owned v6 после read-only sidecar/schema/runtime-owner guard и
+  повторной проверки внутри `BEGIN IMMEDIATE`. DDL и оба version markers
+  атомарны; все legacy task/round/event columns сохраняются без backfill.
+  Новые optional поля NULL, execution mode `direct`, writer parallel default `0`.
+  `inspect` и ownership guard принимают frozen v6/v15; v15 проверяет также
+  defaults и single-writer index predicate. Fresh и upgraded DDL совпадают с
+  independent `expected-v15.json` по tables/columns/defaults/indexes/FKs;
+  физический порядок добавленных columns не является контрактом.
+  Final v15 indexes создаются как часть структурного target (старый
+  `ux_tasks_active` удалён); historical v11/v14 upgrades и writer semantic
+  matrix остаются в 3.12b. До 3.12d `create_task` сохраняет прежний single-task
+  bound через проверку внутри writer transaction, после request replay.
+  **Границы:** generic `initialize` сохраняет исторический v6 fixture contract;
+  runtime Rust state использует guarded layout initializer. Python state не
+  читается и не мигрируется. Ledger остаётся пустым: reconcile/reservations,
+  typed row mapping новых полей и runtime consumers — следующие задачи.
+  **Проверено:** 200 storage tests (7 новых), четыре Rust-owned legacy fixture
+  upgrades с сохранением всех прежних columns, defaults/NULL semantics,
+  idempotency, fresh/concurrent upgrade, transaction rollback и retry,
+  single-task admission/replay regression, wrong defaults/predicate rejection;
+  SQLite `verify.py` проверил 5 fixtures read-only; workspace clippy, format,
+  `git diff --check` и все 956 workspace tests.
 - **3.12b. Writer-status indexes: historical v11/v14 vs final v15.**
   Промежуточные `ux_tasks_active` (`tasks(project_id)` WHERE writer statuses;
   `storage.py:140-145`) и `ux_active_writers_project`
@@ -597,7 +720,10 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **7.3** (Session resolution), шаг **7.4** (Initial prompt happy path), шаг
   **7.5** (Revision round) и шаг **7.6** (Permission blocker) завершены.
   Завершённые этапы 0–6 и 7.1–7.6 — foundation старого контракта schema v6.
-  **Поток 0A завершён**; ближайшая задача — **1.6**, затем foundations v15;
+  **Поток 0A, domain 1.6/1.7 и config 2.10–2.12 завершены**;
+  **3.12a завершён** (fresh v15 и guarded additive v6→v15);
+  ближайшая задача — **3.12b**,
+  затем foundations v15;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v15 в Rust не завершены.
 
@@ -2868,11 +2994,12 @@ improvement**. Limitation не выдаётся за реализованное 
 
 ## Порядок и готовность
 
-1. **Поток 0A завершён. Ближайшая задача — 1.6: dependency/waiting domain transitions.**
-2. После 0A: foundations — domain 1.6/1.7, config 2.10–2.12, storage 3.12,
+1. **Поток 0A, domain 1.6/1.7, config 2.10–2.12 и storage 3.12a завершены. Ближайшая задача — 3.12b: writer-status indexes.**
+2. Оставшиеся foundations — storage 3.12,
    затем потребители (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15).
 3. **Все новые возможности (v7–v15) в Rust НЕ завершены**; завершены только
-   0–6 и 7.1–7.6 как foundation старого контракта v6. 7.6 accepted сохраняется.
+   0–6 и 7.1–7.6 как foundation старого контракта v6, плюс pure-domain 1.6/1.7
+   и config 2.10–2.12/storage DDL 3.12a по v15-контракту. 7.6 accepted сохраняется.
 4. Следующий незавершённый исторический шаг 7.7 (Question blocker) выполняется
    после завершённого 0A; порядок и зависимости новых задач — по ссылкам выше.
 

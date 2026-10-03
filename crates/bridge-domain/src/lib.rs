@@ -5,7 +5,10 @@
 //! [`TaskId`]), the frozen [`TaskStatus`] vocabulary and the frozen
 //! round/verification vocabulary ([`RoundKind`], [`RoundStatus`],
 //! [`VerifierState`], [`VerificationStatus`]) with the [`Round`] and
-//! [`Verification`] data models. It deliberately keeps a strict separation
+//! [`Verification`] data models. The v15-reference persisted contracts include
+//! [`StructuredFinding`], [`Budget`], [`RoundCheckpoint`], [`ProfileSnapshot`],
+//! [`WorkflowMetadata`] and [`ExecutionMode`], with validation and canonical
+//! profile hashing but no storage or runtime logic. It keeps a strict separation
 //! between the *safe* message that may be shown to a user and the
 //! *diagnostic* source that may contain sensitive internal details.
 
@@ -15,6 +18,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+mod persisted;
+pub use persisted::*;
 
 /// Returns the package name as a trivial smoke-check helper.
 #[must_use]
@@ -299,18 +305,19 @@ pub enum TaskStatus {
     Accepted,
     /// The task was closed.
     Closed,
+    /// The task is waiting for its dependencies to be accepted.
+    WaitingDependencies,
 }
 
-/// The single, table-driven source of truth for allowed [`TaskStatus`]
-/// transitions.
+/// The table-driven source of truth for ordinary [`TaskStatus`] transitions.
 ///
 /// Each entry is an allowed `(from, to)` pair. Every decision about whether a
-/// transition is permitted is derived from this table, so no caller-side
+/// ordinary transition is permitted is derived from this table, so no caller-side
 /// `match` or scattered rule can diverge from the frozen contract
 /// (`domain.task_transitions` in the contract manifest). The `any_non_terminal
 /// -> closed` rule is expanded here into one explicit pair per non-terminal
-/// status.
-pub const TASK_TRANSITIONS: [(TaskStatus, TaskStatus); 26] = [
+/// status. Explicit activation events are listed in [`TASK_EVENT_TRANSITIONS`].
+pub const TASK_TRANSITIONS: [(TaskStatus, TaskStatus); 27] = [
     (TaskStatus::Accepted, TaskStatus::Accepted),
     (TaskStatus::Closed, TaskStatus::Closed),
     (TaskStatus::Implementing, TaskStatus::Closed),
@@ -319,6 +326,7 @@ pub const TASK_TRANSITIONS: [(TaskStatus, TaskStatus); 26] = [
     (TaskStatus::NeedsUser, TaskStatus::Closed),
     (TaskStatus::Failed, TaskStatus::Closed),
     (TaskStatus::DeliveryUnknown, TaskStatus::Closed),
+    (TaskStatus::WaitingDependencies, TaskStatus::Closed),
     (TaskStatus::AwaitingReview, TaskStatus::Accepted),
     (TaskStatus::AwaitingReview, TaskStatus::NeedsUser),
     (TaskStatus::AwaitingReview, TaskStatus::Revising),
@@ -339,9 +347,40 @@ pub const TASK_TRANSITIONS: [(TaskStatus, TaskStatus); 26] = [
     (TaskStatus::Revising, TaskStatus::NeedsUser),
 ];
 
+/// Explicit trigger for an event-gated task transition.
+///
+/// The caller must verify dependencies before supplying this event. The domain
+/// does not inspect a dependency graph, reserve a writer or start a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TaskTransitionEvent {
+    /// Every dependency was accepted and activation was explicitly requested.
+    DependenciesSatisfied,
+}
+
+impl TaskTransitionEvent {
+    /// Returns the exact persisted event spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DependenciesSatisfied => "dependencies_satisfied",
+        }
+    }
+}
+
+/// Event-gated transitions, deliberately excluded from [`TASK_TRANSITIONS`].
+///
+/// A waiting task can only activate through [`TaskStatus::transition_on`];
+/// ordinary status transitions must never implicitly activate it.
+pub const TASK_EVENT_TRANSITIONS: [(TaskStatus, TaskTransitionEvent, TaskStatus); 1] = [(
+    TaskStatus::WaitingDependencies,
+    TaskTransitionEvent::DependenciesSatisfied,
+    TaskStatus::Implementing,
+)];
+
 impl TaskStatus {
     /// All statuses in the frozen vocabulary order.
-    pub const ALL: [TaskStatus; 8] = [
+    pub const ALL: [TaskStatus; 9] = [
         Self::Implementing,
         Self::AwaitingReview,
         Self::Revising,
@@ -350,6 +389,7 @@ impl TaskStatus {
         Self::DeliveryUnknown,
         Self::Accepted,
         Self::Closed,
+        Self::WaitingDependencies,
     ];
 
     /// Returns the exact `snake_case` contract spelling.
@@ -364,13 +404,15 @@ impl TaskStatus {
             Self::DeliveryUnknown => "delivery_unknown",
             Self::Accepted => "accepted",
             Self::Closed => "closed",
+            Self::WaitingDependencies => "waiting_dependencies",
         }
     }
 
     /// Returns `true` for statuses that keep a task active.
     ///
     /// Active statuses are `implementing`, `awaiting_review`, `revising`,
-    /// `needs_user`, `failed` and `delivery_unknown`.
+    /// `needs_user`, `failed`, `delivery_unknown` and `waiting_dependencies`.
+    /// Being active does not imply that a task holds a writer reservation.
     #[must_use]
     pub const fn is_active(self) -> bool {
         matches!(
@@ -381,6 +423,7 @@ impl TaskStatus {
                 | Self::NeedsUser
                 | Self::Failed
                 | Self::DeliveryUnknown
+                | Self::WaitingDependencies
         )
     }
 
@@ -393,7 +436,7 @@ impl TaskStatus {
     }
 
     /// Returns `true` when moving from `self` to `next` is an allowed
-    /// transition.
+    /// ordinary transition. Event-gated activation requires [`Self::transition_on`].
     ///
     /// The answer is derived solely from [`TASK_TRANSITIONS`] and requires no
     /// storage access.
@@ -420,6 +463,24 @@ impl TaskStatus {
             ))
         }
     }
+
+    /// Returns the target status for an explicit event-gated transition.
+    ///
+    /// This pure operation neither verifies dependencies nor mutates storage.
+    /// Replaying activation from `implementing` is rejected; atomic activation
+    /// and idempotency belong to the storage layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe [`ErrorKind::Conflict`] when the status/event pair is
+    /// absent from [`TASK_EVENT_TRANSITIONS`].
+    pub fn transition_on(self, event: TaskTransitionEvent) -> Result<TaskStatus> {
+        TASK_EVENT_TRANSITIONS
+            .iter()
+            .find(|(from, trigger, _)| *from == self && *trigger == event)
+            .map(|(_, _, to)| *to)
+            .ok_or_else(|| DomainError::conflict("task status transition is not allowed"))
+    }
 }
 
 impl fmt::Display for TaskStatus {
@@ -441,6 +502,7 @@ impl FromStr for TaskStatus {
             "delivery_unknown" => Ok(Self::DeliveryUnknown),
             "accepted" => Ok(Self::Accepted),
             "closed" => Ok(Self::Closed),
+            "waiting_dependencies" => Ok(Self::WaitingDependencies),
             _ => Err(DomainError::invalid_input("unknown task status")),
         }
     }
@@ -919,8 +981,8 @@ pub struct Round {
 mod tests {
     use super::{
         DomainError, ErrorKind, GitFingerprint, ProjectId, Round, RoundKind, RoundStatus,
-        TASK_TRANSITIONS, TaskId, TaskStatus, Verification, VerificationCommand,
-        VerificationStatus, VerifierState, crate_name,
+        TASK_EVENT_TRANSITIONS, TASK_TRANSITIONS, TaskId, TaskStatus, TaskTransitionEvent,
+        Verification, VerificationCommand, VerificationStatus, VerifierState, crate_name,
     };
     use std::any::TypeId;
     use std::error::Error;
@@ -1108,6 +1170,7 @@ mod tests {
             "delivery_unknown",
             "accepted",
             "closed",
+            "waiting_dependencies",
         ];
         let actual: Vec<&str> = TaskStatus::ALL
             .iter()
@@ -1160,6 +1223,7 @@ mod tests {
             TaskStatus::Implementing,
             TaskStatus::NeedsUser,
             TaskStatus::Revising,
+            TaskStatus::WaitingDependencies,
         ];
         let mut expected_terminal = vec![TaskStatus::Accepted, TaskStatus::Closed];
 
@@ -1202,7 +1266,7 @@ mod tests {
 
     #[test]
     fn can_transition_to_matches_contract_for_all_pairs() {
-        const ALLOWED: [(TaskStatus, TaskStatus); 26] = [
+        const ALLOWED: [(TaskStatus, TaskStatus); 27] = [
             (TaskStatus::Accepted, TaskStatus::Accepted),
             (TaskStatus::Closed, TaskStatus::Closed),
             (TaskStatus::Implementing, TaskStatus::Closed),
@@ -1211,6 +1275,7 @@ mod tests {
             (TaskStatus::NeedsUser, TaskStatus::Closed),
             (TaskStatus::Failed, TaskStatus::Closed),
             (TaskStatus::DeliveryUnknown, TaskStatus::Closed),
+            (TaskStatus::WaitingDependencies, TaskStatus::Closed),
             (TaskStatus::AwaitingReview, TaskStatus::Accepted),
             (TaskStatus::AwaitingReview, TaskStatus::NeedsUser),
             (TaskStatus::AwaitingReview, TaskStatus::Revising),
@@ -1255,6 +1320,58 @@ mod tests {
         }
         assert!(!TaskStatus::Accepted.can_transition_to(TaskStatus::Closed));
         assert!(TaskStatus::Closed.can_transition_to(TaskStatus::Closed));
+    }
+
+    #[test]
+    fn dependency_activation_requires_an_explicit_event() {
+        let event = TaskTransitionEvent::DependenciesSatisfied;
+        assert_eq!(event.as_str(), "dependencies_satisfied");
+        assert_eq!(
+            TASK_EVENT_TRANSITIONS,
+            [(
+                TaskStatus::WaitingDependencies,
+                event,
+                TaskStatus::Implementing
+            )]
+        );
+
+        for from in TaskStatus::ALL {
+            let result = from.transition_on(event);
+            if from == TaskStatus::WaitingDependencies {
+                assert_eq!(
+                    result.expect("explicit activation"),
+                    TaskStatus::Implementing
+                );
+            } else {
+                let error = result.expect_err("only a waiting task may activate");
+                assert_eq!(error.kind(), ErrorKind::Conflict);
+                assert_eq!(error.message(), "task status transition is not allowed");
+                let rendered = format!("{error} {error:?}");
+                assert!(!rendered.contains(from.as_str()));
+                assert!(!rendered.contains(event.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_task_only_allows_generic_close() {
+        let waiting = TaskStatus::WaitingDependencies;
+        for next in TaskStatus::ALL {
+            assert_eq!(waiting.can_transition_to(next), next == TaskStatus::Closed);
+            assert_eq!(
+                waiting.require_transition(next).is_ok(),
+                next == TaskStatus::Closed
+            );
+            assert!(!next.can_transition_to(waiting));
+        }
+        for invalid in [
+            " waiting_dependencies",
+            "waiting_dependencies ",
+            "WaitingDependencies",
+        ] {
+            assert!(invalid.parse::<TaskStatus>().is_err());
+            assert!(serde_json::from_value::<TaskStatus>(serde_json::json!(invalid)).is_err());
+        }
     }
 
     #[test]

@@ -1,11 +1,10 @@
 //! Read-only inspection of an existing `agent-bridge` SQLite state database.
 //!
 //! This crate opens an existing database strictly read-only (SQLite URI
-//! `mode=ro&immutable=1`) and checks that it matches the frozen schema v6
-//! contract described by `docs/fixtures/sqlite/expected.json`:
+//! `mode=ro&immutable=1`) and checks the frozen v6 or v15 contract in
+//! `docs/fixtures/sqlite/expected.json` and `expected-v15.json`:
 //!
-//! * `PRAGMA user_version = 6` **and** `meta.schema_version = "6"` as a
-//!   consistent pair;
+//! * `PRAGMA user_version` and `meta.schema_version` as a consistent v6/v15 pair;
 //! * the required user tables with no unexpected ones;
 //! * every column's name, declared type, `NOT NULL` flag and primary-key
 //!   position (physical column order is not part of the contract);
@@ -120,7 +119,7 @@
 //! `state.sqlite`, lock, PID/ownership, log, token and endpoint paths of a
 //! project exclusively from an explicitly passed Rust state root, so Rust
 //! runtime artifacts can never overlap a Python state root.
-//! [`RustStateLayout::initialize`] creates only the Rust-owned empty schema v6
+//! [`RustStateLayout::initialize`] creates the Rust-owned empty schema v15
 //! database in that root, and there is deliberately no API that reads, copies
 //! or imports a Python SQLite database or history.
 //!
@@ -131,7 +130,8 @@
 //! refuses to hand out a writable [`StorageConnection`] until the sidecar
 //! marker, its supported `format_version`, its implementation, its project
 //! namespace, its normalized state root, `meta.runtime_owner` and the frozen
-//! schema v6 contract all agree.
+//! supported v6/v15 schema contract all agree. Initialization upgrades owned
+//! v6 state to v15 atomically; opening a legacy state alone never migrates it.
 //! Every missing, malformed, unsupported, foreign or contradictory state fails
 //! closed without writing anything, so a Python state, a foreign namespace or a
 //! partially created state is never adopted.
@@ -155,8 +155,13 @@ use rusqlite::{
     params_from_iter,
 };
 
-/// The only supported `PRAGMA user_version` / `meta.schema_version`.
+/// Historical v6 schema retained by the generic fixture initializer.
 pub const SCHEMA_VERSION: i64 = 6;
+
+/// Schema created and upgraded by the guarded Rust state initializer.
+pub const RUST_SCHEMA_VERSION: i64 = 15;
+
+mod schema_v15;
 
 /// A single column of a user table.
 ///
@@ -218,7 +223,7 @@ pub struct ForeignKey {
 /// The observed, contract-validated schema of a database.
 ///
 /// A value of this type can only be produced by [`inspect`], which guarantees
-/// that both version markers and the whole schema v6 contract matched.
+/// that both version markers and the supported v6/v15 contract matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspection {
     user_version: i64,
@@ -260,7 +265,7 @@ impl Inspection {
     }
 }
 
-/// A structural schema mismatch against the frozen v6 contract.
+/// A structural schema mismatch against a frozen supported contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SchemaMismatch {
@@ -335,7 +340,7 @@ pub enum InspectError {
     NotReadable,
     /// The file is not a SQLite database.
     NotADatabase,
-    /// `PRAGMA user_version` is not [`SCHEMA_VERSION`].
+    /// `PRAGMA user_version` is neither [`SCHEMA_VERSION`] nor [`RUST_SCHEMA_VERSION`].
     UnsupportedUserVersion { found: i64 },
     /// The `meta` table or the `schema_version` key is missing.
     MissingSchemaVersion,
@@ -343,7 +348,7 @@ pub enum InspectError {
     MalformedSchemaVersion,
     /// `meta.schema_version` does not agree with `PRAGMA user_version`.
     MismatchedSchemaVersion { user_version: i64, meta: String },
-    /// The database does not match the frozen schema v6 contract.
+    /// The database does not match its supported schema contract.
     IncompatibleSchema(SchemaMismatch),
     /// An unexpected SQLite failure.
     Database(rusqlite::Error),
@@ -364,10 +369,7 @@ impl fmt::Display for InspectError {
                 f.write_str("schema version markers are inconsistent")
             }
             Self::IncompatibleSchema(mismatch) => {
-                write!(
-                    f,
-                    "database schema is not compatible with schema v6: {mismatch}"
-                )
+                write!(f, "database schema is not compatible: {mismatch}")
             }
             Self::Database(_) => f.write_str("storage database error"),
         }
@@ -384,7 +386,7 @@ impl Error for InspectError {
     }
 }
 
-/// Opens `path` strictly read-only and validates it against schema v6.
+/// Opens `path` strictly read-only and validates it against schema v6 or v15.
 ///
 /// The database is opened with the SQLite URI `mode=ro&immutable=1`, so a
 /// missing file is never created and no `-wal`/`-shm` sidecars are produced.
@@ -405,7 +407,7 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Inspection, InspectError> {
     validate_database(&connection)
 }
 
-/// Validates an open connection against the frozen schema v6 contract.
+/// Validates an open connection against its frozen v6 or v15 contract.
 ///
 /// This is the shared core of [`inspect`] and [`initialize`]: it reads the
 /// version markers, the user tables, the named indexes and the foreign keys and
@@ -414,7 +416,7 @@ fn validate_database(connection: &Connection) -> Result<Inspection, InspectError
     let user_version = read_user_version(connection)?;
     let tables = read_tables(connection)?;
 
-    if user_version != SCHEMA_VERSION {
+    if !matches!(user_version, SCHEMA_VERSION | RUST_SCHEMA_VERSION) {
         return Err(InspectError::UnsupportedUserVersion {
             found: user_version,
         });
@@ -426,7 +428,12 @@ fn validate_database(connection: &Connection) -> Result<Inspection, InspectError
     let indexes = read_indexes(connection)?;
     let foreign_keys = read_foreign_keys(connection, &tables)?;
 
-    validate_schema(&tables, &indexes, &foreign_keys).map_err(InspectError::IncompatibleSchema)?;
+    if user_version == RUST_SCHEMA_VERSION {
+        schema_v15::validate(connection, &tables, &indexes, &foreign_keys)?;
+    } else {
+        validate_schema(&tables, &indexes, &foreign_keys)
+            .map_err(InspectError::IncompatibleSchema)?;
+    }
 
     Ok(Inspection {
         user_version,
@@ -1276,6 +1283,22 @@ impl StorageConnection {
             let task = replay_existing_request(&transaction, &prepared, existing)?;
             transaction.commit().map_err(CreateTaskError::Database)?;
             return Ok(CreateTaskOutcome::Replayed(task));
+        }
+
+        // v15 removes the historical unique task index. Until admission and
+        // writer reservations land in 3.12d, keep the existing single-task
+        // contract inside this same writer transaction, including legacy rows.
+        let busy: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status IN \
+                 ('waiting_dependencies','implementing','awaiting_review','revising',\
+                  'needs_user','failed','delivery_unknown'))",
+                params![prepared.project_id],
+                |row| row.get(0),
+            )
+            .map_err(CreateTaskError::Database)?;
+        if busy {
+            return Err(CreateTaskError::ProjectBusy);
         }
 
         transaction
@@ -2281,7 +2304,7 @@ pub enum RustStateError {
     MissingRuntimeOwner,
     /// `meta.runtime_owner` is present but is not `rust`.
     ForeignRuntimeOwner,
-    /// An existing database is not compatible with the schema v6 contract.
+    /// An existing database is not compatible with its supported contract.
     IncompatibleSchema(InspectError),
     /// An existing database has an unsupported `PRAGMA user_version`.
     UnsupportedSchemaVersion { found: i64 },
@@ -2350,7 +2373,7 @@ impl Error for RustStateError {
 /// The layout is purely declarative: it creates no files and never opens a
 /// database. It has no API that accepts, copies or imports a Python SQLite
 /// database or history. [`RustStateLayout::initialize`] creates the Rust-owned
-/// empty schema v6 database at [`RustStateLayout::database`].
+/// empty schema v15 database at [`RustStateLayout::database`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustStateLayout {
     root: PathBuf,
@@ -2479,12 +2502,12 @@ impl RustStateLayout {
         self.project_dir().join(Self::MARKER_FILE)
     }
 
-    /// Creates the Rust-owned ownership markers and empty schema v6 database.
+    /// Creates Rust-owned schema v15 or atomically upgrades owned legacy v6.
     ///
     /// A new, isolated Rust state is initialized in a crash-safe order: the
     /// sidecar marker is written first (crash-durably, through a private
     /// temporary file, a no-clobber link and a directory sync) and only then
-    /// the schema v6 database with the additive `meta.runtime_owner='rust'`
+    /// the schema v15 database with the additive `meta.runtime_owner='rust'`
     /// row. An interrupted initialization is therefore always detectable: the
     /// marker without a database is completed on the next call, while a
     /// database without a marker is never adopted. A concurrent initializer
@@ -2492,10 +2515,11 @@ impl RustStateLayout {
     /// overwritten.
     ///
     /// Initialization is idempotent. An existing Rust-owned state (a valid
-    /// marker *and* a schema v6 database with `meta.runtime_owner='rust'`) is
-    /// validated and left completely unchanged, preserving every Rust row. A
-    /// missing or truly empty database is created; every other state fails
-    /// closed without repair, upgrade or writes.
+    /// marker *and* a schema v15 database with `meta.runtime_owner='rust'`) is
+    /// validated and left unchanged. Owned legacy v6 state is validated before
+    /// any writable connection, then rechecked and upgraded inside one
+    /// transaction, preserving every existing row. A missing or truly empty
+    /// database is created; foreign, unmarked and unsupported state fails closed.
     ///
     /// # Errors
     ///
@@ -2546,7 +2570,7 @@ impl RustStateLayout {
     /// * the marker's project namespace equals this layout's project;
     /// * the marker's normalized `state_root` equals this layout's state root,
     ///   so a state copied or moved under another root is rejected;
-    /// * the database exists and matches the frozen schema v6 contract;
+    /// * the database exists and matches the frozen v6 or v15 contract;
     /// * `meta.runtime_owner` is present and exactly `rust`.
     ///
     /// Any missing, malformed, unsupported, foreign or contradictory state
@@ -2868,12 +2892,20 @@ fn require_adoptable_database(path: &Path) -> Result<(), RustStateError> {
 
 /// Initializes or validates a state whose sidecar marker is already owned.
 ///
-/// A populated database is validated read-only and left byte-for-byte
-/// unchanged, so a repeated `initialize` is an idempotent no-op. A missing or
-/// truly empty database is created through [`initialize_rust_database`].
+/// A populated database is validated read-only before a writable connection.
+/// v15 is left unchanged; owned v6 is upgraded transactionally. Missing or
+/// truly empty state is created through [`initialize_rust_database`].
 fn initialize_owned_state(path: &Path) -> Result<(), RustStateError> {
     if path.exists() && !is_truly_empty_database(path)? {
-        validate_rust_database(path)
+        validate_rust_database(path)?;
+        let connection = open_read_only_current(path)?;
+        let version = query_user_version(&connection).map_err(RustStateError::Database)?;
+        drop(connection);
+        if version == SCHEMA_VERSION {
+            initialize_rust_database(path)
+        } else {
+            Ok(())
+        }
     } else {
         initialize_rust_database(path)
     }
@@ -2896,9 +2928,9 @@ fn is_truly_empty_database(path: &Path) -> Result<bool, RustStateError> {
     Ok(!non_empty)
 }
 
-/// Validates an existing database as a Rust-owned schema v6 state.
+/// Validates existing state as a Rust-owned supported v6/v15 database.
 ///
-/// The database must exist, match the frozen schema v6 contract and carry
+/// The database must exist, match its frozen schema contract and carry
 /// `meta.runtime_owner='rust'`. The check is read-only and never creates or
 /// modifies the database.
 fn validate_rust_database(path: &Path) -> Result<(), RustStateError> {
@@ -2927,11 +2959,10 @@ fn require_runtime_owner(connection: &Connection) -> Result<(), RustStateError> 
     }
 }
 
-/// Creates a new Rust-owned schema v6 database with `meta.runtime_owner='rust'`.
+/// Creates Rust-owned v15 or upgrades validated Rust-owned v6.
 ///
-/// Only a missing or truly empty database is initialized. An already compatible
-/// Rust-owned v6 database (for example a concurrent initializer's result) is
-/// accepted unchanged; every other state fails closed. The whole creation runs
+/// An already compatible owned v15 database is accepted unchanged; foreign or
+/// incompatible state fails closed. Creation and additive upgrade both run
 /// inside one `BEGIN IMMEDIATE` transaction, so a partial schema or a database
 /// without `meta.runtime_owner` is never committed.
 fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
@@ -2946,18 +2977,26 @@ fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
     let non_empty = has_user_objects(&transaction).map_err(RustStateError::Database)?;
 
     match user_version {
-        SCHEMA_VERSION => {
+        RUST_SCHEMA_VERSION => {
             validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
             require_runtime_owner(&transaction)?;
         }
+        SCHEMA_VERSION => {
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+            require_runtime_owner(&transaction)?;
+            schema_v15::upgrade(&transaction).map_err(RustStateError::Database)?;
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+        }
         0 if !non_empty => {
             apply_schema_v6(&transaction, V6_SCHEMA_DDL).map_err(RustStateError::Initialize)?;
+            schema_v15::upgrade(&transaction).map_err(RustStateError::Database)?;
             transaction
                 .execute(
                     "INSERT INTO meta (key, value) VALUES ('runtime_owner', ?1)",
                     params![RUNTIME_OWNER],
                 )
                 .map_err(RustStateError::Database)?;
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
         }
         0 => return Err(RustStateError::UnmarkedState),
         found => return Err(RustStateError::UnsupportedSchemaVersion { found }),
@@ -5502,7 +5541,7 @@ mod tests {
             .copied()
             .filter(|status| status.is_active())
             .collect();
-        assert_eq!(active.len(), 6);
+        assert_eq!(active.len(), 7);
 
         for (index, status) in active.into_iter().enumerate() {
             let project = query_project(&format!("query-active-{}", status.as_str()));
@@ -9869,7 +9908,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_initialize_creates_only_its_own_empty_v6_state() {
+    fn rust_initialize_creates_only_its_own_empty_v15_state() {
         let rust_root = TempDir::new("isolate-rust");
         let python_root = TempDir::new("isolate-python");
         let python_state = python_root.join("state.sqlite");
@@ -9882,7 +9921,7 @@ mod tests {
         layout.initialize().expect("rust initialize must succeed");
 
         assert!(rust_db.exists(), "rust initialize must create its database");
-        assert_compatible_empty_v6(&rust_db);
+        assert_compatible_empty_v15(&rust_db);
 
         assert_eq!(
             std::fs::read(&python_state).expect("read python state bytes"),
@@ -10096,10 +10135,10 @@ mod tests {
             .connection()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(user_version, SCHEMA_VERSION);
+        assert_eq!(user_version, super::RUST_SCHEMA_VERSION);
         drop(storage);
 
-        assert_compatible_empty_v6(&layout.database());
+        assert_compatible_empty_v15(&layout.database());
     }
 
     #[test]
@@ -10674,7 +10713,274 @@ mod tests {
         assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
         assert_eq!(count_rows(&storage, "tasks"), 0);
         drop(storage);
+        assert_compatible_empty_v15(&layout.database());
+    }
+
+    fn expected_v15() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../docs/fixtures/sqlite/expected-v15.json"
+        ))
+        .expect("v15 manifest")
+    }
+
+    fn assert_compatible_empty_v15(path: &Path) {
+        let observed = inspect(path).expect("inspect v15");
+        assert_eq!(observed.user_version(), super::RUST_SCHEMA_VERSION);
+        assert_eq!(observed.meta_schema_version(), "15");
+        assert_eq!(
+            normalize(Contract {
+                tables: observed.tables().to_vec(),
+                indexes: observed.indexes().to_vec(),
+                foreign_keys: observed.foreign_keys().to_vec(),
+            }),
+            expected_contract(&expected_v15())
+        );
+        let connection = Connection::open(path).expect("open v15");
+        // Defaults are independently frozen in the Python-generated manifest.
+        for (table, columns) in expected_v15()["schema"]["tables"]
+            .as_object()
+            .expect("tables")
+        {
+            for column in columns.as_array().expect("columns") {
+                let default: Option<String> = connection
+                    .query_row(
+                        "SELECT dflt_value FROM pragma_table_info(?1) WHERE name=?2",
+                        rusqlite::params![table, column["name"].as_str().expect("name")],
+                        |row| row.get(0),
+                    )
+                    .expect("read default");
+                assert_eq!(
+                    default.as_deref(),
+                    column["default"].as_str(),
+                    "{table}.{}",
+                    column["name"]
+                );
+            }
+        }
+        for table in observed
+            .tables()
+            .iter()
+            .filter(|table| table.name != "meta")
+        {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {}", table.name), [], |row| {
+                    row.get(0)
+                })
+                .expect("count v15 rows");
+            assert_eq!(count, 0, "{} must be empty", table.name);
+        }
+    }
+
+    #[test]
+    fn v15_contract_matches_frozen_reference_and_fixture_is_read_only() {
+        assert_eq!(
+            normalize(super::schema_v15::contract()),
+            expected_contract(&expected_v15())
+        );
+        let path = fixture_dir().join("empty-v15.sqlite");
+        let before = file_bytes(&path);
+        assert_compatible_empty_v15(&path);
+        assert_eq!(file_bytes(&path), before);
+    }
+
+    #[test]
+    fn rust_v6_upgrade_preserves_all_legacy_rows_and_null_semantics() {
+        for fixture in FIXTURES {
+            let root = TempDir::new("upgrade-legacy");
+            let layout = demo_layout(&root.path);
+            ensure_project_dir(&layout);
+            let source = fixture_dir().join(fixture);
+            let source_before = file_bytes(&source);
+            std::fs::copy(&source, layout.database()).expect("copy legacy fixture");
+            execute(
+                &layout.database(),
+                "INSERT INTO meta VALUES ('runtime_owner','rust')",
+            );
+            write_marker_fields(&layout, "rust", 1, "demo");
+            let marker_before = file_bytes(&layout.marker());
+            let old = Connection::open(layout.database()).expect("legacy");
+            let snapshot = |connection: &Connection, table: &str, columns: &str| {
+                let mut statement = connection
+                    .prepare(&format!("SELECT {columns} FROM {table} ORDER BY rowid"))
+                    .expect("snapshot");
+                let width = statement.column_count();
+                statement
+                    .query_map([], |row| {
+                        (0..width)
+                            .map(|i| row.get::<_, SqlValue>(i))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .expect("query snapshot")
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .expect("rows")
+            };
+            let original: Vec<_> = ["tasks", "rounds", "events"]
+                .iter()
+                .map(|table| {
+                    let columns = super::read_columns(&old, table)
+                        .expect("legacy columns")
+                        .into_iter()
+                        .map(|column| column.name)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    (*table, columns.clone(), snapshot(&old, table, &columns))
+                })
+                .collect();
+            drop(old);
+            layout.initialize().expect("guarded upgrade");
+            let storage = layout.open().expect("upgraded state");
+            assert_eq!(
+                query_user_version(storage.connection()).expect("version"),
+                15
+            );
+            for (table, columns, rows) in original {
+                assert_eq!(snapshot(storage.connection(), table, &columns), rows);
+            }
+            let nondefault: i64 = storage.connection().query_row(
+                "SELECT COUNT(*) FROM tasks WHERE execution_mode!='direct' OR budget_json IS NOT NULL OR workflow_id IS NOT NULL OR depends_on IS NOT NULL OR profile IS NOT NULL OR profile_json IS NOT NULL OR profile_hash IS NOT NULL OR profile_source IS NOT NULL",
+                [], |row| row.get(0),
+            ).expect("legacy task defaults");
+            assert_eq!(nondefault, 0);
+            let rounds: i64 = storage.connection().query_row(
+                "SELECT COUNT(*) FROM rounds WHERE checkpoint_json IS NOT NULL OR structured_findings IS NOT NULL", [], |row| row.get(0),
+            ).expect("legacy round defaults");
+            assert_eq!(rounds, 0);
+            for table in ["active_writers", "worktrees", "worktree_quarantine"] {
+                assert_eq!(count_rows(&storage, table), 0);
+            }
+            drop(storage);
+            let upgraded = file_bytes(&layout.database());
+            layout.initialize().expect("idempotent v15");
+            assert_state_unchanged(&layout, &upgraded, &marker_before);
+            assert_eq!(file_bytes(&source), source_before);
+        }
+    }
+
+    #[test]
+    fn rust_v15_keeps_single_task_admission_after_index_removal() {
+        let root = TempDir::new("v15-admission");
+        let layout = demo_layout(&root.path);
+        layout.initialize().expect("v15");
+        let project = ProjectId::from_str("demo").expect("project");
+        let mut storage = layout.open().expect("open");
+        let first = TaskId::from_str(VALID_TASK_ID).expect("task");
+        storage
+            .create_task(create_task_input(first, &project, "first"))
+            .expect("first task");
+        let second = TaskId::from_str("22222222-2222-4222-8222-222222222222").expect("second");
+        let error = storage
+            .create_task(create_task_input(second, &project, "second"))
+            .expect_err("busy");
+        assert!(matches!(error, CreateTaskError::ProjectBusy));
+        assert_eq!(count_rows(&storage, "tasks"), 1);
+        assert_eq!(count_rows(&storage, "rounds"), 1);
+        assert!(
+            storage
+                .create_task(create_task_input(first, &project, "first"))
+                .expect("replay")
+                .is_replayed()
+        );
+    }
+
+    #[test]
+    fn v15_additive_upgrade_rolls_back_every_ddl_and_marker_on_failure() {
+        let root = TempDir::new("v15-rollback");
+        let path = root.join("state.sqlite");
+        create_v6(&path);
+        let before = logical_state(&path);
+        let mut connection = Connection::open(&path).expect("open");
+        {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("transaction");
+            super::schema_v15::upgrade(&transaction).expect("DDL");
+            assert!(
+                transaction
+                    .execute_batch("CREATE TABLE tasks (bad TEXT)")
+                    .is_err()
+            );
+            // Drop rolls back even after all version markers were written.
+        }
+        drop(connection);
+        assert_eq!(logical_state(&path), before);
+        assert_compatible_empty_v6(&path);
+    }
+
+    #[test]
+    fn rust_v6_upgrade_metadata_failure_rolls_back_and_can_retry() {
+        let root = TempDir::new("upgrade-failure");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        create_v6(&layout.database());
+        execute(
+            &layout.database(),
+            "INSERT INTO meta VALUES ('runtime_owner','rust'); CREATE TRIGGER block_upgrade BEFORE UPDATE ON meta WHEN NEW.key='schema_version' BEGIN SELECT RAISE(ABORT,'blocked'); END",
+        );
+        write_marker_fields(&layout, "rust", 1, "demo");
+        let marker = file_bytes(&layout.marker());
+        let before = logical_state(&layout.database());
+        assert!(matches!(
+            layout.initialize(),
+            Err(RustStateError::Database(_))
+        ));
+        assert_eq!(logical_state(&layout.database()), before);
         assert_compatible_empty_v6(&layout.database());
+        assert_eq!(file_bytes(&layout.marker()), marker);
+        execute(&layout.database(), "DROP TRIGGER block_upgrade");
+        layout.initialize().expect("retry succeeds");
+        assert_compatible_empty_v15(&layout.database());
+    }
+
+    #[test]
+    fn rust_concurrent_v6_upgrade_serializes_and_preserves_owner() {
+        let root = TempDir::new("concurrent-upgrade");
+        let layout = demo_layout(&root.path);
+        ensure_project_dir(&layout);
+        initialize(layout.database()).expect("legacy v6");
+        execute(
+            &layout.database(),
+            "INSERT INTO meta VALUES ('runtime_owner','rust')",
+        );
+        write_marker_fields(&layout, "rust", 1, "demo");
+        let marker = file_bytes(&layout.marker());
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| layout.initialize()))
+                .collect();
+            for handle in handles {
+                handle.join().expect("thread").expect("concurrent upgrade");
+            }
+        });
+        assert_compatible_empty_v15(&layout.database());
+        assert_eq!(file_bytes(&layout.marker()), marker);
+        assert_eq!(
+            runtime_owner(&layout.open().expect("open")).as_deref(),
+            Some(RUNTIME_OWNER)
+        );
+    }
+
+    #[test]
+    fn rust_v15_rejects_wrong_defaults_and_writer_predicate_without_writes() {
+        for mutation in [
+            "DROP INDEX ux_active_writers_single; CREATE UNIQUE INDEX ux_active_writers_single ON active_writers(project_id) WHERE parallel=1",
+            "ALTER TABLE active_writers RENAME TO old_writers; CREATE TABLE active_writers (task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, scopes_json TEXT NOT NULL, created_at TEXT NOT NULL, parallel INTEGER NOT NULL DEFAULT 1); DROP TABLE old_writers; CREATE INDEX ix_active_writers_project ON active_writers(project_id); CREATE UNIQUE INDEX ux_active_writers_single ON active_writers(project_id) WHERE parallel=0",
+        ] {
+            let root = TempDir::new("v15-reject");
+            let layout = demo_layout(&root.path);
+            layout.initialize().expect("fresh");
+            execute(&layout.database(), mutation);
+            let before = file_bytes(&layout.database());
+            let marker = file_bytes(&layout.marker());
+            assert!(matches!(
+                layout.open(),
+                Err(RustStateError::IncompatibleSchema(_))
+            ));
+            assert!(matches!(
+                layout.initialize(),
+                Err(RustStateError::IncompatibleSchema(_))
+            ));
+            assert_state_unchanged(&layout, &before, &marker);
+        }
     }
 }
 

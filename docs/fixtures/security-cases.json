@@ -1,0 +1,541 @@
+{
+  "schema_version": 15,
+  "source": {
+    "commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+    "evidence": [
+      "src/agent_bridge/secret_scanner.py",
+      "src/agent_bridge/mcp_server.py::_suspected_secret_error",
+      "src/agent_bridge/git_worktree.py::check_repo_support",
+      "src/agent_bridge/storage.py::_parse_reserved_scopes",
+      "src/agent_bridge/storage.py::_canonical_scopes_overlap"
+    ]
+  },
+  "public_mcp_cases": [
+    "submit-worktree-rejects-absolute-allowed-paths"
+  ],
+  "cases": [
+    {
+      "id": "secret-aws_access_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "AKIAAAAAAAAAAAAAAAAA",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "aws_access_key"
+        ]
+      }
+    },
+    {
+      "id": "override-aws_access_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "AKIAAAAAAAAAAAAAAAAA",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-github_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "github_token"
+        ]
+      }
+    },
+    {
+      "id": "override-github_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-openai_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk-proj-aaaaaaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "openai_api_key"
+        ]
+      }
+    },
+    {
+      "id": "override-openai_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk-proj-aaaaaaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-anthropic_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk-ant-api03-aaaaaaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "anthropic_api_key"
+        ]
+      }
+    },
+    {
+      "id": "override-anthropic_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk-ant-api03-aaaaaaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-google_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "google_api_key"
+        ]
+      }
+    },
+    {
+      "id": "override-google_api_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-slack_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "xoxb-aaaaaaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "slack_token"
+        ]
+      }
+    },
+    {
+      "id": "override-slack_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "xoxb-aaaaaaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-stripe_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk_test_aaaaaaaaaaaaaaaa",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "stripe_token"
+        ]
+      }
+    },
+    {
+      "id": "override-stripe_token",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk_test_aaaaaaaaaaaaaaaa",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-jwt",
+      "operation": "secret_gate",
+      "input": {
+        "text": "eyJhbGciOiJIUzI1NiJ9.aaaaaa.bbbbbb",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "jwt"
+        ]
+      }
+    },
+    {
+      "id": "override-jwt",
+      "operation": "secret_gate",
+      "input": {
+        "text": "eyJhbGciOiJIUzI1NiJ9.aaaaaa.bbbbbb",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-pem_private_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "-----BEGIN PRIVATE KEY-----",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "pem_private_key"
+        ]
+      }
+    },
+    {
+      "id": "override-pem_private_key",
+      "operation": "secret_gate",
+      "input": {
+        "text": "-----BEGIN PRIVATE KEY-----",
+        "allow": true
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-deduplicate-order",
+      "operation": "secret_gate",
+      "input": {
+        "text": "-----BEGIN PRIVATE KEY----- eyJhbGciOiJIUzI1NiJ9.aaaaaa.bbbbbb sk_test_aaaaaaaaaaaaaaaa xoxb-aaaaaaaaaaaaaaaaaaaa AIzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa sk-ant-api03-aaaaaaaaaaaaaaaaaaaa sk-proj-aaaaaaaaaaaaaaaaaaaa ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AKIAAAAAAAAAAAAAAAAA AKIAAAAAAAAAAAAAAAAA",
+        "allow": false
+      },
+      "expect": {
+        "error": "suspected_secrets",
+        "categories": [
+          "aws_access_key",
+          "github_token",
+          "openai_api_key",
+          "anthropic_api_key",
+          "google_api_key",
+          "slack_token",
+          "stripe_token",
+          "jwt",
+          "pem_private_key"
+        ]
+      }
+    },
+    {
+      "id": "secret-negative-ordinary",
+      "operation": "secret_gate",
+      "input": {
+        "text": "password secret TODO",
+        "allow": false
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-negative-short",
+      "operation": "secret_gate",
+      "input": {
+        "text": "sk-proj-short",
+        "allow": false
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-negative-embedded",
+      "operation": "secret_gate",
+      "input": {
+        "text": "xAKIAAAAAAAAAAAAAAAAAx",
+        "allow": false
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-negative-jwt-invalid",
+      "operation": "secret_gate",
+      "input": {
+        "text": "eyJaaaaaaa.aaaaaa.bbbbbb",
+        "allow": false
+      },
+      "expect": null
+    },
+    {
+      "id": "secret-negative-empty",
+      "operation": "secret_gate",
+      "input": {
+        "text": "",
+        "allow": false
+      },
+      "expect": null
+    },
+    {
+      "id": "repo-plain",
+      "operation": "repo_support",
+      "input": {
+        "files": {},
+        "sparse": false
+      },
+      "expect": []
+    },
+    {
+      "id": "repo-submodules",
+      "operation": "repo_support",
+      "input": {
+        "files": {
+          ".gitmodules": ""
+        },
+        "sparse": false
+      },
+      "expect": [
+        "submodules_not_supported_in_worktree_mode"
+      ]
+    },
+    {
+      "id": "repo-lfs-config",
+      "operation": "repo_support",
+      "input": {
+        "files": {
+          ".lfsconfig": ""
+        },
+        "sparse": false
+      },
+      "expect": [
+        "lfs_not_supported_in_worktree_mode"
+      ]
+    },
+    {
+      "id": "repo-lfs-attributes",
+      "operation": "repo_support",
+      "input": {
+        "files": {
+          ".gitattributes": "*.bin filter=lfs"
+        },
+        "sparse": false
+      },
+      "expect": [
+        "lfs_not_supported_in_worktree_mode"
+      ]
+    },
+    {
+      "id": "repo-sparse",
+      "operation": "repo_support",
+      "input": {
+        "files": {},
+        "sparse": true
+      },
+      "expect": [
+        "sparse_checkout_not_supported_in_worktree_mode"
+      ]
+    },
+    {
+      "id": "scope-equal",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src/a.py",
+        "right": "src/a.py"
+      },
+      "expect": true
+    },
+    {
+      "id": "scope-siblings",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src/a.py",
+        "right": "src/b.py"
+      },
+      "expect": false
+    },
+    {
+      "id": "scope-directory",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src/",
+        "right": "src/a.py"
+      },
+      "expect": true
+    },
+    {
+      "id": "scope-reverse-directory",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src/a.py",
+        "right": "src/"
+      },
+      "expect": true
+    },
+    {
+      "id": "scope-prefix",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src/",
+        "right": "src-other/a.py"
+      },
+      "expect": false
+    },
+    {
+      "id": "scope-file-not-directory",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "src",
+        "right": "src/a.py"
+      },
+      "expect": false
+    },
+    {
+      "id": "scope-alias-new-leaf",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "alias/new.py",
+        "right": "src/new.py"
+      },
+      "expect": true
+    },
+    {
+      "id": "scope-alias-directory",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "alias/",
+        "right": "src/new.py"
+      },
+      "expect": true
+    },
+    {
+      "id": "scope-alias-disjoint",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "alias/a.py",
+        "right": "src/b.py"
+      },
+      "expect": false
+    },
+    {
+      "id": "scope-loop",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "loop/a.py",
+        "right": "src/a.py"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "scope-broken",
+      "operation": "scope_overlap",
+      "input": {
+        "left": "broken/a.py",
+        "right": "src/a.py"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-valid",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"src/\", \"src/a.py\"]"
+      },
+      "expect": [
+        "src/",
+        "src/a.py"
+      ]
+    },
+    {
+      "id": "persisted-null",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": null
+      },
+      "expect": []
+    },
+    {
+      "id": "persisted-empty",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[]"
+      },
+      "expect": []
+    },
+    {
+      "id": "persisted-malformed",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "["
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-object",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "{}"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-non-string",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[1]"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-empty-entry",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"\"]"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-parent",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"src/../a.py\"]"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-dot",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"src/./a.py\"]"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-separator",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"src//a.py\"]"
+      },
+      "expect": "ScopeDataError"
+    },
+    {
+      "id": "persisted-backslash",
+      "operation": "parse_scopes",
+      "input": {
+        "raw": "[\"src\\\\a.py\"]"
+      },
+      "expect": "ScopeDataError"
+    }
+  ]
+}

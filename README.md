@@ -19,16 +19,17 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 Источник истины — READ-ONLY Python-репозиторий `/home/denis/Python/agent_bridge`
 на HEAD `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a` (schema **v15**,
 `storage.py:41`). Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) построен
-на старом контракте **schema v6** (`docs/contract-manifest.json`,
-`docs/fixtures/sqlite/*-v6.sqlite`) и не является паритетом с современным
-Python. Возможности Python после v6 (structured findings, soft budgets,
+на старом контракте **schema v6** (исторические
+`docs/fixtures/sqlite/*-v6.sqlite`; актуальный manifest уже описывает v15) и не
+является паритетом с современным Python. Возможности Python после v6 (structured findings, soft budgets,
 workflow/dependencies, per-round checkpoints, worktree execution, executor
 profiles, parallel writers, quarantine, delivery, diagnostics/hook, config
 migration) в Rust **не завершены**.
 
-Ближайший шаг — **Поток 0A: refresh contract manifest и config/MCP/SQLite/
-security/runtime fixtures до v15 ПЕРЕД 7.7**; затем schema/domain/config
-foundations и потребители (см.
+**Поток 0A завершён:** contract manifest и config/MCP/SQLite/security/runtime
+fixtures зафиксированы от Python v15. Ближайший шаг — **1.6: dependency/waiting
+domain transitions**, затем остальные schema/domain/config foundations
+и потребители (см.
 [docs/implementation-plan.md](docs/implementation-plan.md)). Новые возможности
 распределены по существующим потокам и выполняются после согласованного
 refresh; единого хвостового «когда-нибудь» нет.
@@ -1209,7 +1210,8 @@ refresh; единого хвостового «когда-нибудь» нет.
 - **Потоки 3, 4 и 5 завершены.** Шаги **5.1–5.6**, **6.1**, **6.2**, **6.3**,
   **6.4**, **6.5**, **6.6**, **6.7**, **6.8**, **7.1**, **7.2**, **7.3**,
   **7.4**, **7.5** и **7.6** завершены как foundation старого контракта
-  schema v6. Ближайший шаг — **Поток 0A** (refresh контракта до schema v15);
+  schema v6. **Поток 0A завершён** (reference-контракт schema v15);
+  ближайшая задача — **1.6** (dependency/waiting domain transitions);
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v15 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

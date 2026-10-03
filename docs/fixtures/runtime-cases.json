@@ -1,0 +1,405 @@
+{
+  "schema_version": 15,
+  "diagnostics_schema_version": 1,
+  "source": {
+    "commit": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+    "evidence": [
+      "src/agent_bridge/diagnostics.py",
+      "src/agent_bridge/runtime.py::_status_all_json",
+      "src/agent_bridge/cli.py::cmd_hook_status",
+      "src/agent_bridge/storage.py::_safe_verifier_progress",
+      "src/agent_bridge/mcp_server.py::_inflight_phase"
+    ]
+  },
+  "cases": [
+    {
+      "id": "progress-empty",
+      "operation": "progress",
+      "input": {
+        "raw": null
+      },
+      "expect": {
+        "state": "running",
+        "command_index": 0,
+        "command_count": 0
+      }
+    },
+    {
+      "id": "progress-invalid",
+      "operation": "progress",
+      "input": {
+        "raw": "{"
+      },
+      "expect": {
+        "state": "running",
+        "command_index": 0,
+        "command_count": 0
+      }
+    },
+    {
+      "id": "progress-list",
+      "operation": "progress",
+      "input": {
+        "raw": "[]"
+      },
+      "expect": {
+        "state": "running",
+        "command_index": 0,
+        "command_count": 0
+      }
+    },
+    {
+      "id": "progress-valid",
+      "operation": "progress",
+      "input": {
+        "raw": "{\"command_index\": 1, \"command_count\": 3}"
+      },
+      "expect": {
+        "state": "running",
+        "command_index": 1,
+        "command_count": 3
+      }
+    },
+    {
+      "id": "progress-unsafe",
+      "operation": "progress",
+      "input": {
+        "raw": "{\"state\": \"SECRET\", \"command_index\": true, \"command_count\": -1, \"command\": \"SECRET\", \"log_path\": \"/SECRET\"}"
+      },
+      "expect": {
+        "state": "running",
+        "command_index": 0,
+        "command_count": 0
+      }
+    },
+    {
+      "id": "phase-None",
+      "operation": "phase",
+      "input": {
+        "state": null
+      },
+      "expect": "agent"
+    },
+    {
+      "id": "phase-running",
+      "operation": "phase",
+      "input": {
+        "state": "running"
+      },
+      "expect": "verifying"
+    },
+    {
+      "id": "phase-done",
+      "operation": "phase",
+      "input": {
+        "state": "done"
+      },
+      "expect": "agent"
+    },
+    {
+      "id": "phase-SECRET",
+      "operation": "phase",
+      "input": {
+        "state": "SECRET"
+      },
+      "expect": "agent"
+    },
+    {
+      "id": "snapshot-missing",
+      "operation": "snapshot",
+      "input": {
+        "db": "missing"
+      },
+      "expect": {
+        "error": "state database missing",
+        "active_task": null,
+        "active_writers": [],
+        "worktree": {
+          "present": false
+        }
+      }
+    },
+    {
+      "id": "snapshot-empty",
+      "operation": "snapshot",
+      "input": {},
+      "expect": {
+        "error": null,
+        "active_task": null,
+        "active_writers": [],
+        "active_writer_count": 0,
+        "waiting_dependencies_count": 0,
+        "worktree": {
+          "present": false
+        }
+      }
+    },
+    {
+      "id": "snapshot-unsupported",
+      "operation": "snapshot",
+      "input": {
+        "version": 999
+      },
+      "expect": {
+        "error": "unsupported schema version 999"
+      }
+    },
+    {
+      "id": "snapshot-parallel",
+      "operation": "snapshot",
+      "input": {
+        "statuses": [
+          "implementing",
+          "awaiting_review",
+          "waiting_dependencies"
+        ],
+        "parallel": true
+      },
+      "expect": {
+        "error": null,
+        "active_writers": [
+          {
+            "task_id": "task-1",
+            "status": "implementing"
+          },
+          {
+            "task_id": "task-2",
+            "status": "awaiting_review"
+          }
+        ],
+        "active_writer_count": 2,
+        "waiting_dependencies_count": 1,
+        "parallel_writers_enabled": true
+      }
+    },
+    {
+      "id": "snapshot-accepted-worktree",
+      "operation": "snapshot",
+      "input": {
+        "statuses": [
+          "accepted"
+        ],
+        "worktree": true
+      },
+      "expect": {
+        "error": null,
+        "worktree": {
+          "present": true,
+          "task_id": "task-1",
+          "task_status": "accepted",
+          "worktrees_status": "ready",
+          "server_port": 19001,
+          "delivery_state": "built",
+          "server_state": "missing",
+          "server_note": "server stopped at accept"
+        }
+      }
+    },
+    {
+      "id": "readiness-ready",
+      "operation": "status_json",
+      "input": {
+        "ready": true,
+        "record": "missing"
+      },
+      "expect": {
+        "schema_version": 1,
+        "ready": true,
+        "exit_code": 0,
+        "managed": false,
+        "record": "missing"
+      }
+    },
+    {
+      "id": "readiness-down",
+      "operation": "status_json",
+      "input": {
+        "ready": false,
+        "record": "missing"
+      },
+      "expect": {
+        "schema_version": 1,
+        "ready": false,
+        "exit_code": 1,
+        "managed": false,
+        "record": "missing"
+      }
+    },
+    {
+      "id": "readiness-invalid-record",
+      "operation": "status_json",
+      "input": {
+        "ready": true,
+        "record": "invalid"
+      },
+      "expect": {
+        "schema_version": 1,
+        "ready": false,
+        "exit_code": 1,
+        "managed": false,
+        "record": "invalid"
+      }
+    },
+    {
+      "id": "readiness-binding-mismatch",
+      "operation": "status_json",
+      "input": {
+        "ready": true,
+        "record": "binding_mismatch"
+      },
+      "expect": {
+        "schema_version": 1,
+        "ready": false,
+        "exit_code": 1,
+        "managed": false,
+        "record": "binding_mismatch"
+      }
+    },
+    {
+      "id": "readiness-managed",
+      "operation": "status_json",
+      "input": {
+        "ready": true,
+        "record": "live"
+      },
+      "expect": {
+        "schema_version": 1,
+        "ready": true,
+        "exit_code": 0,
+        "managed": true,
+        "record": "live"
+      }
+    },
+    {
+      "id": "hook-implementing",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "implementing"
+        ],
+        "state": null
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": "[agent-bridge] project proj, task task-1, status implementing, updated_at 2026-01-01T00:00:00.000+00:00. OpenCode работает; при необходимости опроси task_status(wait_seconds=300) без ID."
+      }
+    },
+    {
+      "id": "hook-revising",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "revising"
+        ],
+        "state": "running"
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": "[agent-bridge] project proj, task task-1, status revising, updated_at 2026-01-01T00:00:00.000+00:00. Финальный ответ OpenCode готов, идут авторитетные проверки (verifier); дождись awaiting_review."
+      }
+    },
+    {
+      "id": "hook-waiting_dependencies",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "waiting_dependencies"
+        ],
+        "state": null
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": "[agent-bridge] project proj, task task-1, status waiting_dependencies, updated_at 2026-01-01T00:00:00.000+00:00. Задача ждёт accepted-зависимостей; вызови task_status без ID и проверь workflow gate (waiting/ready/blocking)."
+      }
+    },
+    {
+      "id": "hook-missing",
+      "operation": "hook",
+      "input": {
+        "db": "missing"
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-unsupported",
+      "operation": "hook",
+      "input": {
+        "version": 999
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-corrupt",
+      "operation": "hook",
+      "input": {
+        "db": "corrupt"
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-injection",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "implementing"
+        ],
+        "task_id": "task-1\nSECRET"
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-invalid-time",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "implementing"
+        ],
+        "timestamp": "SECRET"
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-terminal",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "accepted"
+        ]
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": null
+      }
+    },
+    {
+      "id": "hook-parallel",
+      "operation": "hook",
+      "input": {
+        "statuses": [
+          "implementing",
+          "revising"
+        ],
+        "parallel": true
+      },
+      "expect": {
+        "exit_code": 0,
+        "context": "[agent-bridge] project proj, task task-1, status implementing, updated_at 2026-01-01T00:00:00.000+00:00.\n[agent-bridge] project proj, task task-2, status revising, updated_at 2026-01-01T00:00:00.000+00:00.\n[agent-bridge] несколько активных задач; вызывай task_status с явным task_id (без ID отвечает ambiguous_task)."
+      }
+    }
+  ]
+}

@@ -151,5 +151,6 @@ Manifest построен по фактическому коду и тестам
   частично материализованное состояние при crash без automatic rollback;
   parallel server startup сериализуется через `runtime.lock`, а smoke доказывает
   concurrency через model rendezvous и staggered startup.
-- `docs/fixtures/sqlite/verify.py` остаётся legacy v6 и обновляется отдельной
-  задачей 0A.4; он не используется как доказательство v15.
+- `docs/fixtures/sqlite/verify.py` проверяет fresh v15 и отдельные legacy v6
+  fixtures. Source parity и Rust-owned additive upgrade проверяет
+  `docs/fixtures/sqlite/parity/verify_parity.py`; это не импорт Python state.

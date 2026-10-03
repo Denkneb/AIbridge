@@ -53,6 +53,8 @@ Python state не получает записей от Rust. Дифференц�
 20. [Corpus snapshot/сравнения Git](fixtures/git-snapshot-cases.json)
 21. [Fixtures мульти-репозиторной агрегации](multi-repository-fixtures.md)
 22. [Corpus мульти-репозиторной агрегации](fixtures/multi-repository-cases.json)
+23. [Security corpus v15](security-fixtures.md)
+24. [Runtime/readiness corpus v15](runtime-fixtures.md)
 
 ## Базовые ограничения
 

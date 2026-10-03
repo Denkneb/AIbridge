@@ -43,17 +43,19 @@ Targeted checks:
   `storage.py:42 MIGRATABLE_VERSIONS = (0..14)`,
   `storage.py:72 SUPPORTED_SCHEMA_VERSIONS`.
 - Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) опирается на **старый
-  контракт schema v6**: `docs/contract-manifest.json` (`schema_version: 6`),
+  контракт schema v6**: исторический manifest до refresh,
   `docs/fixtures/sqlite/*-v6.sqlite` и `docs/fixtures/sqlite/expected.json`.
+  Актуальный `docs/contract-manifest.json` уже описывает reference v15.
   Эти этапы остаются честно завершённым **foundation v6**, а не паритетом с
   современным Python; их исторические описания сохраняются без переписывания.
 - Современный Python/Rust parity не заявлен. Все возможности Python после v6
   (structured findings, budgets, workflow/dependencies, checkpoints,
   worktree execution, executor profiles, parallel writers, quarantine,
   delivery, diagnostics/hook, config migration) в Rust **не завершены**.
-- Единый ближайший шаг — **Поток 0A (refresh контракта до v15) ПЕРЕД 7.7**.
-  Новые возможности идут после согласованного refresh и разнесены по
-  существующим потокам; единого хвостового «когда-нибудь» нет.
+- **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
+  зафиксированы от Python v15. Ближайший шаг — **1.6 (dependency/waiting domain
+  transitions)**, затем 1.7, config/storage foundations и потребители по
+  зависимостям. Исторический шаг 7.7 больше не заблокирован refresh-контрактом.
 
 ## Поток 0. Контрактная база
 
@@ -79,13 +81,22 @@ Targeted checks:
 
 **Готовность потока:** fixtures воспроизводятся текущей Python suite.
 
-## Поток 0A. Refresh контракта до schema v15 (ближайший шаг перед 7.7)
+## Поток 0A. Refresh контракта до schema v15 (завершён)
 
 **Зачем.** Python уже schema v15 и добавил public/config/storage/runtime/
 security/UI возможности, которых нет в Rust-плане. Поток 0A фиксирует источник
-v15 и обновляет согласованные contract manifest и fixtures **до** 7.7. В
-текущей документационной задаче ни один fixture/manifest не меняется: это
-только постановка самостоятельных контрактных задач.
+v15 и обновляет согласованные contract manifest и fixtures **до** 7.7.
+
+**Результат 0A.1–0A.6:** manifest v15; config corpus (121 cases), MCP corpus
+(68 strict target-v15 cases), fresh SQLite v15 и отдельные legacy v6 fixtures
+(97 source-parity checks), security corpus (51 cases), runtime corpus (29
+cases). Config/security/runtime/SQLite проходят без пропусков; MCP legacy-v6
+проверяется отдельно и имеет 17 явно отмеченных skips, которые не считаются
+доказательством parity. Rust runtime/schema остаются foundation v6.
+
+Новые corpus и команды проверки описаны в [security fixtures](security-fixtures.md)
+и [runtime fixtures](runtime-fixtures.md). Source HEAD совпал с зафиксированным;
+Python runtime state/history не читались и не изменялись.
 
 **Изменения Python относительно v6 (additive, `storage.py:1908-2091`):**
 v7 `rounds.structured_findings`; v8 `tasks.budget_json`; v9
@@ -105,7 +116,7 @@ target» (новая пустая v15) и «Rust-owned additive upgrade/legacy t
 fixtures» (только Rust-owned legacy v6 для проверки аддитивной миграции)
 разграничиваются и не смешиваются.
 
-### 0A.1. Contract manifest v15
+### 0A.1. Contract manifest v15 (завершено)
 
 - **Цель:** обновить `docs/contract-manifest.json` до `schema_version=15` и
   зафиксировать новые CLI/MCP/config/runtime-поверхности.
@@ -119,15 +130,15 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   `close_task` с новыми параметрами (`budget`, `workflow_id`, `depends_on`,
   `profile`, `allow_suspected_secrets`, `allow_budget_override`); runtime-пути
   `worktrees/`, `admission.lock`, `workers/<task_id>.lock`.
-- **Не входит:** изменение manifest/fixtures в этой задаче; Rust-код.
+- **Не входит:** Rust-код и runtime state.
 - **Критерии приёмки:** manifest воспроизводит v15-поверхность и согласован с
   Python-источником; `schema_version=15`.
-- **Targeted checks:** будущий `python3 docs/fixtures/sqlite/verify.py`;
+- **Targeted checks:** `python3 docs/fixtures/sqlite/verify.py`;
   `git diff --check`.
 - **Зависит от:** фиксации источника v15.
 - **Открывает:** 0A.2–0A.6 и schema/domain/config foundations.
 
-### 0A.2. Config fixtures v15
+### 0A.2. Config fixtures v15 (завершено)
 
 - **Цель:** добавить valid/invalid cases для `execution_mode`,
   `max_active_tasks`, `allow_parallel_writers`, `default_profile`/custom
@@ -138,13 +149,13 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   `max_active_tasks` positive int (bool/0/negative rejected);
   `allow_parallel_writers=true` только при `execution_mode="worktree"`;
   default/custom profile resolution.
-- **Не входит:** реализация config в Rust; изменение fixtures сейчас.
+- **Не входит:** реализация config в Rust.
 - **Критерии приёмки:** config corpus семантически совпадает с Python v15.
 - **Targeted checks:** config-cases parity; `git diff --check`.
 - **Зависит от:** 0A.1.
 - **Открывает:** config foundation потребителей.
 
-### 0A.3. MCP fixtures v15
+### 0A.3. MCP fixtures v15 (завершено)
 
 - **Цель:** обновить ответы tools для новых статусов/полей.
 - **Source evidence:** `mcp_server.py:174-351,354-688,938-948,1124-1131,
@@ -154,13 +165,13 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   exhausted, workflow/dependency gate, `suspected_secrets` categories-only,
   `execution_mode`, `project_info` active set, ID-less `task_status` →
   `ambiguous_task`, compact `phase`/`verification_progress`.
-- **Не входит:** изменение fixtures сейчас.
+- **Не входит:** Rust-код и runtime state.
 - **Критерии приёмки:** MCP corpus эквивалентен Python v15.
 - **Targeted checks:** mcp-cases parity; `git diff --check`.
 - **Зависит от:** 0A.1.
 - **Открывает:** MCP foundation потребителей.
 
-### 0A.4. SQLite fixtures v15: fresh target и Rust-owned upgrade/legacy
+### 0A.4. SQLite fixtures v15: fresh target и Rust-owned upgrade/legacy (завершено)
 
 - **Цель:** подготовить **fresh schema target** (пустая v15) и отдельно
   **Rust-owned additive upgrade/legacy** fixtures (v6, только Rust-owned), не
@@ -180,7 +191,7 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   `meta.schema_version='15'`, `PRAGMA user_version=15`.
 - **Разграничение:** fresh target — новая пустая Rust-owned v15; legacy v6 —
   только для Rust-owned upgrade/legacy-read тестов; Python state не участвует.
-- **Не входит:** изменение fixtures сейчас; чтение Python SQLite.
+- **Не входит:** чтение Python runtime SQLite и изменение Rust-кода.
 - **Критерии приёмки:** fresh v15 и legacy v6 различаются явно; fresh v15
   допускает несколько disjoint parallel writers и не содержит
   `ux_tasks_active`; ownership guard/isolation не ослаблены.
@@ -190,7 +201,7 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
 - **Открывает:** schema/domain/config foundations (domain 1.6/1.7, config
   2.10–2.12, storage 3.12).
 
-### 0A.5. Security corpus v15
+### 0A.5. Security corpus v15 (завершено)
 
 - **Цель:** обновить security corpus новыми политиками.
 - **Source evidence:** `secret_scanner.py:29-134`; `mcp_server.py:764-780,
@@ -202,13 +213,13 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   `allow_suspected_secrets`; worktree path policy (absolute external
   `allowed_paths` запрещены, submodules/LFS/sparse fail closed); canonical
   symlink-resolved file/directory scope overlap; corrupt scope fail closed.
-- **Не входит:** изменение corpus сейчас; смешивание с schema/public API.
+- **Не входит:** изменение schema/public API и Rust security implementation.
 - **Критерии приёмки:** security corpus совпадает с Python v15.
 - **Targeted checks:** security-cases parity; `git diff --check`.
 - **Зависит от:** 0A.1.
 - **Открывает:** security consumers.
 
-### 0A.6. Runtime/readiness fixtures v15
+### 0A.6. Runtime/readiness fixtures v15 (завершено)
 
 - **Цель:** зафиксировать `status --json`, diagnostics snapshot, verifier
   phase/progress и hook-status.
@@ -219,7 +230,7 @@ fixtures» (только Rust-owned legacy v6 для проверки аддит
   `worktree_summary` + `active_writers`; safe phase `agent|verifying` и
   `verification_progress` (`state`/`command_index`/`command_count`); read-only
   fail-open Codex hook без raw prompt text.
-- **Не входит:** изменение fixtures сейчас; runtime services.
+- **Не входит:** реализация runtime services в Rust.
 - **Критерии приёмки:** runtime corpus совпадает с Python v15.
 - **Targeted checks:** diagnostics parity; `git diff --check`.
 - **Зависит от:** 0A.1.
@@ -586,7 +597,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **7.3** (Session resolution), шаг **7.4** (Initial prompt happy path), шаг
   **7.5** (Revision round) и шаг **7.6** (Permission blocker) завершены.
   Завершённые этапы 0–6 и 7.1–7.6 — foundation старого контракта schema v6.
-  Ближайший шаг — **Поток 0A** (refresh контракта до schema v15), затем
+  **Поток 0A завершён**; ближайшая задача — **1.6**, затем foundations v15;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v15 в Rust не завершены.
 
@@ -2857,13 +2868,13 @@ improvement**. Limitation не выдаётся за реализованное 
 
 ## Порядок и готовность
 
-1. **Единый ближайший шаг — Поток 0A (refresh контракта v15) ПЕРЕД 7.7.**
+1. **Поток 0A завершён. Ближайшая задача — 1.6: dependency/waiting domain transitions.**
 2. После 0A: foundations — domain 1.6/1.7, config 2.10–2.12, storage 3.12,
    затем потребители (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15).
 3. **Все новые возможности (v7–v15) в Rust НЕ завершены**; завершены только
    0–6 и 7.1–7.6 как foundation старого контракта v6. 7.6 accepted сохраняется.
 4. Следующий незавершённый исторический шаг 7.7 (Question blocker) выполняется
-   после 0A; порядок и зависимости новых задач — по ссылкам выше.
+   после завершённого 0A; порядок и зависимости новых задач — по ссылкам выше.
 
 ## Экономия контекста
 

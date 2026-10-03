@@ -9,11 +9,13 @@ workspace = true
 
 [dependencies]
 bridge-domain.workspace = true
+bridge-path-policy.workspace = true
 bridge-opencode.workspace = true
 bridge-storage.workspace = true
 process-wrap.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

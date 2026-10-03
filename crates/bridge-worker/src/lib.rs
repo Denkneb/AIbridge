@@ -88,6 +88,7 @@
 //! [`std::error::Error::source`].
 
 pub mod dispatch;
+pub mod findings;
 pub mod lock;
 pub mod permission;
 pub mod prompt;
@@ -96,8 +97,9 @@ pub mod startup;
 
 pub use dispatch::{
     DispatchError, DispatchErrorKind, DispatchedRound, dispatch_initial_round,
-    dispatch_revision_round, new_message_id,
+    dispatch_revision_round, dispatch_revision_round_with_trusted_roots, new_message_id,
 };
+pub use findings::{FindingsError, RevisionFindings, validate_revision_findings};
 pub use lock::{WorkerLock, WorkerLockError, WorkerLockErrorKind, WorkerLockOutcome};
 pub use permission::{
     NEEDS_USER_ERROR_CODE, PERMISSION_BLOCKER_REASON, PendingPermission, PermissionBlocker,

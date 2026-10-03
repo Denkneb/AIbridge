@@ -78,8 +78,8 @@ Targeted checks:
   **0B.3 завершён** (4 SQLite delta fixtures, actual v17 migration parity).
   **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
   **0B.5 завершён** (77 runtime/automation cases, без skips).
-  **Delta fixtures 0B завершены.** Ближайший шаг — **7.13
-  (Structured findings validation)**; новые v16/v17 задачи идут по зависимостям.
+  **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
+  Ближайший шаг — **7.14 (Soft budgets usage aggregation)**; новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -97,7 +97,7 @@ Targeted checks:
 Delta реализация остаётся открытой; **0B.1–0B.5 завершены**: manifest v17,
 AST/source verification, config/permission, SQLite, MCP и runtime/automation delta corpora.
 Fixtures 0A и Rust implementation сохраняют v15 baseline. Contract delta
-refresh завершён; реализация потребителей продолжается с 7.13.
+refresh завершён; 7.13 завершён; реализация потребителей продолжается с 7.14.
 
 ## Поток 0. Контрактная база
 
@@ -413,7 +413,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; ближайшая задача — 7.13.**
+  **0B завершён; 7.13 также завершён. Ближайшая задача — 7.14.**
 
 ## Поток 1. Rust foundation
 
@@ -1050,7 +1050,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
-  ближайшая задача — **7.13**;
+  **7.13 завершён**; ближайшая задача — **7.14**;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v17 в Rust не завершены.
 
@@ -2730,7 +2730,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.12. Cooperative close
 
-### 7.13. Structured findings validation (v7, не завершено)
+### 7.13. Structured findings validation (v7, завершено)
 
 - **Цель:** валидировать persisted `rounds.structured_findings` на
   `request_changes`/revision-пути и запрещать ослабление обязательного textual
@@ -2746,6 +2746,32 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   canonical payload hash сохраняет идемпотентность.
 - **Targeted checks:** worker structured-findings tests; MCP
   `request_changes` structured cases.
+- **Результат:** `bridge-worker::validate_revision_findings` возвращает
+  immutable `RevisionFindings`: обязательный textual summary, строгий domain
+  schema, filesystem-aware path normalization и task scope check, включая
+  trusted external Git roots и symlink escapes. Hash повторяет Python sorted
+  UTF-8 JSON с default separators; None/[] сохраняют historical text-only hash.
+  `create_round` использует атомарный storage `create_revision_round_with_findings`:
+  findings/round/event/task commit вместе; identical retries возвращают исходный
+  round с `replayed=true`, без новых writes и необходимости повторного spawn.
+  Project/task/kind/hash conflict и awaiting-review/close gates проверяются в
+  транзакции. Read-only `get_round_structured_findings` строго разбирает колонку.
+  Revision dispatch проверяет persisted findings до session HTTP и повторно
+  после resolution; malformed/schema/scope/text violations атомарно завершают
+  unsent revision как failed с `structured_findings_invariant`. Отдельный
+  `fail_revision_findings` сохраняет current/project/task fencing, close priority
+  и historical transition table. Prompt содержит нормализованный single-line
+  block; text-only/[] сохраняют прежний template. Default dispatch не доверяет
+  external roots; для configured roots есть явный entry point.
+- **Проверки:** 409 worker/storage tests, включая 10 frozen MCP structured cases,
+  2 independent Python hash goldens, shape/limits/scope/symlink/trusted-root cases,
+  corrupted JSON/SQL type, pre/post-session checks, no-HTTP invariant failures,
+  rollback, concurrent None/[] replay, close precedence и redaction.
+  Loopback integration suite прошла при разрешённом socket creation;
+  workspace all-targets clippy, format и diff check прошли.
+- **Границы:** Rust schema target остаётся v15; historical fixtures не менялись.
+  Public MCP handler/wiring — 8.12; GUI/read-only rendering — 12.13;
+  secret/budget gates, worker observation/recovery и live models не входят.
 - **Зависит от:** 0A.3, 1.7, 3.12a. **Открывает:** 12.13.
 
 ### 7.14. Soft budgets usage aggregation (v8, не завершено)
@@ -3602,9 +3628,9 @@ improvement**. Limitation не выдаётся за реализованное 
    **0B.3 завершён** (4 SQLite delta fixtures и migration parity).
    **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
    **0B.5 завершён** (77 runtime/automation cases).
-   **Ближайшая задача — 7.13**; delta fixtures refresh завершён.
-2. После delta fixtures продолжить 7.13 и потребителей existing v15
-   (7.13–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
+   **7.13 завершён**; **ближайшая задача — 7.14**; delta fixtures refresh завершён.
+2. После завершённых delta fixtures и 7.13 продолжить 7.14 и потребителей existing v15
+   (7.14–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
    schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;
    recovery corrections 7.10/8.20 и startup wait 9.7a включены в свои потоки.
 3. On_accept 9.18e/8.19 зависит от existing crash-safe materializer и locks;

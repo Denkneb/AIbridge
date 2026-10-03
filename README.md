@@ -52,8 +52,12 @@ refresh baseline с status/project fence и событие `dependencies_satisfi
 **Шаг 3.12e завершён:** атомарный lifecycle реестров worktrees/quarantine,
 строгие переходы и read-only диагностика.
 **Шаг 3.12f завершён:** сохранение и строгий разбор бюджетов задач.
-Storage foundations 3.12 завершены для frozen v15. Ближайший шаг —
-**7.13: Structured findings validation**; delta fixtures 0B завершены.
+Storage foundations 3.12 завершены для frozen v15.
+**Шаг 7.13 завершён:** strict structured findings validation, scope normalization,
+Python-compatible hash, atomic revision persistence/replay и проверка persisted
+данных перед отправкой prompt; corruption останавливает unsent revision.
+MCP handler и GUI wiring остаются в 8.12/12.13. Ближайший шаг —
+**7.14: Soft budgets usage aggregation**; delta fixtures 0B завершены.
 **0B.1 завершён:** manifest v17 и `python3 docs/verify_contract_manifest.py`
 проверяют source pin, CLI/MCP/config/DDL/automation через AST и SQLite в памяти.
 **0B.2 завершён:** 87/87 config/permission source-parity cases, no skips;
@@ -370,7 +374,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   Default creation сохраняет прежнее поведение, replay не меняет бюджет.
   Проверено **254 storage tests**, **1010 workspace tests**, all-targets clippy, SQLite verifier,
   format и diff check. Usage aggregation и round budget gates — следующий
-  consumer 7.14; перед продолжением очереди — delta refresh 0B.
+  consumer 7.14; delta refresh 0B завершён.
 - Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
   Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
   базовой семантики Python `command_policy.py`: `split_command`
@@ -1357,7 +1361,8 @@ refresh; единого хвостового «когда-нибудь» нет.
   **0B.3 завершён** (SQLite delta fixtures и actual migration parity);
   **0B.4 завершён** (47 MCP source-parity scenarios);
   **0B.5 завершён** (77 runtime/automation cases);
-  ближайшая задача — **7.13**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
+  **7.13 завершён** (findings validation/persistence/dispatch);
+  ближайшая задача — **7.14**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v17 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

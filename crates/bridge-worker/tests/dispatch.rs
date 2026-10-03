@@ -1761,13 +1761,9 @@ fn revision_dispatch_sends_exact_prompt_and_records_observing() {
 }
 
 #[test]
-fn revision_dispatch_renders_none_findings_as_empty_section() {
-    let dir = TempDir::new("rev-empty-findings");
+fn revision_dispatch_rejects_missing_text_before_http() {
+    let dir = TempDir::new("rev-missing-text");
     let workspace = dir.mkdir("ws");
-    let workspace_string = std::fs::canonicalize(&workspace)
-        .expect("canonical")
-        .to_string_lossy()
-        .into_owned();
     let (layout, mut storage) = open_storage(&dir, "proj-1");
     let project = project("proj-1");
     let task = task_id();
@@ -1775,49 +1771,24 @@ fn revision_dispatch_renders_none_findings_as_empty_section() {
         &mut storage,
         task,
         &project,
-        &workspace_string,
+        workspace.to_str().unwrap(),
         "original task",
         Vec::new(),
         Vec::new(),
         None,
     );
     seed_revision_round(&mut storage, task, &project, None);
-
-    let round1_title = round_session_title(task, 1);
-    let round2_title = round_session_title(task, 2);
-    let directory = workspace_string.clone();
-    let (port, server) =
-        spawn_server(
-            move |request, _state| match (request.method.as_str(), request.path()) {
-                ("GET", "/session") => ok_json(&serde_json::json!([session_json(
-                    Some("ses_round1"),
-                    Some(&round1_title),
-                    Some(&directory),
-                )])),
-                ("POST", "/session") => ok_json(&session_json(
-                    Some("ses_round2"),
-                    Some(&round2_title),
-                    Some(&directory),
-                )),
-                ("POST", path) if path.ends_with("/prompt_async") => no_content(),
-                _ => status(500, b"unexpected"),
-            },
-        );
+    let (port, server) = spawn_server(|_, _| status(500, b"unexpected"));
     let client = build_client(port, &workspace);
-
-    let outcome = dispatch_revision_round(&client, &layout, round_ref(task, &project, 2))
-        .expect("revision dispatch must succeed");
-    let text = server.prompt_posts()[0].body_json()["parts"][0]["text"]
-        .as_str()
-        .expect("prompt text")
-        .to_owned();
-    assert!(
-        text.ends_with("Замечания ревью:\n\n"),
-        "None findings render the empty section"
-    );
+    let error =
+        dispatch_revision_round(&client, &layout, round_ref(task, &project, 2)).unwrap_err();
+    assert_eq!(error.kind(), DispatchErrorKind::StructuredFindingsInvariant);
+    assert!(server.requests().is_empty());
+    assert_eq!(round_state(&storage, task, 2).status, "failed");
+    assert_eq!(round_state(&storage, task, 2).attempted, 0);
     assert_eq!(
-        text,
-        revision_prompt(outcome.task(), client.workspace(), "", 2)
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::Failed
     );
 }
 
@@ -2691,4 +2662,462 @@ fn revision_redaction_hides_ids_prompt_findings_and_workspace() {
     assert!(!rendered_error.contains("SECRET-FINDINGS"));
 
     let _ = server;
+}
+
+// 7.13: persisted validation must stop delivery before any session/prompt HTTP.
+fn structured_item(path: &str) -> serde_json::Value {
+    serde_json::json!({"severity":"error","path":path,"line":2,"code":"BUG-1","message":"fix\n the operator"})
+}
+
+fn seed_structured_revision(
+    dir: &TempDir,
+) -> (
+    PathBuf,
+    bridge_storage::RustStateLayout,
+    StorageConnection,
+    TaskId,
+    ProjectId,
+) {
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(dir, "proj-1");
+    let project = project("proj-1");
+    let task = task_id();
+    create_task_full(
+        &mut storage,
+        task,
+        &project,
+        workspace.to_str().unwrap(),
+        "original",
+        vec!["src/".to_owned()],
+        Vec::new(),
+        None,
+    );
+    seed_revision_round(&mut storage, task, &project, Some("fix"));
+    (workspace, layout, storage, task, project)
+}
+
+fn set_structured(storage: &StorageConnection, task: TaskId, raw: &str) {
+    storage
+        .connection()
+        .execute(
+            "UPDATE rounds SET structured_findings=?1 WHERE task_id=?2 AND round_number=2",
+            rusqlite::params![raw, task.to_string()],
+        )
+        .unwrap();
+}
+
+#[test]
+fn persisted_structured_corruption_fails_terminally_before_any_http() {
+    let mut extra = structured_item("src/a.rs");
+    extra["extra"] = serde_json::json!(true);
+    let mut severity = structured_item("src/a.rs");
+    severity["severity"] = serde_json::json!("fatal");
+    let mut line = structured_item("src/a.rs");
+    line["line"] = serde_json::json!(true);
+    let invalid = vec![
+        "BLOB".to_owned(),
+        "{".to_owned(),
+        "".to_owned(),
+        "null".to_owned(),
+        "{}".to_owned(),
+        "42".to_owned(),
+        "[42]".to_owned(),
+        serde_json::json!([extra]).to_string(),
+        serde_json::json!([severity]).to_string(),
+        serde_json::json!([line]).to_string(),
+        serde_json::json!([structured_item("outside.rs")]).to_string(),
+        serde_json::json!([structured_item("../src/a.rs")]).to_string(),
+        serde_json::Value::Array(vec![structured_item("src/a.rs"); 201]).to_string(),
+    ];
+    for raw in invalid {
+        let dir = TempDir::new("structured-corrupt");
+        let (workspace, layout, storage, task, project) = seed_structured_revision(&dir);
+        if raw == "BLOB" {
+            storage
+                .connection()
+                .execute(
+                    "UPDATE rounds SET structured_findings=?1 WHERE task_id=?2 AND round_number=2",
+                    rusqlite::params![vec![0xff_u8], task.to_string()],
+                )
+                .unwrap();
+        } else {
+            set_structured(&storage, task, &raw);
+        }
+        let (port, server) = spawn_server(|_, _| status(500, b"unexpected"));
+        let client = build_client(port, &workspace);
+        let error =
+            dispatch_revision_round(&client, &layout, round_ref(task, &project, 2)).unwrap_err();
+        assert_eq!(error.kind(), DispatchErrorKind::StructuredFindingsInvariant);
+        assert_eq!(server.request_count(), 0);
+        assert_eq!(round_state(&storage, task, 2).status, "failed");
+        assert_eq!(round_state(&storage, task, 2).attempted, 0);
+        assert_eq!(round_state(&storage, task, 2).outbound, None);
+        assert_eq!(
+            storage.get_task(task).unwrap().unwrap().status,
+            TaskStatus::Failed
+        );
+        let code: String = storage
+            .connection()
+            .query_row(
+                "SELECT error_code FROM rounds WHERE task_id=?1 AND round_number=2",
+                [task.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(code, "structured_findings_invariant");
+        assert!(!format!("{error:?} {error}").contains("outside.rs"));
+        let again =
+            dispatch_revision_round(&client, &layout, round_ref(task, &project, 2)).unwrap_err();
+        assert_eq!(again.kind(), DispatchErrorKind::TaskNotDispatchable);
+        assert_eq!(server.request_count(), 0);
+    }
+}
+
+#[test]
+fn structured_revision_renders_normalized_persisted_prompt() {
+    for raw in [
+        "[]".to_owned(),
+        serde_json::json!([structured_item("src/./a.rs")]).to_string(),
+    ] {
+        let dir = TempDir::new("structured-prompt");
+        let (workspace, layout, storage, task, project) = seed_structured_revision(&dir);
+        set_structured(&storage, task, &raw);
+        let title = round_session_title(task, 2);
+        let directory = workspace.to_str().unwrap().to_owned();
+        let (port, server) =
+            spawn_server(
+                move |request, _| match (request.method.as_str(), request.path()) {
+                    ("GET", "/session") => ok_json(&serde_json::json!([])),
+                    ("POST", "/session") => ok_json(&session_json(
+                        Some("ses_revision"),
+                        Some(&title),
+                        Some(&directory),
+                    )),
+                    ("POST", path) if path.ends_with("/prompt_async") => no_content(),
+                    _ => status(500, b"unexpected"),
+                },
+            );
+        let client = build_client(port, &workspace);
+        let outcome =
+            dispatch_revision_round(&client, &layout, round_ref(task, &project, 2)).unwrap();
+        let expected = if raw == "[]" {
+            "fix"
+        } else {
+            "fix\n\nСтруктурированные замечания ревью:\n1. [error] src/a.rs:2 (BUG-1) fix the operator"
+        };
+        assert_eq!(
+            server.prompt_posts()[0].body_json()["parts"][0]["text"],
+            revision_prompt(outcome.task(), &workspace, expected, 2)
+        );
+        assert_eq!(server.prompt_posts().len(), 1);
+        assert_eq!(round_state(&storage, task, 2).status, "observing");
+    }
+}
+
+#[test]
+fn structured_findings_are_revalidated_after_session_resolution() {
+    let dir = TempDir::new("structured-session-race");
+    let (workspace, layout, storage, task, project) = seed_structured_revision(&dir);
+    set_structured(
+        &storage,
+        task,
+        &serde_json::json!([structured_item("src/a.rs")]).to_string(),
+    );
+    let database = layout.database();
+    let title = round_session_title(task, 2);
+    let directory = workspace.to_str().unwrap().to_owned();
+    let (port, server) =
+        spawn_server(
+            move |request, _| match (request.method.as_str(), request.path()) {
+                ("GET", "/session") => {
+                    let storage = connect(&database).unwrap();
+                    set_structured(&storage, task, "null");
+                    ok_json(&serde_json::json!([]))
+                }
+                ("POST", "/session") => ok_json(&session_json(
+                    Some("ses_revision"),
+                    Some(&title),
+                    Some(&directory),
+                )),
+                _ => status(500, b"unexpected"),
+            },
+        );
+    let client = build_client(port, &workspace);
+    let error =
+        dispatch_revision_round(&client, &layout, round_ref(task, &project, 2)).unwrap_err();
+    assert_eq!(error.kind(), DispatchErrorKind::StructuredFindingsInvariant);
+    assert_eq!(server.request_count(), 2);
+    assert_eq!(server.prompt_posts().len(), 0);
+    assert_eq!(round_state(&storage, task, 2).status, "failed");
+    assert_eq!(round_state(&storage, task, 2).attempted, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn persisted_symlink_escape_stops_revision_delivery() {
+    let dir = TempDir::new("structured-symlink");
+    let (workspace, layout, storage, task, project) = seed_structured_revision(&dir);
+    let outside = dir.mkdir("outside");
+    std::os::unix::fs::symlink(outside.join("missing"), workspace.join("src")).unwrap();
+    set_structured(
+        &storage,
+        task,
+        &serde_json::json!([structured_item("src/a.rs")]).to_string(),
+    );
+    let (port, server) = spawn_server(|_, _| status(500, b"unexpected"));
+    let error = dispatch_revision_round(
+        &build_client(port, &workspace),
+        &layout,
+        round_ref(task, &project, 2),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), DispatchErrorKind::StructuredFindingsInvariant);
+    assert_eq!(server.request_count(), 0);
+}
+
+#[test]
+fn invariant_finish_storage_failure_rolls_back_without_http() {
+    let dir = TempDir::new("structured-finish-failure");
+    let (workspace, layout, storage, task, project) = seed_structured_revision(&dir);
+    set_structured(&storage, task, "{}");
+    install_trigger(
+        &storage,
+        "CREATE TRIGGER reject_failed BEFORE UPDATE OF status ON rounds WHEN NEW.status='failed' BEGIN SELECT RAISE(ABORT,'test'); END;",
+    );
+    let (port, server) = spawn_server(|_, _| status(500, b"unexpected"));
+    let error = dispatch_revision_round(
+        &build_client(port, &workspace),
+        &layout,
+        round_ref(task, &project, 2),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), DispatchErrorKind::Storage);
+    assert_eq!(server.request_count(), 0);
+    assert_eq!(round_state(&storage, task, 2).status, "pending");
+    assert_eq!(
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::Revising
+    );
+}
+
+#[test]
+fn request_revision_persistence_replay_conflict_and_rollback() {
+    let dir = TempDir::new("structured-create");
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(&dir, "proj-1");
+    let project = project("proj-1");
+    let task = task_id();
+    create_task_full(
+        &mut storage,
+        task,
+        &project,
+        workspace.to_str().unwrap(),
+        "original",
+        vec!["src/".to_owned()],
+        Vec::new(),
+        None,
+    );
+    storage
+        .mark_round_observing(round_ref(task, &project, 1))
+        .unwrap();
+    storage
+        .finish_round(FinishRoundInput {
+            round: round_ref(task, &project, 1),
+            round_status: RoundStatus::Complete,
+            task_status: TaskStatus::AwaitingReview,
+            response_message_id: None,
+            response: None,
+            error_code: None,
+            result_json: None,
+        })
+        .unwrap();
+    let value = serde_json::json!([structured_item("src/./a.rs")]);
+    let findings = bridge_worker::validate_revision_findings(
+        "fix",
+        Some(&value),
+        &workspace,
+        &[],
+        &["src/".to_owned()],
+    )
+    .unwrap();
+    let round = round_ref(task, &project, 2);
+    install_trigger(
+        &storage,
+        "CREATE TRIGGER reject_structured BEFORE UPDATE OF structured_findings ON rounds BEGIN SELECT RAISE(ABORT,'test'); END;",
+    );
+    assert!(
+        findings
+            .create_round(&mut storage, round.clone(), "review".to_owned())
+            .is_err()
+    );
+    assert_eq!(
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::AwaitingReview
+    );
+    let count: i64 = storage
+        .connection()
+        .query_row("SELECT count(*) FROM rounds", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    storage
+        .connection()
+        .execute_batch("DROP TRIGGER reject_structured")
+        .unwrap();
+    let first = findings
+        .create_round(&mut storage, round.clone(), "review".to_owned())
+        .unwrap();
+    assert_eq!(first.state.task.revision_count, 1);
+    assert!(!first.replayed);
+    let debug = format!("{first:?}");
+    for sensitive in ["original", "fix", TASK_UUID, workspace.to_str().unwrap()] {
+        assert!(!debug.contains(sensitive));
+    }
+    let persisted = storage
+        .get_round_structured_findings(&round)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.as_slice()[0].path, "src/a.rs");
+    let events: i64 = storage
+        .connection()
+        .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    let canonical = bridge_worker::validate_revision_findings(
+        "fix",
+        Some(&serde_json::json!([structured_item("src/a.rs")])),
+        &workspace,
+        &[],
+        &["src/".to_owned()],
+    )
+    .unwrap();
+    let replay = canonical
+        .create_round(&mut storage, round.clone(), "review".to_owned())
+        .unwrap();
+    assert_eq!(first.state, replay.state);
+    assert!(replay.replayed);
+    assert_eq!(
+        events,
+        storage
+            .connection()
+            .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    );
+    let changed = bridge_worker::validate_revision_findings(
+        "different",
+        Some(&value),
+        &workspace,
+        &[],
+        &["src/".to_owned()],
+    )
+    .unwrap();
+    assert!(matches!(
+        changed.create_round(&mut storage, round.clone(), "review".to_owned()),
+        Err(bridge_storage::RoundUpdateError::RequestConflict)
+    ));
+    let foreign = round_ref(task, &crate::project("foreign"), 2);
+    assert!(matches!(
+        findings.create_round(&mut storage, foreign, "review".to_owned()),
+        Err(bridge_storage::RoundUpdateError::ProjectMismatch)
+    ));
+
+    // Concurrent None/[] requests share the historical hash and create once.
+    storage.mark_round_observing(round.clone()).unwrap();
+    storage
+        .finish_round(FinishRoundInput {
+            round,
+            round_status: RoundStatus::Complete,
+            task_status: TaskStatus::AwaitingReview,
+            response_message_id: None,
+            response: None,
+            error_code: None,
+            result_json: None,
+        })
+        .unwrap();
+    let text = bridge_worker::validate_revision_findings(
+        "text",
+        None,
+        &workspace,
+        &[],
+        &["src/".to_owned()],
+    )
+    .unwrap();
+    let empty = bridge_worker::validate_revision_findings(
+        "text",
+        Some(&serde_json::json!([])),
+        &workspace,
+        &[],
+        &["src/".to_owned()],
+    )
+    .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut threads = Vec::new();
+    for request in [text, empty] {
+        let barrier = barrier.clone();
+        let database = layout.database();
+        let round = round_ref(task, &project, 3);
+        threads.push(std::thread::spawn(move || {
+            let mut storage = connect(&database).unwrap();
+            barrier.wait();
+            request
+                .create_round(&mut storage, round, "text-review".to_owned())
+                .unwrap()
+        }));
+    }
+    let outcomes: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(outcomes.iter().filter(|o| o.replayed).count(), 1);
+    assert_eq!(outcomes[0].state, outcomes[1].state);
+    assert_eq!(storage.get_task(task).unwrap().unwrap().revision_count, 2);
+    let count: i64 = storage
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM rounds WHERE request_id='text-review'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn pre_send_invariant_failure_is_fenced_and_preserves_close_priority() {
+    let dir = TempDir::new("findings-failure-guards");
+    let (_workspace, _layout, mut storage, task, project) = seed_structured_revision(&dir);
+    let current = round_ref(task, &project, 2);
+    assert!(
+        storage
+            .fail_revision_findings(round_ref(task, &project, 1))
+            .is_err()
+    );
+    assert!(
+        storage
+            .fail_revision_findings(round_ref(task, &crate::project("foreign"), 2))
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 2).status, "pending");
+    storage
+        .request_task_close(task, "close before failure")
+        .unwrap();
+    let outcome = storage.fail_revision_findings(current.clone()).unwrap();
+    assert_eq!(outcome.task.status, TaskStatus::Closed);
+    assert_eq!(outcome.round.status, RoundStatus::Failed);
+    assert!(storage.fail_revision_findings(current).is_err());
+    let count: i64 = storage
+        .connection()
+        .query_row("SELECT count(*) FROM events WHERE kind='closed'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let dir = TempDir::new("findings-failure-attempted");
+    let (_workspace, _layout, mut storage, task, project) = seed_structured_revision(&dir);
+    let current = round_ref(task, &project, 2);
+    storage
+        .prepare_round(current.clone(), "msg_test".to_owned())
+        .unwrap();
+    storage.mark_round_sent(current.clone()).unwrap();
+    assert!(storage.fail_revision_findings(current).is_err());
+    assert_eq!(round_state(&storage, task, 2).status, "sent");
 }

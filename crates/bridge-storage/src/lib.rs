@@ -11216,9 +11216,69 @@ impl StorageConnection {
         &mut self,
         input: CreateRevisionRoundInput,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        self.create_revision_round_inner(input, None, false)
+            .map(|outcome| outcome.state)
+    }
+
+    /// Creates a v7+ revision atomically with validated structured findings.
+    /// Textual findings remain mandatory. Identical project-scoped request/hash
+    /// retries return the original round without another event or task update.
+    /// The caller must authorize paths and calculate the canonical payload hash.
+    pub fn create_revision_round_with_findings(
+        &mut self,
+        input: CreateRevisionRoundInput,
+        structured: Option<bridge_domain::StructuredFindings>,
+    ) -> Result<RevisionRoundOutcome, RoundUpdateError> {
+        if input
+            .findings
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        {
+            return Err(RoundUpdateError::InvalidInput);
+        }
+        self.create_revision_round_inner(input, structured, true)
+    }
+
+    /// Read-only structured findings for a project-scoped round. SQL NULL is
+    /// text-only; every non-NULL value must be a strictly validated JSON array.
+    /// Scope authorization belongs to the consumer with its current workspace.
+    pub fn get_round_structured_findings(
+        &self,
+        round: &RoundRef,
+    ) -> Result<Option<bridge_domain::StructuredFindings>, RoundUpdateError> {
+        let raw: Result<Option<String>, RoundUpdateError> = self.connection.query_row(
+            "SELECT structured_findings FROM rounds WHERE task_id=?1 AND project_id=?2 AND round_number=?3",
+            params![round.task_id.to_string(), round.project_id.as_str(), round.round_number],
+            |row| Ok(match row.get_ref(0)? {
+                rusqlite::types::ValueRef::Null => Ok(None),
+                rusqlite::types::ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+                    .map(|s| Some(s.to_owned())).map_err(|_| RoundUpdateError::InvalidPersistedState),
+                _ => Err(RoundUpdateError::InvalidPersistedState),
+            }),
+        ).optional().map_err(RoundUpdateError::Database)?
+            .ok_or(RoundUpdateError::MissingRound)?;
+        let raw = raw?;
+        raw.map(|s| serde_json::from_str(&s).map_err(|_| RoundUpdateError::InvalidPersistedState))
+            .transpose()
+    }
+
+    fn create_revision_round_inner(
+        &mut self,
+        input: CreateRevisionRoundInput,
+        structured: Option<bridge_domain::StructuredFindings>,
+        replay: bool,
+    ) -> Result<RevisionRoundOutcome, RoundUpdateError> {
         if input.request_id.is_empty() || input.payload_hash.is_empty() || input.round_number == 0 {
             return Err(RoundUpdateError::InvalidInput);
         }
+        let structured_json = structured
+            .as_ref()
+            .map(|value| {
+                bridge_domain::StructuredFindings::try_from(value.as_slice().to_vec())
+                    .map_err(|_| RoundUpdateError::InvalidInput)?;
+                serde_json::to_string(value).map_err(|_| RoundUpdateError::InvalidJson)
+            })
+            .transpose()?;
 
         let now = utc_now_rfc3339_millis();
         let transaction = self
@@ -11231,15 +11291,34 @@ impl StorageConnection {
             return Err(RoundUpdateError::ProjectMismatch);
         }
 
-        let existing: Option<i64> = transaction
+        let existing: Option<Result<RoundRow, RoundRowError>> = transaction
             .query_row(
-                "SELECT 1 FROM rounds WHERE project_id = ?1 AND request_id = ?2",
+                &format!(
+                    "SELECT {ROUND_COLUMNS} FROM rounds WHERE project_id = ?1 AND request_id = ?2"
+                ),
                 params![input.project_id.as_str(), input.request_id],
-                |row| row.get(0),
+                |row| Ok(RoundRow::from_row(row)),
             )
             .optional()
             .map_err(RoundUpdateError::Database)?;
-        if existing.is_some() {
+        if let Some(existing) = existing {
+            if !replay {
+                return Err(RoundUpdateError::RequestConflict);
+            }
+            let existing = existing.map_err(RoundUpdateError::RoundRow)?;
+            if replay
+                && existing.task_id == input.task_id
+                && existing.kind == RoundKind::Revise
+                && existing.payload_hash == input.payload_hash
+            {
+                let outcome =
+                    read_round_update_outcome(&transaction, input.task_id, existing.round_number)?;
+                transaction.commit().map_err(RoundUpdateError::Database)?;
+                return Ok(RevisionRoundOutcome {
+                    state: outcome,
+                    replayed: true,
+                });
+            }
             return Err(RoundUpdateError::RequestConflict);
         }
 
@@ -11248,6 +11327,12 @@ impl StorageConnection {
             .ok_or(RoundUpdateError::InvalidPersistedState)?;
         if input.round_number != expected {
             return Err(RoundUpdateError::NonSequentialRound);
+        }
+
+        if replay
+            && (task.status != TaskStatus::AwaitingReview || task.close_requested_at.is_some())
+        {
+            return Err(RoundUpdateError::InvalidTaskTransition);
         }
 
         task.status
@@ -11291,6 +11376,19 @@ impl StorageConnection {
             )
             .map_err(classify_revision_round_insert_error)?;
 
+        if replay {
+            transaction
+                .execute(
+                    "UPDATE rounds SET structured_findings=?1 WHERE task_id=?2 AND round_number=?3",
+                    params![
+                        structured_json,
+                        input.task_id.to_string(),
+                        input.round_number
+                    ],
+                )
+                .map_err(RoundUpdateError::Database)?;
+        }
+
         transaction
             .execute(
                 "INSERT INTO events (task_id, round_number, kind, message, created_at) \
@@ -11320,7 +11418,10 @@ impl StorageConnection {
 
         let outcome = read_round_update_outcome(&transaction, input.task_id, input.round_number)?;
         transaction.commit().map_err(RoundUpdateError::Database)?;
-        Ok(outcome)
+        Ok(RevisionRoundOutcome {
+            state: outcome,
+            replayed: false,
+        })
     }
 
     /// Atomically binds `session_id` to a round and makes it the task's current
@@ -11606,6 +11707,35 @@ impl StorageConnection {
         &mut self,
         input: FinishRoundInput,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        self.finish_round_inner(input, false)
+    }
+
+    /// Fails a pending, unattempted revision on corrupt findings before send.
+    /// This narrow invariant transition preserves the historical transition
+    /// table and atomically checks current/project/task guards and close priority.
+    pub fn fail_revision_findings(
+        &mut self,
+        round: RoundRef,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        self.finish_round_inner(
+            FinishRoundInput {
+                round,
+                round_status: RoundStatus::Failed,
+                task_status: TaskStatus::Failed,
+                response_message_id: None,
+                response: None,
+                error_code: Some("structured_findings_invariant".to_owned()),
+                result_json: None,
+            },
+            true,
+        )
+    }
+
+    fn finish_round_inner(
+        &mut self,
+        input: FinishRoundInput,
+        findings_invariant: bool,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
         let result_column = match &input.result_json {
             None => None,
             Some(value) if value.is_null() => Some(SqlValue::Null),
@@ -11622,7 +11752,17 @@ impl StorageConnection {
             .map_err(RoundUpdateError::Database)?;
 
         let (task, row) = validate_current_round(&transaction, &input.round)?;
-        require_round_transition(row.status, input.round_status)?;
+        if findings_invariant {
+            if row.kind != RoundKind::Revise
+                || row.status != RoundStatus::Pending
+                || row.attempted
+                || task.status != TaskStatus::Revising
+            {
+                return Err(RoundUpdateError::InvalidPersistedState);
+            }
+        } else {
+            require_round_transition(row.status, input.round_status)?;
+        }
         let close_pending = task.close_requested_at.is_some();
         let effective_task_status = if close_pending {
             TaskStatus::Closed
@@ -12203,6 +12343,23 @@ pub struct CreateRevisionRoundInput {
     pub payload_hash: String,
     /// Revision findings text, preserved verbatim when present.
     pub findings: Option<String>,
+}
+
+/// Result of creating or replaying a modern revision request.
+/// A replay must not cause the caller to spawn another worker.
+#[derive(Clone, PartialEq)]
+pub struct RevisionRoundOutcome {
+    /// Persisted task and original revision round.
+    pub state: RoundUpdateOutcome,
+    /// Whether the identical request already existed (no writes performed).
+    pub replayed: bool,
+}
+impl fmt::Debug for RevisionRoundOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RevisionRoundOutcome")
+            .field("replayed", &self.replayed)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Input for [`StorageConnection::finish_round`].

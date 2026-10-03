@@ -1,4 +1,4 @@
-//! Initial and revision prompt happy paths for one round (tasks 7.4 and 7.5).
+//! Initial and revision prompt delivery, with strict revision findings (7.13).
 //!
 //! This module is the narrow, reusable production step that turns a validated
 //! initial (`implement`) or revision (`revise`) round into exactly one delivered
@@ -124,11 +124,14 @@ use std::path::Path;
 
 use bridge_domain::{RoundKind, RoundStatus, TaskId, TaskStatus};
 use bridge_opencode::OpenCodeClient;
-use bridge_storage::{RoundRef, RoundRow, RustStateLayout, StorageConnection, Task};
+use bridge_storage::{
+    RoundRef, RoundRow, RoundUpdateError, RustStateLayout, StorageConnection, Task,
+};
 
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 
+use crate::findings::validate_revision_findings;
 use crate::prompt::{initial_prompt, revision_prompt};
 use crate::session::{
     ResolvedSession, SessionResolutionSource, directory_matches_workspace, resolve_round_session,
@@ -175,6 +178,8 @@ pub enum DispatchErrorKind {
     Storage,
     /// The prompt delivery request failed; the delivery outcome is undefined.
     Delivery,
+    /// Persisted revision findings are malformed or outside the task scope.
+    StructuredFindingsInvariant,
 }
 
 impl DispatchErrorKind {
@@ -197,6 +202,7 @@ impl DispatchErrorKind {
             Self::Session => "opencode session could not be resolved for the round",
             Self::Storage => "round lifecycle could not be persisted",
             Self::Delivery => "opencode prompt delivery failed",
+            Self::StructuredFindingsInvariant => "structured_findings_invariant",
         }
     }
 }
@@ -304,18 +310,57 @@ impl RoundDispatchMode {
     /// Renders the exact prompt for this mode.
     ///
     /// The revision findings are read only from the persisted current round
-    /// (`row.findings`); `None` becomes the reference `round_obj.findings or ""`
-    /// empty string. A prepared outbound id and the session are handled by the
-    /// shared pipeline.
-    fn render_prompt(self, task: &Task, row: &RoundRow, workspace: &Path) -> String {
+    /// (`row.findings`). Text is mandatory; the optional structured column is
+    /// revalidated against the current filesystem and persisted task scope.
+    /// Violations atomically fail this unsent round before any prompt is sent.
+    fn render_prompt(
+        self,
+        storage: &mut StorageConnection,
+        round: &RoundRef,
+        task: &Task,
+        row: &RoundRow,
+        workspace: &Path,
+        trusted_roots: &[&Path],
+    ) -> Result<String, DispatchError> {
         match self {
-            Self::Initial => initial_prompt(task, workspace),
-            Self::Revision => revision_prompt(
-                task,
-                workspace,
-                row.findings.as_deref().unwrap_or(""),
-                row.round_number,
-            ),
+            Self::Initial => Ok(initial_prompt(task, workspace)),
+            Self::Revision => {
+                let structured = match storage.get_round_structured_findings(round) {
+                    Ok(value) => value,
+                    Err(RoundUpdateError::InvalidPersistedState) => {
+                        return fail_findings(storage, round);
+                    }
+                    Err(error) => {
+                        return Err(DispatchError::with_source(
+                            DispatchErrorKind::Storage,
+                            error,
+                        ));
+                    }
+                };
+                let value = structured
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|_| {
+                        DispatchError::new(DispatchErrorKind::StructuredFindingsInvariant)
+                    })?;
+                let findings = match validate_revision_findings(
+                    row.findings.as_deref().unwrap_or(""),
+                    value.as_ref(),
+                    workspace,
+                    trusted_roots,
+                    &task.allowed_paths,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => return fail_findings(storage, round),
+                };
+                Ok(revision_prompt(
+                    task,
+                    workspace,
+                    &findings.prompt_findings(),
+                    row.round_number,
+                ))
+            }
         }
     }
 
@@ -436,8 +481,8 @@ pub fn dispatch_initial_round(
 /// [`crate::WorkerLock`] for the whole call) and persist-before-send ordering.
 /// The round must be a `revise` round of a `revising` task; the prompt is the
 /// exact reference `prompts.REVISION_TEMPLATE` rendered with the persisted
-/// current round's `findings` (`None` becomes the empty string), the original
-/// task text and the round number, so each revision session is self-contained.
+/// current round's mandatory `findings`, optional validated structured block,
+/// original task text and round number, so each session is self-contained.
 /// The 7.3 resolver gives the round its own dedicated session: the previous
 /// round's session and `tasks.session_id` are never reused, and no `parentID`
 /// or fork is sent.
@@ -447,13 +492,35 @@ pub fn dispatch_initial_round(
 /// Returns the same typed [`DispatchError`] categories as
 /// [`dispatch_initial_round`], with `ImplementNotSupported` for a round that is
 /// not a `revise` round and `TaskNotDispatchable` for a task that is not
-/// `revising` or has a pending close request.
+/// `revising` or has a pending close request. Invalid persisted findings produce
+/// `StructuredFindingsInvariant` and atomically fail the unsent round/task;
+/// storage failures produce `Storage`. The default entry point trusts no
+/// external roots; use [`dispatch_revision_round_with_trusted_roots`] when
+/// qualified external paths are configured.
 pub fn dispatch_revision_round(
     client: &OpenCodeClient,
     layout: &RustStateLayout,
     round: RoundRef,
 ) -> Result<DispatchedRound, DispatchError> {
-    dispatch_round(client, layout, round, RoundDispatchMode::Revision)
+    dispatch_revision_round_with_trusted_roots(client, layout, round, &[])
+}
+
+/// Revision dispatch with explicit configured external roots. Qualified paths
+/// require both trusted-root authorization and the persisted task's own scope.
+/// Caller holds the worker lock for the entire operation.
+pub fn dispatch_revision_round_with_trusted_roots(
+    client: &OpenCodeClient,
+    layout: &RustStateLayout,
+    round: RoundRef,
+    trusted_roots: &[&Path],
+) -> Result<DispatchedRound, DispatchError> {
+    dispatch_round_with_roots(
+        client,
+        layout,
+        round,
+        RoundDispatchMode::Revision,
+        trusted_roots,
+    )
 }
 
 /// The shared initial/revision dispatch pipeline.
@@ -469,6 +536,16 @@ fn dispatch_round(
     round: RoundRef,
     mode: RoundDispatchMode,
 ) -> Result<DispatchedRound, DispatchError> {
+    dispatch_round_with_roots(client, layout, round, mode, &[])
+}
+
+fn dispatch_round_with_roots(
+    client: &OpenCodeClient,
+    layout: &RustStateLayout,
+    round: RoundRef,
+    mode: RoundDispatchMode,
+    trusted_roots: &[&Path],
+) -> Result<DispatchedRound, DispatchError> {
     if round.round_number == 0 {
         return Err(DispatchError::new(DispatchErrorKind::InvalidInput));
     }
@@ -476,7 +553,17 @@ fn dispatch_round(
         return Err(DispatchError::new(DispatchErrorKind::TaskMismatch));
     }
 
-    validate_round(client, layout, &round, mode)?;
+    let mut preflight = open_state(layout)?;
+    let (task, row) = validate_task_and_round(client, &preflight, &round, mode)?;
+    mode.render_prompt(
+        &mut preflight,
+        &round,
+        &task,
+        &row,
+        client.workspace(),
+        trusted_roots,
+    )?;
+    drop(preflight);
 
     let session = resolve_round_session(client, layout, round.clone())
         .map_err(|error| DispatchError::with_source(DispatchErrorKind::Session, error))?;
@@ -487,7 +574,14 @@ fn dispatch_round(
     let mut storage = open_state(layout)?;
     let (task, row) = validate_task_and_round(client, &storage, &round, mode)?;
 
-    let text = mode.render_prompt(&task, &row, client.workspace());
+    let text = mode.render_prompt(
+        &mut storage,
+        &round,
+        &task,
+        &row,
+        client.workspace(),
+        trusted_roots,
+    )?;
     let outbound = match row
         .outbound_message_id
         .as_deref()
@@ -526,14 +620,16 @@ fn dispatch_round(
 
 /// Validates the task/round/project/workspace/current-round preconditions
 /// before any HTTP request or write.
-fn validate_round(
-    client: &OpenCodeClient,
-    layout: &RustStateLayout,
+fn fail_findings(
+    storage: &mut StorageConnection,
     round: &RoundRef,
-    mode: RoundDispatchMode,
-) -> Result<(), DispatchError> {
-    let storage = open_state(layout)?;
-    validate_task_and_round(client, &storage, round, mode).map(drop)
+) -> Result<String, DispatchError> {
+    storage
+        .fail_revision_findings(round.clone())
+        .map_err(|error| DispatchError::with_source(DispatchErrorKind::Storage, error))?;
+    Err(DispatchError::new(
+        DispatchErrorKind::StructuredFindingsInvariant,
+    ))
 }
 
 /// Validates that the persisted task and current round are suitable for the

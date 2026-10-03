@@ -113,11 +113,13 @@ dependencies = [
  "bridge-config",
  "bridge-domain",
  "bridge-opencode",
+ "bridge-path-policy",
  "bridge-storage",
  "nix 0.27.1",
  "process-wrap",
  "rusqlite",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 

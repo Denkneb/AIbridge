@@ -293,7 +293,16 @@ impl RoundExecution {
         if self.round.round_number == 1 {
             crate::dispatch_initial_round(&self.client, layout, self.round.clone())
         } else {
-            crate::dispatch_revision_round(&self.client, layout, self.round.clone())
+            crate::dispatch_revision_round_with_trusted_roots(
+                &self.client,
+                layout,
+                self.round.clone(),
+                &self
+                    .trusted_roots
+                    .iter()
+                    .map(PathBuf::as_path)
+                    .collect::<Vec<_>>(),
+            )
         }
     }
     /// Runs exactly saved test_commands in the execution root, persist-once.
@@ -385,6 +394,45 @@ impl RoundExecution {
     }
     /// Persists usage and checkpoint using the same checkout baseline and cwd.
     /// # Errors
+    pub(crate) fn finish_unsent(
+        &self,
+        layout: &RustStateLayout,
+        mut input: bridge_storage::FinishRoundInput,
+    ) -> Result<bridge_storage::RoundUpdateOutcome, ExecutionError> {
+        if input.round != self.round {
+            return Err(ExecutionError::Round);
+        }
+        let (mut storage, task) = self.task_and_root(layout)?;
+        let mut baseline = self.baseline_json()?;
+        if let Some(baseline) = baseline.as_mut() {
+            for key in [
+                "allow_commit",
+                "allow_dirty",
+                "dirty_paths",
+                "external_repositories",
+            ] {
+                if let Some(value) = task.snapshot.as_ref().and_then(|s| s.get(key)) {
+                    baseline[key] = value.clone();
+                }
+            }
+        }
+        let checkpoint = crate::checkpoint::build_round_checkpoint(
+            &storage,
+            &input.round,
+            &self.root,
+            &self
+                .trusted_roots
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
+            baseline.as_ref(),
+        );
+        let result = input.result_json.as_mut().ok_or(ExecutionError::Round)?;
+        result["usage"] = crate::usage::observed_accounting(&[], "")["usage"].clone();
+        storage
+            .finish_worker_pre_send(input, checkpoint.as_ref())
+            .map_err(|_| ExecutionError::Storage)
+    }
     /// Revalidates task/root/baseline; ordinary atomic finish guards still apply.
     pub fn finish(
         &self,
@@ -562,7 +610,7 @@ pub fn prepare_round_execution(
                 &layout.project_dir(),
                 task.task_id,
                 &paths.checkout,
-                Some(base),
+                (round.round_number == 1).then_some(base),
             )
             .map_err(|_| ExecutionError::Binding)?;
             let value: Value = serde_json::from_str(
@@ -615,7 +663,7 @@ pub fn prepare_round_execution(
 /// The short admission lock is released before runtime/HTTP readiness probes.
 pub struct FencedRoundExecution {
     pub execution: RoundExecution,
-    _fences: crate::admission::WorkerFences,
+    pub(crate) _fences: crate::admission::WorkerFences,
 }
 impl fmt::Debug for FencedRoundExecution {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -12014,6 +12014,43 @@ impl StorageConnection {
         )
     }
 
+    /// Worker-only pre-send outcomes. No fabricated outbound/attempted state
+    /// and no generic pending -> terminal transition are introduced.
+    pub fn finish_worker_pre_send(
+        &mut self,
+        input: FinishRoundInput,
+        checkpoint: Option<&bridge_domain::RoundCheckpoint>,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        let allowed = matches!(
+            (
+                input.error_code.as_deref(),
+                input.round_status,
+                input.task_status
+            ),
+            (
+                Some("workspace_mismatch" | "session_directory_mismatch" | "session_not_found"),
+                RoundStatus::Failed,
+                TaskStatus::Failed
+            ) | (
+                Some("session_unknown" | "session_ambiguous" | "transient_error"),
+                RoundStatus::NeedsUser,
+                TaskStatus::NeedsUser
+            )
+        );
+        if !allowed || input.response.is_some() || input.response_message_id.is_some() {
+            return Err(RoundUpdateError::InvalidPersistedState);
+        }
+        let checkpoint = checkpoint
+            .map(|value| {
+                value
+                    .validate()
+                    .map_err(|_| RoundUpdateError::InvalidInput)?;
+                serde_json::to_string(value).map_err(|_| RoundUpdateError::InvalidJson)
+            })
+            .transpose()?;
+        self.finish_round_inner(input, true, Some(checkpoint))
+    }
+
     fn finish_round_inner(
         &mut self,
         input: FinishRoundInput,

@@ -2872,6 +2872,25 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   1235 passed; all-target Clippy и fmt check прошли. CLI startup/dispatch/
   worker-start settings и cooperative cleanup остаются открыты.
 
+- **7.9d. Worker runner/startup (service завершён).**
+  `runner::run_worker` читает только initialized Rust-owned state, проверяет
+  project/workspace/current round и не активирует waiting/parked задачи.
+  Admission/task/project fences удерживаются через worker-start write, root
+  preparation, session identity до prompt, dispatch и observer/verifier.
+  Attempted resume использует saved context; ambiguous POST начинает observation
+  без resend. Deadline включает pre-send session retries и dispatch HTTP.
+  Defaults и пять AB_* переменных соответствуют frozen worker; malformed strings
+  используют defaults, non-finite/negative/zero required durations fail closed.
+  Narrow atomic `finish_worker_pre_send` разрешает только фиксированные
+  workspace/session errors и blockers, сохраняет checkpoint и zero usage без
+  фиктивных outbound id/attempted flags. Generic round transitions не расширены.
+  Explicit recovery unsent needs_user -> pending; attempted -> observing;
+  failed spawn rollback восстанавливает parked status. Revision dispatch передаёт
+  trusted external roots; saved worktree revision допускает executor commits,
+  сохраняя baseline/runtime. Infrastructure/metadata/storage failures остаются
+  typed refusals с сохранённым state; full source error-policy parity/live provider
+  smoke и MCP adapters ещё впереди. CLI consumer подключается отдельным этапом.
+
 ### 7.10. Continuation recovery
 
 - **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock
@@ -2977,6 +2996,18 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   aggregation подключена в 7.9b; Full FSM и live provider smoke остаются открыты.
 
 ### 7.12. Cooperative close
+
+- **7.12a. Runner close consumer (завершён).** Startup close и close во время
+  preparation/HTTP/observation/verifier заканчивают execution context до cleanup.
+  Direct close повторно берёт admission/lifecycle fences; worktree close вызывает
+  existing lifecycle recovery, который останавливает только owned runtime,
+  удаляет registered checkout и затем atomically closes task. Busy/unsafe cleanup
+  возвращает CloseDeferred и сохраняет marker/checkout; closed до removed row
+  невозможен. Новые runner HTTP/SQLite tests покрывают startup/identity/session/
+  prompt close, no resend, pre-send rollback и explicit unsent claim. Real runtime
+  fixture проверяет deferred live fence -> cleanup -> removed -> closed, main repo
+  не меняется. Revision fixture после executor commit также прошёл.
+
 
 ### 7.13. Structured findings validation (v7, завершено)
 

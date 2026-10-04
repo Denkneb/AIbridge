@@ -37,7 +37,8 @@ impl fmt::Debug for RecoveryClaim {
 }
 impl StorageConnection {
     /// Claims exactly the current open needs_user round for explicit recovery.
-    /// A parked round resumes observation; pending/sent rounds retain status.
+    /// An attempted parked round resumes observation; an unsent parked round
+    /// becomes pending. Pending/sent rounds retain status.
     /// # Errors
     /// Corrupt task/round, invalid transition or SQLite failures roll back all rows.
     pub fn claim_needs_user_recovery(
@@ -93,7 +94,11 @@ impl StorageConnection {
             return Ok(None);
         }
         let round_status = if row.status == RoundStatus::NeedsUser {
-            RoundStatus::Observing
+            if row.attempted {
+                RoundStatus::Observing
+            } else {
+                RoundStatus::Pending
+            }
         } else {
             row.status
         };
@@ -145,7 +150,8 @@ impl StorageConnection {
         }
         let now = utc_now_rfc3339_millis();
         let status = if claim.previous_status == RoundStatus::NeedsUser
-            && row.status == RoundStatus::Observing
+            && (row.status == RoundStatus::Observing
+                || (row.status == RoundStatus::Pending && !row.attempted))
         {
             RoundStatus::NeedsUser
         } else {

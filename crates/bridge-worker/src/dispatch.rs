@@ -711,7 +711,7 @@ fn validate_task_and_round(
     if current_round_number(storage, round.task_id)? != round.round_number {
         return Err(DispatchError::new(DispatchErrorKind::StaleRound));
     }
-    if crate::execution::execution_root(storage, layout, &task, true)
+    if crate::execution::execution_root(storage, layout, &task, round.round_number == 1)
         .ok()
         .as_deref()
         != Some(client.workspace())

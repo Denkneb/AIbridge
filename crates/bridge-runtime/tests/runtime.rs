@@ -523,6 +523,9 @@ fn worker_revision_verifier_collection_and_checkpoint_use_the_same_checkout() {
             findings: Some("fix".into()),
         })
         .unwrap();
+    // Revision keeps its immutable baseline even if the executor committed.
+    git(&f.checkout, &["add", "file"]);
+    git(&f.checkout, &["commit", "-qm", "executor round"]);
     let revised = prepare_fixture(&f, 2).unwrap();
     assert_eq!(revised.root, first.root);
     assert_eq!(revised.server_port, port);
@@ -1452,4 +1455,86 @@ fn resume_worktree_context_uses_saved_runtime_and_baseline_after_executor_commit
         )
         .unwrap();
     assert!(resume_round_execution(&f.layout, &f.project, round, Duration::from_secs(1)).is_err());
+}
+
+#[test]
+fn worker_runner_closes_worktree_only_after_cleanup_and_defers_while_fenced() {
+    use bridge_worker::{
+        WorkerLock, WorkerLockOutcome,
+        runner::{WorkerOutcome, WorkerSettings, run_worker},
+    };
+    let _network = network_fence();
+    let f = Fixture::new();
+    let before = bridge_git::take_snapshot(f.project.workspace()).unwrap();
+    f.start("serve").unwrap();
+    f.layout
+        .open()
+        .unwrap()
+        .request_task_close(f.task, "close")
+        .unwrap();
+    let reference = bridge_storage::RoundRef {
+        task_id: f.task,
+        project_id: f.project.id().clone(),
+        round_number: 1,
+    };
+    let guard = match WorkerLock::try_acquire(&f.layout).unwrap() {
+        WorkerLockOutcome::Acquired(g) => g,
+        _ => panic!("busy"),
+    };
+    assert_eq!(
+        run_worker(
+            &f.layout,
+            &f.project,
+            reference.clone(),
+            &[&f.layout],
+            &[&f.project],
+            &ServerCommand::opencode(),
+            RuntimeOptions::default(),
+            WorkerSettings::default()
+        )
+        .unwrap(),
+        WorkerOutcome::CloseDeferred
+    );
+    assert!(f.checkout.exists());
+    assert!(f.record().exists());
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(f.task)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Implementing
+    );
+    drop(guard);
+    assert_eq!(
+        run_worker(
+            &f.layout,
+            &f.project,
+            reference,
+            &[&f.layout],
+            &[&f.project],
+            &ServerCommand::opencode(),
+            RuntimeOptions::default(),
+            WorkerSettings::default()
+        )
+        .unwrap(),
+        WorkerOutcome::Closed
+    );
+    assert!(!f.checkout.parent().unwrap().exists());
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_worktree(f.task, f.project.id())
+            .unwrap()
+            .unwrap()
+            .status,
+        WorktreeStatus::Removed
+    );
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        before
+    );
 }

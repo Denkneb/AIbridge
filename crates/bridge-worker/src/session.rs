@@ -381,7 +381,7 @@ pub fn resolve_round_session(
             SessionResolutionErrorKind::StaleRound,
         ));
     }
-    if crate::execution::execution_root(&storage, layout, &task, true)
+    if crate::execution::execution_root(&storage, layout, &task, round.round_number == 1)
         .ok()
         .as_deref()
         != Some(client.workspace())

@@ -119,10 +119,17 @@ impl RoundObserver<'_> {
         project: &ProjectEntry,
         settings: ObservationSettings,
     ) -> Result<RoundUpdateOutcome, ExecutionError> {
+        self.observe_from(project, settings, Instant::now())
+    }
+    pub(crate) fn observe_from(
+        &mut self,
+        project: &ProjectEntry,
+        settings: ObservationSettings,
+        start: Instant,
+    ) -> Result<RoundUpdateOutcome, ExecutionError> {
         if settings.poll_interval.is_zero() || settings.verification_timeout.is_zero() {
             return Err(ExecutionError::Round);
         }
-        let start = Instant::now();
         loop {
             match self.poll_verified(project, || start.elapsed(), settings.stale_blocker_grace)? {
                 Observation::Final(candidate) => {

@@ -3508,6 +3508,22 @@ Parser для `launch-opencode` (9.13b), `mcp`/`serve-mcp` (9.5a/b): explicit
 project/config/state-root, help/version, separated/inline values, safe errors.
 Остальные commands, defaults и общая унификация parser остаются открытыми.
 
+- **9.1b. CLI worker (завершён).** `agent-bridge worker` принимает required
+  `--project`, `--config`, absolute `--state-root`, typed `--task` UUID и positive
+  u32 `--round`. Worker-only flags не принимаются другими commands; separated и
+  inline values/duplicate checks сохраняют общий parser contract. Config/state
+  разрешаются относительно caller cwd; state не создаётся/не импортируется.
+  Runner получает полный configured project/layout registry для task runtime.
+  Пять AB_* настроек берутся из environment; stdout остаётся свободным, stderr
+  использует fixed diagnostics. Success/parked/deferred close -> 0, unknown task/
+  round или parse error -> 2, busy -> 3, ownership/settings/service failures -> 1.
+  Четыре реальные subprocess tests: pending dispatch и attempted recovery с
+  no-resend, terminal repeat без HTTP, malformed/duplicate flags без echo,
+  unknown/busy/unowned/settings exit codes и requested direct close. Targeted
+  CLI tests, all-target Clippy и fmt прошли. Итоговый
+  `cargo test --workspace --all-targets --offline`: 1248 passed, 0 failed.
+  MCP delegated tools и live provider smoke остаются отдельными этапами.
+
 ### 9.2. `setup`
 
 ### 9.3. `doctor`

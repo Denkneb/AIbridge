@@ -17,6 +17,8 @@ bridge-config.workspace = true
 bridge-runtime.workspace = true
 bridge-storage.workspace = true
 bridge-mcp.workspace = true
+bridge-worker.workspace = true
 
 [dev-dependencies]
+bridge-git.workspace = true
 serde_json.workspace = true

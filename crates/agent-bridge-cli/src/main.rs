@@ -1,13 +1,16 @@
 //! Runtime CLI. Implemented commands require explicit Rust configuration/state.
 use bridge_config::load_config_with_state_root;
+use bridge_domain::TaskId;
 use bridge_runtime::controller::{ControllerCommand, launch_controller};
-use bridge_storage::RustStateLayout;
+use bridge_storage::{RoundRef, RustStateLayout};
+use bridge_worker::runner::{WorkerOutcome, WorkerSettings, run_worker};
 use std::os::unix::process::ExitStatusExt;
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  worker            Run an existing task round (--task ID --round N required)
   launch-opencode   Launch an OpenCode controller using existing HTTP MCP servers
   mcp               Serve MCP over stdin/stdout
   serve-mcp         Serve authenticated MCP on the configured loopback HTTP endpoint
@@ -20,6 +23,8 @@ Options:
   --project ID        Configured project id (required)
   --config PATH       projects.toml path (required)
   --state-root PATH   Separate absolute Rust state root (required)
+  --task ID           Task UUID (worker only, required)
+  --round N           Positive round number (worker only, required)
   -h, --help          Show help
   -V, --version       Show version";
 
@@ -34,6 +39,7 @@ enum Action {
     Launch(LaunchArgs),
     Mcp(LaunchArgs),
     ServeMcp(LaunchArgs),
+    Worker(LaunchArgs, TaskId, u32),
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static str> {
@@ -55,10 +61,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             Err("unexpected arguments after version")
         };
     }
-    if command != "launch-opencode" && command != "mcp" && command != "serve-mcp" {
+    if command != "launch-opencode"
+        && command != "mcp"
+        && command != "serve-mcp"
+        && command != "worker"
+    {
         return Err("unsupported command; use --help");
     }
-    let (mut project, mut config, mut state_root) = (None, None, None);
+    let (mut project, mut config, mut state_root, mut task, mut round) =
+        (None, None, None, None, None);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             return Ok(Action::Help);
@@ -76,6 +87,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             "--project" => &mut project,
             "--config" => &mut config,
             "--state-root" => &mut state_root,
+            "--task" if command == "worker" => &mut task,
+            "--round" if command == "worker" => &mut round,
             _ => return Err("unknown option; use --help"),
         };
         if slot.is_some() {
@@ -104,7 +117,23 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         config,
         state_root,
     };
-    Ok(if command == "mcp" {
+    Ok(if command == "worker" {
+        let task = task
+            .ok_or("--task required")?
+            .into_string()
+            .map_err(|_| "invalid task encoding")?
+            .parse::<TaskId>()
+            .map_err(|_| "invalid task id")?;
+        let round = round
+            .ok_or("--round required")?
+            .into_string()
+            .map_err(|_| "invalid round encoding")?
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or("invalid round number")?;
+        Action::Worker(common, task, round)
+    } else if command == "mcp" {
         Action::Mcp(common)
     } else if command == "serve-mcp" {
         Action::ServeMcp(common)
@@ -157,6 +186,49 @@ fn mcp(args: LaunchArgs, http: bool) -> Result<ExitCode, String> {
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
+fn worker(args: LaunchArgs, task_id: TaskId, round_number: u32) -> Result<ExitCode, String> {
+    let config_path = std::fs::canonicalize(&args.config).map_err(|_| "config unavailable")?;
+    let config =
+        load_config_with_state_root(&config_path, &args.state_root).map_err(|e| e.to_string())?;
+    let project = config
+        .project(&args.project)
+        .ok_or("project not configured")?;
+    let layout = RustStateLayout::new(args.state_root.clone(), project.id().clone())
+        .map_err(|e| e.to_string())?;
+    let projects = config.projects().values().collect::<Vec<_>>();
+    let all_layouts = projects
+        .iter()
+        .map(|p| RustStateLayout::new(args.state_root.clone(), p.id().clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let layouts = all_layouts.iter().collect::<Vec<_>>();
+    let settings =
+        WorkerSettings::from_lookup(|name| env::var(name).ok()).map_err(|e| e.to_string())?;
+    match run_worker(
+        &layout,
+        project,
+        RoundRef {
+            task_id,
+            project_id: project.id().clone(),
+            round_number,
+        },
+        &layouts,
+        &projects,
+        &bridge_runtime::ServerCommand::opencode(),
+        bridge_runtime::RuntimeOptions::default(),
+        settings,
+    ) {
+        Ok(WorkerOutcome::Busy) => {
+            eprintln!("agent-bridge: worker lock busy");
+            Ok(ExitCode::from(3))
+        }
+        Ok(_) => Ok(ExitCode::SUCCESS),
+        Err(e) => {
+            eprintln!("agent-bridge: {e}");
+            Ok(ExitCode::from(e.exit_code()))
+        }
+    }
+}
 fn main() -> ExitCode {
     match parse(env::args_os().skip(1)) {
         Ok(Action::Help) => {
@@ -170,6 +242,7 @@ fn main() -> ExitCode {
         Ok(Action::Launch(args)) => finish(launch(args)),
         Ok(Action::Mcp(args)) => finish(mcp(args, false)),
         Ok(Action::ServeMcp(args)) => finish(mcp(args, true)),
+        Ok(Action::Worker(args, task, round)) => finish(worker(args, task, round)),
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)

@@ -25,7 +25,8 @@ session/runtime без нового prompt, checkout или baseline. Identity-c
 observation loop **7.9c** объединяет remote root/session probes, polling, grace
 и verifier/publication. Worker runner **7.9d** и cooperative cleanup **7.12a**
 подключены как service: pre-send identity, startup/deadline, no-resend recovery
-и release-before-cleanup. CLI consumer — следующий этап.
+и release-before-cleanup. CLI `worker` **9.1b** подключён: explicit task/round,
+Rust-owned state и AB_* settings; stdout свободен от служебного вывода.
 Combined blocker grace **7.9b** готов: permissions/questions текущей session, Once cache, stale
 window и change collection для terminal outcomes без verifier.
 
@@ -36,7 +37,7 @@ Message observer service **7.9a** завершён: delivery/assistant error/dea
 доверенных внешних Git-репозиториев: qualified paths/effects, violations и
 checkpoint для каждого repo. Baseline/scope заморожены, подменённые symlink roots
 отклоняются; исчезнувшие repo видны как `external_repo_missing`. Worktree tasks
-сохраняют ограничение на один checkout. Full worker FSM и пять delegated MCP
+сохраняют ограничение на один checkout. Полная source error-policy parity и пять delegated MCP
 handlers **9.5c** остаются открыты; live OpenCode/provider smoke ещё не выполнен.
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
@@ -44,11 +45,22 @@ handlers **9.5c** остаются открыты; live OpenCode/provider smoke 
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
 3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP read-only foundation (project_info/stdio/HTTP) готов; delegated handlers,
-остальные CLI commands и полный worker FSM ещё впереди.
+остальные CLI commands и полная error-policy parity worker ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
 CLI consumer 9.13b готов; local controller delegation 9.13c ждёт 9.5c.
-Worktree observer/полный FSM — отдельные consumers.
+Worktree runner/observer/close подключены; live OpenCode/provider smoke остаётся открытым.
+Worker вызывается для уже созданной задачи в initialized Rust state:
+
+```sh
+agent-bridge worker --project PROJECT --config /path/projects.toml \
+  --state-root /path/rust-state --task TASK_UUID --round 1
+```
+
+Настройки: `AB_POLL_INTERVAL`, `AB_ROUND_DEADLINE`, `AB_DELIVERY_GRACE`,
+`AB_HTTP_TIMEOUT`, `AB_STALE_BLOCKER_GRACE`. Parked задачи требуют explicit recovery
+claim; CLI их не активирует. Deferred cleanup сохраняет close marker для recovery.
+
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
 Для `launch-opencode` нужны настроенные и уже работающие HTTP MCP endpoints

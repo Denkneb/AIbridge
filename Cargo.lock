@@ -8,9 +8,11 @@ version = "0.1.0"
 dependencies = [
  "bridge-config",
  "bridge-domain",
+ "bridge-git",
  "bridge-mcp",
  "bridge-runtime",
  "bridge-storage",
+ "bridge-worker",
  "serde_json",
 ]
 

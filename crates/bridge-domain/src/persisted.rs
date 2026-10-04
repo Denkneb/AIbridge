@@ -346,6 +346,32 @@ fn hex64(value: &str) -> bool {
 fn sha256(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
+
+/// Python `_hash`: sorted UTF-8 JSON with default comma/colon separators.
+/// Snapshot hashing remains compact and uses its separate canonical contract.
+pub fn request_payload_hash(value: &serde_json::Value) -> String {
+    fn render(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Array(items) => format!(
+                "[{}]",
+                items.iter().map(render).collect::<Vec<_>>().join(", ")
+            ),
+            serde_json::Value::Object(items) => {
+                let mut keys: Vec<_> = items.keys().collect();
+                keys.sort();
+                format!(
+                    "{{{}}}",
+                    keys.iter()
+                        .map(|key| format!("{}: {}", serde_json::json!(key), render(&items[*key])))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            scalar => scalar.to_string(),
+        }
+    }
+    sha256(&render(value))
+}
 validated_model! {
     /// Exact nine-key submit-time profile_json payload.
     /// definition_hash pins the definition; canonical_hash pins this effective snapshot.

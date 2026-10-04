@@ -194,6 +194,7 @@ pub use budgets::{
     TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,
 };
 mod dependencies;
+pub mod profiles;
 mod schema_v15;
 mod worktrees;
 mod writers;
@@ -1354,6 +1355,47 @@ impl StorageConnection {
         initial_status: TaskStatus,
         budget: Option<&TaskBudget>,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        self.create_task_with_profile_inner(input, settings, initial_status, budget, None)
+    }
+
+    /// Pins every new task's effective profile, including the historical built-in
+    /// implementer. All profile columns commit with task/round/reservation/event.
+    /// Caller calculates the submission payload hash including non-historical
+    /// profile identity. Replay never updates a previously pinned snapshot.
+    pub fn create_task_with_profile(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+        budget: Option<&TaskBudget>,
+        profile: &bridge_domain::ProfileSnapshot,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        profile
+            .validate()
+            .map_err(|_| CreateTaskError::InvalidInput)?;
+        self.create_task_with_profile_inner(input, settings, initial_status, budget, Some(profile))
+    }
+
+    fn create_task_with_profile_inner(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+        budget: Option<&TaskBudget>,
+        profile: Option<&bridge_domain::ProfileSnapshot>,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        let profile_json = profile
+            .map(|p| {
+                p.canonical_json()
+                    .map_err(|_| CreateTaskError::InvalidInput)
+            })
+            .transpose()?;
+        let profile_hash = profile
+            .map(|p| {
+                p.canonical_hash()
+                    .map_err(|_| CreateTaskError::InvalidInput)
+            })
+            .transpose()?;
         if !initial_status.is_active() {
             return Err(CreateTaskError::InvalidInput);
         }
@@ -1376,7 +1418,8 @@ impl StorageConnection {
         if !v15
             && (*settings != AdmissionSettings::default()
                 || initial_status != TaskStatus::Implementing
-                || budget.is_some())
+                || budget.is_some()
+                || profile.is_some())
         {
             return Err(CreateTaskError::InvalidInput);
         }
@@ -1442,6 +1485,9 @@ impl StorageConnection {
                     ],
                 )
                 .map_err(CreateTaskError::Database)?;
+            if let Some(profile) = profile {
+                transaction.execute("UPDATE tasks SET profile=?1,profile_json=?2,profile_hash=?3,profile_source=?4 WHERE task_id=?5", params![profile.id,profile_json,profile_hash,profile.origin.as_str(),prepared.task_id.to_string()]).map_err(CreateTaskError::Database)?;
+            }
         }
 
         transaction

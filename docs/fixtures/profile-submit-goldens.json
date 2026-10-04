@@ -1,0 +1,62 @@
+{
+  "source_commit": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc",
+  "cases": [
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false
+      },
+      "hash": "ff5788d300a9bb362a2cca0856e39b91085245f7b46258527c91c01695ec7b5d"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1.0,
+            "input": 123
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "6f791b1cc49709651f57587eaf8aa15d377ee8e5015441508c0050ab505568e4"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "profile": {
+          "id": "custom",
+          "definition_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "model": "provider/model"
+        }
+      },
+      "hash": "3fd710b10194579c041afed72a60a8ea919f70a985e7f704d625bbe072621b9d"
+    }
+  ]
+}

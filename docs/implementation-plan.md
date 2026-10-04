@@ -79,7 +79,7 @@ Targeted checks:
   **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
   **0B.5 завершён** (77 runtime/automation cases, без skips).
   **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
-  Ближайший шаг согласованного блока — **8.18 (Submit-time profile resolution)**, затем 7.18; новые v16/v17 задачи идут по зависимостям.
+  Ближайший шаг согласованного блока — **7.18 (Executor profiles)**; новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -413,7 +413,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; 7.13 также завершён. Ближайшая задача согласованного блока — 8.18, затем 7.18.**
+  **0B завершён; 7.13 также завершён. Ближайшая задача согласованного блока — 7.18.**
 
 ## Поток 1. Rust foundation
 
@@ -1050,7 +1050,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
-  **7.13 завершён**; ближайшая задача согласованного блока — **8.18**, затем 7.18;
+  **7.13 завершён**; ближайшая задача согласованного блока — **7.18**;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v17 в Rust не завершены.
 
@@ -3044,7 +3044,7 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
   `worktrees` row. Depends on 2.10, 7.16a.
 - **Targeted checks:** worktree submit validation tests.
 
-### 8.18. Submit-time profile resolution (v13, не завершено)
+### 8.18. Submit-time profile resolution (v13, завершено)
 
 - **Цель:** resolve/build canonical profile snapshot на `submit_task`.
 - **Source evidence:** `mcp_server.py:736-749,2231-2257`;
@@ -3056,6 +3056,13 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
   payload/hash; corrupt definition fail closed.
 - **Targeted checks:** MCP profile submit cases.
 - **Зависит от:** 0A.2/0A.3, 2.12, 3.12a. **Открывает:** 7.18.
+- **Реализовано:** `bridge-submission::submit_task_with_profile`: строгий публичный
+  аргумент profile, selection origin, historical/non-historical payload hash,
+  atomic task/round/profile/budget/admission write и immutable replay.
+  `get_task_profile` проверяет полную сохранённую identity без current config.
+  Проверены rollback, concurrent replay, changed definition conflict и Python goldens.
+  MCP transport/handler adapter остаётся в 8.2/8.9–8.10; этот этап закрывает
+  application service создания задачи, без запуска worker.
 
 Одна tool-задача содержит только один handler и его contract fixtures.
 

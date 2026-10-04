@@ -96,6 +96,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-submission"
+version = "0.1.0"
+dependencies = [
+ "bridge-config",
+ "bridge-domain",
+ "bridge-storage",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "bridge-verifier"
 version = "0.1.0"
 dependencies = [

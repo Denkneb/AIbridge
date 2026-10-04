@@ -11,6 +11,7 @@ members = [
     "crates/bridge-storage",
     "crates/bridge-verifier",
     "crates/bridge-worker",
+    "crates/bridge-submission",
 ]
 
 [workspace.package]

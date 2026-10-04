@@ -10,7 +10,9 @@ const HELP: &str =
 
 Launch an OpenCode controller in the configured workspace using existing HTTP MCP servers.
 The state root must belong to the Rust implementation and be outside project workspaces.
-Local stdio MCP requires the pending Rust mcp command (stage 9.5).
+Rust mcp exposes project_info only; delegated task handlers are still pending.
+
+Also available: agent-bridge mcp --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Options:
   --project ID        Configured project id (required)
@@ -28,6 +30,7 @@ enum Action {
     Help,
     Version,
     Launch(LaunchArgs),
+    Mcp(LaunchArgs),
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static str> {
@@ -49,7 +52,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             Err("unexpected arguments after version")
         };
     }
-    if command != "launch-opencode" {
+    if command != "launch-opencode" && command != "mcp" {
         return Err("unsupported command; use --help");
     }
     let (mut project, mut config, mut state_root) = (None, None, None);
@@ -93,11 +96,16 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
     if !state_root.is_absolute() {
         return Err("--state-root must be absolute");
     }
-    Ok(Action::Launch(LaunchArgs {
+    let common = LaunchArgs {
         project,
         config,
         state_root,
-    }))
+    };
+    Ok(if command == "mcp" {
+        Action::Mcp(common)
+    } else {
+        Action::Launch(common)
+    })
 }
 fn launch(args: LaunchArgs) -> Result<ExitCode, String> {
     let config_path =
@@ -124,6 +132,20 @@ fn launch(args: LaunchArgs) -> Result<ExitCode, String> {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
+fn mcp(args: LaunchArgs) -> Result<ExitCode, String> {
+    let config_path = std::fs::canonicalize(&args.config).map_err(|_| "config unavailable")?;
+    let config =
+        load_config_with_state_root(&config_path, &args.state_root).map_err(|e| e.to_string())?;
+    let project = config
+        .project(&args.project)
+        .ok_or("project not configured")?;
+    let layout =
+        RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    let server = bridge_mcp::McpServer::open(project.clone(), layout).map_err(|e| e.to_string())?;
+    bridge_mcp::stdio::run(&server, std::io::stdin().lock(), std::io::stdout().lock())
+        .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
 fn main() -> ExitCode {
     match parse(env::args_os().skip(1)) {
         Ok(Action::Help) => {
@@ -134,16 +156,20 @@ fn main() -> ExitCode {
             println!("agent-bridge {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(Action::Launch(args)) => match launch(args) {
-            Ok(code) => code,
-            Err(error) => {
-                eprintln!("agent-bridge: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        Ok(Action::Launch(args)) => finish(launch(args)),
+        Ok(Action::Mcp(args)) => finish(mcp(args)),
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)
+        }
+    }
+}
+fn finish(result: Result<ExitCode, String>) -> ExitCode {
+    match result {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("agent-bridge: {error}");
+            ExitCode::FAILURE
         }
     }
 }

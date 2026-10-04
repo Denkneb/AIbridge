@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "bridge-config",
  "bridge-domain",
+ "bridge-mcp",
  "bridge-runtime",
  "bridge-storage",
  "serde_json",
@@ -75,6 +76,17 @@ version = "0.1.0"
 dependencies = [
  "bridge-domain",
  "bridge-path-policy",
+ "serde_json",
+]
+
+[[package]]
+name = "bridge-mcp"
+version = "0.1.0"
+dependencies = [
+ "bridge-config",
+ "bridge-domain",
+ "bridge-storage",
+ "nix 0.27.1",
  "serde_json",
 ]
 

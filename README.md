@@ -24,10 +24,11 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. Public MCP, остальные CLI commands и полный worker FSM ещё впереди.
+3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP read-only foundation (project_info/stdio) готов; delegated handlers,
+HTTP transport, остальные CLI commands и полный worker FSM ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
-CLI consumer 9.13b готов; local stdio MCP transport 9.13c ждёт 9.5.
+CLI consumer 9.13b готов; local controller delegation 9.13c ждёт 9.5c.
 Worktree observer/полный FSM — отдельные consumers.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
@@ -44,8 +45,22 @@ cargo run --offline -p agent-bridge-cli -- launch-opencode \
 Generated config хранится в `<state-root>/<project>/controller-opencode.json`
 с правами 0600; bearer tokens передаются только в окружении TUI. Executor
 credentials удаляются, provider environment сохраняется. Local stdio MCP
-пока отклоняется до записи state: команда Rust `mcp` ещё не реализована.
+пока отклоняется до записи state: Rust `mcp` обслуживает только `project_info`,
+делегирование задач ещё не реализовано.
 Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
+
+Read-only MCP stdio доступен через тот же explicit Rust state root:
+
+```bash
+cargo run --offline -p agent-bridge-cli -- mcp \
+  --project PROJECT_ID --config /absolute/path/projects.toml \
+  --state-root /absolute/path/agent-bridge-rs
+```
+
+Stdout этой команды занят JSON-RPC; banner/logs в него не пишутся. Пока в
+`tools/list` только `project_info`; остальные пять tools и startup recovery
+остаются в потоке 8/worker FSM.
+
 
 
 

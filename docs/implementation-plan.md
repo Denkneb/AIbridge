@@ -3177,7 +3177,15 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
 
 ## Поток 8. MCP
 
-### 8.1. `project_info`
+### 8.1. `project_info` (завершён)
+
+`bridge-mcp::McpServer::project_info` возвращает frozen v17 immutable binding,
+execution/delivery modes, limits, default/profile labels и полную reservation
+identity. Активная задача/статус и writer ids читаются через единый active_set
+snapshot (7.17c), без reconcile/activation/recovery. Instructions/models/secret
+paths/task contents не попадают в profile surface. Ownership/schema/corrupt
+state fail closed; tool failure не возвращает partial data. Все 5 frozen
+project_info cases проверены (legacy fields + additive v17 surface).
 
 ### 8.2. `submit_task`
 
@@ -3193,7 +3201,16 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
 
 ### 8.8. `close_task`
 
-### 8.9. stdio transport
+### 8.9. stdio transport (foundation завершён)
+
+`bridge-mcp::protocol` + `stdio`: bounded newline JSON-RPC framing (1 MiB),
+initialize/initialized/ping/tools/list/tools/call, protocol negotiation
+2024-11-05/2025-03-26/2025-06-18, fixed redacted errors, EOF releases MCP lock.
+Stdout содержит только JSON-RPC; notifications не получают reply. Tools list
+пока объявляет только работающий project_info; пять delegated tools ещё не
+подключены и отклоняются без writes. Не считать это полным шеституловым MCP.
+Протокол проверен по [MCP transport spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+и [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle).
 
 ### 8.10. Authenticated HTTP transport
 
@@ -3336,6 +3353,21 @@ Delta v17: вывод execution/delivery modes из validated config
 
 ### 9.5. `serve-mcp` и `mcp`
 
+- **9.5a. Stdio CLI + project MCP ownership (завершён).** Новый crate
+  bridge-mcp, команда `mcp --project ID --config PATH --state-root ABSOLUTE_PATH`.
+  Safe shared flags, guarded Rust-only initialize, private project dir 0700,
+  O_NOFOLLOW/CLOEXEC MCP flock 0600; второй stdio/HTTP process того же project
+  должен отказаться. Symlink aliases/foreign schema-marker/workspace-local root
+  отклоняются; executor password не читается, Python не запускается.
+  Проверки: 6 MCP integration tests (включая 5 frozen project_info cases),
+  3 реальные CLI process tests (handshake/lock/foreign state), 8 controller CLI
+  regression tests; targeted all-target clippy clean.
+- **9.5b. Authenticated HTTP CLI (открыт).** Loopback endpoint, Bearer auth,
+  Origin/Host checks, bounded HTTP parsing и тот же MCP lock/tool surface.
+- **9.5c. Full handlers/startup recovery (открыт).** Depends on 8.2–8.8,
+  8.11 и полный worker FSM. Без них MCP является read-only foundation,
+  а local controller delegation 9.13c остаётся закрытой.
+
 ### 9.6. Process ownership и pidfd primitives
 
 ### 9.7. `start` одного проекта
@@ -3397,10 +3429,11 @@ Delta v17: вывод execution/delivery modes из validated config
   Full workspace run после CLI wiring: 1173 tests passed. После финального
   NUL/umask hardening повторно пройдены 20 targeted CLI/controller/permission
   tests и workspace all-targets clippy.
-- **9.13c. Local stdio MCP transport (открыт; depends on 9.5).**
+- **9.13c. Local stdio MCP transport (открыт; depends on 9.5c).**
   Generator уже строит explicit absolute Rust `mcp --project --config
-  --state-root` argv. Пока Rust mcp command не реализована, фактический launch
-  любого primary/linked stdio проекта отклоняется до state writes/spawn.
+  --state-root` argv. Rust mcp command реализована как read-only foundation (project_info).
+  Пока delegated tools/worker FSM не подключены, фактический launch любого
+  primary/linked stdio проекта отклоняется до state writes/spawn.
   HTTP endpoints должны быть запущены заранее: launch не запускает servers.
   Live OpenCode/provider smoke остаётся отдельной проверкой 15.x.
 

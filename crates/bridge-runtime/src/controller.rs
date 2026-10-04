@@ -53,7 +53,7 @@ impl fmt::Display for ControllerError {
             Self::Busy => "controller_already_running",
             Self::Io => "controller_io_error",
             Self::Spawn => "controller_spawn_failed",
-            Self::LocalMcpUnavailable => "controller_local_mcp_unavailable: Rust mcp command requires stage 9.5; configure HTTP MCP endpoints",
+            Self::LocalMcpUnavailable => "controller_local_mcp_unavailable: Rust delegated MCP tools require stage 8 and worker FSM; configure HTTP MCP endpoints",
         })
     }
 }

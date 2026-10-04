@@ -1,22 +1,13 @@
 [package]
-name = "agent-bridge-cli"
+name = "bridge-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-
-[[bin]]
-name = "agent-bridge"
-path = "src/main.rs"
-
 [lints]
 workspace = true
-
 [dependencies]
-bridge-domain.workspace = true
 bridge-config.workspace = true
-bridge-runtime.workspace = true
+bridge-domain.workspace = true
 bridge-storage.workspace = true
-bridge-mcp.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+nix.workspace = true

@@ -196,6 +196,7 @@ pub use budgets::{
 pub mod active_set;
 mod dependencies;
 pub mod profiles;
+pub mod recovery;
 mod schema_v15;
 mod worktrees;
 mod writers;
@@ -3832,6 +3833,7 @@ fn check_verifier_consistency(
 mod tests {
     mod budgets;
     mod dependencies;
+    mod recovery;
     mod worktrees;
     mod writer_indexes;
     mod writers;
@@ -11758,6 +11760,23 @@ impl StorageConnection {
         if !row.status.is_open() {
             return Err(RoundUpdateError::RoundNotOpen);
         }
+        // A worker starting in the claim's same millisecond must overwrite the
+        // lease distinctly, so a failed-spawn rollback cannot cancel it.
+        let (started_at, deadline_at) =
+            if row.worker_started_at.as_deref() == Some(started_at.as_str()) {
+                let next = started
+                    .checked_add(Duration::from_millis(1))
+                    .ok_or(RoundUpdateError::InvalidDeadline)?;
+                let next_deadline = deadline
+                    .checked_add(Duration::from_millis(1))
+                    .ok_or(RoundUpdateError::InvalidDeadline)?;
+                (
+                    format_rfc3339_millis(next),
+                    format_rfc3339_millis(next_deadline),
+                )
+            } else {
+                (started_at, deadline_at)
+            };
 
         transaction
             .execute(

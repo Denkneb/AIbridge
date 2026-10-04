@@ -1117,7 +1117,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 - **Проверки:** storage CRUD/readonly/rollback/race fixtures.
 - **Зависит от:** 3.13c, 0B.5. Открывает поток 16.
 
-### 3.15. Atomic needs_user recovery claim/release (не завершено)
+### 3.15. Atomic needs_user recovery claim/release (завершено)
 
 - **Цель:** сохранить текущий round, взять spawn claim и снять его при
   failed spawn только по совпадающей lease.
@@ -1130,6 +1130,16 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   worker не откатывается. Это API поверх существующих полей, без новой DDL.
 - **Проверки:** claim/release/concurrency/rollback/no-resend storage tests.
 - **Зависит от:** 0B.4, 3.9, 3.12d. Открывает 7.10a/b, 8.20.
+- **Результат:** `claim_needs_user_recovery` и typed opaque `RecoveryClaim`;
+  current-round/status/project/close guards, одно atomic status/lease/event
+  изменение, сохранение outbound/session/attempted/revision_count. Parked round
+  переходит в observing, остальные open statuses сохраняются. Release проверяет
+  исходную lease и последний claim event id (защита от двух claims в одну ms),
+  не откатывает terminal/close/new-round/new-worker state. `mark_worker_started`
+  различает timestamp даже при старте в ms claim. Error/event failures откатывают
+  все строки. Это API поверх schema v15, без DDL/HTTP/spawn; 6 tests (включая
+  10 round-kind/status cases, concurrent winner и rollback) и storage clippy.
+
 
 ## Поток 4. Security и Git
 

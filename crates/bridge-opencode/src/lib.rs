@@ -1735,8 +1735,23 @@ impl OpenCodeClient {
         message_id: &str,
         text: &str,
     ) -> Result<(), PromptError> {
+        self.send_prompt_async_with_model(session_id, message_id, text, self.prompt_model.as_ref())
+    }
+
+    /// Sends using the immutable task model. Explicit `None` omits the model,
+    /// even when the current project config selects one. Legacy callers use
+    /// [`Self::send_prompt_async`] and retain the project model behavior.
+    /// # Errors
+    /// Returns the same session-id and transport errors as ordinary delivery.
+    pub fn send_prompt_async_with_model(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        text: &str,
+        model: Option<&OpenCodeModel>,
+    ) -> Result<(), PromptError> {
         let path = session_prompt_path(session_id)?;
-        let body = prompt_body(message_id, text, self.prompt_model.as_ref());
+        let body = prompt_body(message_id, text, model);
         let request = HttpRequest::post(path, body)
             .with_query("directory", self.workspace.to_string_lossy().into_owned());
         self.transport.request(&request)?;

@@ -108,7 +108,9 @@ pub use permission::{
     PermissionBlockerError, PermissionBlockerErrorKind, PermissionBlockerOutcome, UserAction,
     UserActionKind, handle_permission_blocker,
 };
-pub use prompt::{initial_prompt, revision_prompt};
+pub use prompt::{
+    initial_prompt, initial_prompt_with_profile, revision_prompt, revision_prompt_with_profile,
+};
 pub use session::{
     ResolvedSession, SessionResolutionError, SessionResolutionErrorKind, SessionResolutionSource,
     resolve_round_session, round_session_title,

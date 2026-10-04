@@ -64,9 +64,13 @@ MCP handler и GUI wiring остаются в 8.12/12.13.
 **7.14 завершён:** saved usage aggregation, budget state/decision и atomic worker
 accounting. Public MCP budget handler остаётся в 8.13.
 **7.15 завершён:** exact predecessor-only checkpoints, Git diff-stat и atomic
-checkpoint/usage finish; worktree execution wiring — 7.16. Ближайший шаг —
+checkpoint/usage finish; worktree execution wiring — 7.16.
 **8.18 завершён:** submit service фиксирует профиль/model/hash атомарно;
-MCP adapter ещё впереди. Далее **7.18: Executor profiles**; delta fixtures 0B завершены.
+MCP adapter ещё впереди.
+**7.18 завершён:** worker применяет сохранённые инструкции и model в обоих
+раундах; повреждённый profile snapshot завершает unsent round до HTTP.
+Согласованный блок 7.14 → 7.15 → 8.18 → 7.18 завершён; следующий крупный
+блок backend — 7.16 (worktree execution). Delta fixtures 0B завершены.
 **0B.1 завершён:** manifest v17 и `python3 docs/verify_contract_manifest.py`
 проверяют source pin, CLI/MCP/config/DDL/automation через AST и SQLite в памяти.
 **0B.2 завершён:** 87/87 config/permission source-parity cases, no skips;
@@ -382,8 +386,8 @@ refresh; единого хвостового «когда-нибудь» нет.
   Порог по умолчанию — 0.8; limits positive finite, bool запрещён.
   Default creation сохраняет прежнее поведение, replay не меняет бюджет.
   Проверено **254 storage tests**, **1010 workspace tests**, all-targets clippy, SQLite verifier,
-  format и diff check. Usage aggregation и round budget gates — следующий
-  consumer 7.14; delta refresh 0B завершён.
+  format и diff check. Usage aggregation и budget decision реализованы в 7.14;
+  public MCP budget gate остаётся в 8.13; delta refresh 0B завершён.
 - Завершён этап **4.1. Простые command tokens** — начат поток 4 (security и
   Git). Новый crate `bridge-command-policy` экспортирует узкие primitives
   базовой семантики Python `command_policy.py`: `split_command`
@@ -1371,7 +1375,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   **0B.4 завершён** (47 MCP source-parity scenarios);
   **0B.5 завершён** (77 runtime/automation cases);
   **7.13 завершён** (findings validation/persistence/dispatch);
-  ближайшая задача согласованного блока — **7.18**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
+  согласованный блок 7.14/7.15/8.18/7.18 завершён; следующий крупный backend блок — **7.16**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v17 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

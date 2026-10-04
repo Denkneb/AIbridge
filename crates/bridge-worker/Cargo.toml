@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+bridge-config.workspace = true
 bridge-domain.workspace = true
 bridge-git.workspace = true
 bridge-path-policy.workspace = true
@@ -20,7 +21,7 @@ sha2 = "0.10"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-bridge-config.workspace = true
+bridge-submission = { path = "../bridge-submission" }
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

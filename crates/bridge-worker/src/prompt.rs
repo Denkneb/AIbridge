@@ -50,6 +50,18 @@ use serde_json::Value;
 /// cannot fail; malformed snapshot fields degrade to the reference defaults.
 #[must_use]
 pub fn initial_prompt(task: &Task, workspace: &Path) -> String {
+    initial_prompt_with_profile(task, workspace, None)
+}
+
+/// Applies only validated persisted instructions; mandatory scope/Git/test
+/// rules remain the same fixed template. An absent/empty overlay is byte-exact.
+#[must_use]
+pub fn initial_prompt_with_profile(
+    task: &Task,
+    workspace: &Path,
+    profile: Option<&bridge_domain::ProfileSnapshot>,
+) -> String {
+    let profile_block = profile_block(profile);
     let allowed_paths = join_or_none(&task.allowed_paths, ", ");
     let test_commands = join_or_none(&task.test_commands, "; ");
     let (baseline_rule, git_rule) = git_rules(task.snapshot.as_ref());
@@ -72,7 +84,7 @@ pub fn initial_prompt(task: &Task, workspace: &Path) -> String {
 По завершении верни: изменения, список файлов, команды проверок,\n\
 коды завершения, результаты, что не проверено, оставшиеся проблемы.\n\
 После отчёта прекрати изменения и жди ревью.\n\
-\n\
+{profile_block}\n\
 Задача:\n\
 {task}\n",
         task_id = task.task_id,
@@ -103,6 +115,19 @@ pub fn initial_prompt(task: &Task, workspace: &Path) -> String {
 /// never re-expanded.
 #[must_use]
 pub fn revision_prompt(task: &Task, workspace: &Path, findings: &str, round_number: u32) -> String {
+    revision_prompt_with_profile(task, workspace, findings, round_number, None)
+}
+
+/// Renders the self-contained revision with the same task-frozen overlay.
+#[must_use]
+pub fn revision_prompt_with_profile(
+    task: &Task,
+    workspace: &Path,
+    findings: &str,
+    round_number: u32,
+    profile: Option<&bridge_domain::ProfileSnapshot>,
+) -> String {
+    let profile_block = profile_block(profile);
     let allowed_paths = join_or_none(&task.allowed_paths, ", ");
     let test_commands = join_or_none(&task.test_commands, "; ");
     let (baseline_rule, git_rule) = git_rules(task.snapshot.as_ref());
@@ -126,7 +151,7 @@ Git и файлов командой git status и просмотром файл
 их результат не зависит от твоего отчёта.\n\
 Не выполняй push или deploy.\n\
 Верни: что изменено, результаты проверок, что не проверено и какие ограничения остались.\n\
-\n\
+{profile_block}\n\
 Исходная задача:\n\
 {task}\n\
 \n\
@@ -142,6 +167,12 @@ Git и файлов командой git status и просмотром файл
         task = task.text,
         findings = findings,
     )
+}
+
+fn profile_block(profile: Option<&bridge_domain::ProfileSnapshot>) -> String {
+    profile
+        .filter(|p| !p.instructions.is_empty())
+        .map_or_else(String::new, |p| format!("\n{}\n", p.instructions))
 }
 
 /// Joins `values` with `separator`, or returns the reference `"<none>"`.
@@ -254,7 +285,9 @@ fn is_falsy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{initial_prompt, revision_prompt};
+    use super::{
+        initial_prompt, initial_prompt_with_profile, revision_prompt, revision_prompt_with_profile,
+    };
     use bridge_domain::{ProjectId, TaskId};
     use bridge_storage::Task;
     use serde_json::json;
@@ -402,5 +435,48 @@ mod tests {
         );
         assert!(prompt.contains("Исходная задача:\n{task_id} {findings} {workspace}\n"));
         assert!(prompt.ends_with("Замечания ревью:\n{round_number} {task} {baseline_rule}\n"));
+    }
+
+    #[test]
+    fn frozen_python_profiles_match_both_prompt_templates_byte_for_byte() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/profile-prompt-goldens.json"
+        ))
+        .unwrap();
+        let task = task(None);
+        for case in fixture["cases"].as_array().unwrap() {
+            let profile: Option<bridge_domain::ProfileSnapshot> =
+                serde_json::from_value(case["profile"].clone()).unwrap();
+            assert_eq!(
+                initial_prompt_with_profile(&task, Path::new("/ws"), profile.as_ref()),
+                case["initial"].as_str().unwrap()
+            );
+            assert_eq!(
+                revision_prompt_with_profile(
+                    &task,
+                    Path::new("/ws"),
+                    "fix {profile_block}",
+                    2,
+                    profile.as_ref()
+                ),
+                case["revision"].as_str().unwrap()
+            );
+            if profile.as_ref().is_none_or(|p| p.instructions.is_empty()) {
+                assert_eq!(
+                    initial_prompt_with_profile(&task, Path::new("/ws"), profile.as_ref()),
+                    initial_prompt(&task, Path::new("/ws"))
+                );
+                assert_eq!(
+                    revision_prompt_with_profile(
+                        &task,
+                        Path::new("/ws"),
+                        "fix {profile_block}",
+                        2,
+                        profile.as_ref()
+                    ),
+                    revision_prompt(&task, Path::new("/ws"), "fix {profile_block}", 2)
+                );
+            }
+        }
     }
 }

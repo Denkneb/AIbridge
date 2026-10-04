@@ -11815,7 +11815,7 @@ impl StorageConnection {
     fn finish_round_inner(
         &mut self,
         input: FinishRoundInput,
-        findings_invariant: bool,
+        pre_send_invariant: bool,
         checkpoint: Option<Option<String>>,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
         let result_column = match &input.result_json {
@@ -11834,11 +11834,15 @@ impl StorageConnection {
             .map_err(RoundUpdateError::Database)?;
 
         let (task, row) = validate_current_round(&transaction, &input.round)?;
-        if findings_invariant {
-            if row.kind != RoundKind::Revise
+        if pre_send_invariant {
+            if !matches!(
+                (row.kind, task.status),
+                (RoundKind::Revise, TaskStatus::Revising)
+                    | (RoundKind::Implement, TaskStatus::Implementing)
+            ) || (input.error_code.as_deref() == Some("structured_findings_invariant")
+                && row.kind != RoundKind::Revise)
                 || row.status != RoundStatus::Pending
                 || row.attempted
-                || task.status != TaskStatus::Revising
             {
                 return Err(RoundUpdateError::InvalidPersistedState);
             }

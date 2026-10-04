@@ -259,6 +259,13 @@ pub struct OpenCodeModel {
 }
 
 impl OpenCodeModel {
+    /// Validates a frozen or configured `provider/model` selector.
+    /// # Errors
+    /// Rejects absent components and surrounding whitespace.
+    pub fn parse(raw: &str) -> Result<Self> {
+        parse_opencode_model(raw)
+    }
+
     /// Returns the provider id before the first `/`.
     #[must_use]
     pub fn provider(&self) -> &str {

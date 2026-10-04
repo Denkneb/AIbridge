@@ -57,6 +57,132 @@
         }
       },
       "hash": "3fd710b10194579c041afed72a60a8ea919f70a985e7f704d625bbe072621b9d"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e-05
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "4c0f90077b91e3dbf648f3e22549a07e7daa42006945a43648a860b4429fd224"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e-06
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "c72ae2c853db2957de5484e8769f6eb3a802be87c6562f33ba9bad9f2ddf166e"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e-07
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "948c3ff4bd1274c21108cae8c2fcbc98ba5ee801c57e7fe56cb20191b175a42f"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e+16
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "05a09ea633add3770b47e0b75843ea0a63e4f7a1e81f5f586e2172a3f7fcde34"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e+20
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "dd756a1c1b0117cf8219faffd757253838114151e3b09dad1b3dbe3292c917fe"
+    },
+    {
+      "payload": {
+        "kind": "implement",
+        "task": "Почини тест",
+        "allowed_paths": [
+          "src"
+        ],
+        "test_commands": [
+          "cargo test"
+        ],
+        "allow_dirty": false,
+        "allow_commit": false,
+        "budget": {
+          "limits": {
+            "cost": 1e-100
+          },
+          "warning_threshold": 0.8
+        }
+      },
+      "hash": "2de55873fc8ea253853b8f606bbb2f1ccb4927e4a05abdb436bccfe25e29d3b6"
     }
   ]
 }

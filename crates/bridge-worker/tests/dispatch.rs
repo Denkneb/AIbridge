@@ -3495,3 +3495,370 @@ fn checkpoint_symlinks_and_exec_bit_are_content_free() {
     );
     assert!(!changed.to_string().contains("before"));
 }
+
+// 7.18: exercise submission -> frozen storage -> both worker dispatch modes.
+fn seed_profile_task(
+    dir: &TempDir,
+    selected: Option<serde_json::Value>,
+    extra_config: &str,
+) -> (
+    PathBuf,
+    bridge_storage::RustStateLayout,
+    StorageConnection,
+    TaskId,
+    ProjectId,
+) {
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(dir, "proj-1");
+    let path = dir.path().join("submit-projects.toml");
+    std::fs::write(&path, format!(
+        "[projects.proj-1]\nworkspace={}\nopencode_url=\"http://127.0.0.1:4999\"\npassword_file=\"unused.password\"\nmax_rounds=3\n{extra_config}",
+        serde_json::json!(workspace.to_str().unwrap())
+    )).unwrap();
+    let config = load_config(&path).unwrap();
+    let project = config.project("proj-1").unwrap();
+    let task = task_id();
+    bridge_submission::submit_task_with_profile(
+        &mut storage,
+        project,
+        bridge_submission::ProfileSubmissionInput {
+            task: CreateTaskInput {
+                task_id: task,
+                project_id: project.id().clone(),
+                workspace: workspace.to_str().unwrap().into(),
+                task: "original {profile_block}".into(),
+                request_id: "profile-request".into(),
+                payload_hash: "replaced".into(),
+                base_head: None,
+                allowed_paths: vec!["src/".into()],
+                test_commands: vec!["cargo test".into()],
+                snapshot: None,
+            },
+            profile: selected,
+            allow_dirty: false,
+            allow_commit: false,
+            budget: None,
+            initial_status: TaskStatus::Implementing,
+        },
+    )
+    .unwrap();
+    (workspace, layout, storage, task, project.id().clone())
+}
+
+#[test]
+fn frozen_profile_model_and_overlay_survive_config_changes_in_both_modes() {
+    for revision in [false, true] {
+        for (extra, selected, expected, overlay) in [
+            (
+                "opencode_model=\"old/project/model\"\n",
+                None,
+                Some(("old", "project/model")),
+                "",
+            ),
+            ("", None, None, ""),
+            (
+                "opencode_model=\"old/project\"\n[projects.proj-1.profiles.custom]\npurpose=\"Custom\"\ninstructions=\"Проверь {task_id}.\"\nmodel=\"frozen/model/sub\"\n",
+                Some(serde_json::json!("custom")),
+                Some(("frozen", "model/sub")),
+                "Проверь {task_id}.",
+            ),
+            (
+                "opencode_model=\"old/project\"\n",
+                Some(serde_json::json!("test-writer")),
+                Some(("old", "project")),
+                "",
+            ),
+        ] {
+            let dir = TempDir::new("pinned-profile-model");
+            let (workspace, layout, mut storage, task, project) =
+                seed_profile_task(&dir, selected, extra);
+            let saved = storage.get_task_profile(task, &project).unwrap().unwrap();
+            let number = if revision {
+                seed_revision_round(&mut storage, task, &project, Some("fix"));
+                set_structured(
+                    &storage,
+                    task,
+                    &serde_json::json!([structured_item("src/a.rs")]).to_string(),
+                );
+                2
+            } else {
+                1
+            };
+            let title = round_session_title(task, number);
+            let directory = workspace.to_str().unwrap().to_owned();
+            let (port, server) =
+                spawn_server(
+                    move |request, _| match (request.method.as_str(), request.path()) {
+                        ("GET", "/session") => ok_json(&serde_json::json!([session_json(
+                            Some("ses_frozen"),
+                            Some(&title),
+                            Some(&directory)
+                        )])),
+                        ("POST", path) if path.ends_with("/prompt_async") => no_content(),
+                        _ => status(500, b"unexpected"),
+                    },
+                );
+            let client = build_client_with(port, &workspace, Some("current/changed"));
+            let reference = round_ref(task, &project, number);
+            if revision {
+                dispatch_revision_round(&client, &layout, reference).unwrap();
+            } else {
+                dispatch_initial_round(&client, &layout, reference).unwrap();
+            }
+            let body = server.prompt_posts()[0].body_json();
+            if let Some((provider, model)) = expected {
+                assert_eq!(
+                    body["model"],
+                    serde_json::json!({"providerID":provider,"modelID":model})
+                );
+            } else {
+                assert!(body.get("model").is_none());
+            }
+            let text = body["parts"][0]["text"].as_str().unwrap();
+            let persisted = storage.get_task(task).unwrap().unwrap();
+            let expected_text = if revision {
+                bridge_worker::revision_prompt_with_profile(
+                    &persisted,
+                    &workspace,
+                    "fix\n\nСтруктурированные замечания ревью:\n1. [error] src/a.rs:2 (BUG-1) fix the operator",
+                    2,
+                    Some(&saved),
+                )
+            } else {
+                bridge_worker::initial_prompt_with_profile(&persisted, &workspace, Some(&saved))
+            };
+            assert_eq!(text, expected_text);
+            assert!(text.contains(overlay));
+            assert!(text.contains("Меняй только согласованные allowed_paths: src/."));
+            assert!(text.contains("Не выполняй git add, commit"));
+            assert!(text.contains("авторитетно повторит ровно согласованные test_commands"));
+            assert_eq!(
+                storage.get_task_profile(task, &project).unwrap(),
+                Some(saved)
+            );
+            assert_eq!(round_state(&storage, task, number).status, "observing");
+            assert_eq!(server.prompt_posts().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn profile_corruption_fails_terminally_before_session_or_prompt_http() {
+    for revision in [false, true] {
+        for (sql, kind) in [
+            (
+                "UPDATE tasks SET profile_json=NULL",
+                DispatchErrorKind::ProfileSnapshotMissing,
+            ),
+            (
+                "UPDATE tasks SET profile_json=''",
+                DispatchErrorKind::ProfileSnapshotMissing,
+            ),
+            (
+                "UPDATE tasks SET profile_json='{}'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_json=x'ff'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_json='null'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_json=json_set(profile_json,'$.model','invalid-model')",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_json=json_set(profile_json,'$.source','unknown')",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile='test-writer'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_hash=NULL",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_hash='bad'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_source='argument'",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+            (
+                "UPDATE tasks SET profile_source=NULL",
+                DispatchErrorKind::ProfileSnapshotCorrupt,
+            ),
+        ] {
+            let dir = TempDir::new("profile-corrupt");
+            let (workspace, layout, mut storage, task, project) = seed_profile_task(&dir, None, "");
+            let number = if revision {
+                seed_revision_round(&mut storage, task, &project, Some("fix"));
+                2
+            } else {
+                1
+            };
+            storage.connection().execute_batch(sql).unwrap();
+            let (port, server) = spawn_server(|_, _| status(500, b"unexpected"));
+            let client = build_client(port, &workspace);
+            let reference = round_ref(task, &project, number);
+            let error = if revision {
+                dispatch_revision_round(&client, &layout, reference)
+            } else {
+                dispatch_initial_round(&client, &layout, reference)
+            }
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(server.request_count(), 0);
+            assert_eq!(round_state(&storage, task, number).status, "failed");
+            assert_eq!(round_state(&storage, task, number).attempted, 0);
+            assert_eq!(round_state(&storage, task, number).outbound, None);
+            assert_eq!(
+                storage.get_task(task).unwrap().unwrap().status,
+                TaskStatus::Failed
+            );
+            let (code, result): (String, String) = storage
+                .connection()
+                .query_row(
+                    "SELECT error_code,result_json FROM rounds WHERE round_number=?1",
+                    [number],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(code, kind.as_str());
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&result).unwrap(),
+                serde_json::json!({"error":kind.as_str()})
+            );
+            assert!(!format!("{error:?} {error}").contains("original"));
+        }
+    }
+}
+
+#[test]
+fn profile_is_revalidated_after_session_resolution() {
+    for revision in [false, true] {
+        let dir = TempDir::new("profile-session-race");
+        let (workspace, layout, mut storage, task, project) = seed_profile_task(&dir, None, "");
+        let number = if revision {
+            seed_revision_round(&mut storage, task, &project, Some("fix"));
+            2
+        } else {
+            1
+        };
+        let database = layout.database();
+        let title = round_session_title(task, number);
+        let directory = workspace.to_str().unwrap().to_owned();
+        let (port, server) =
+            spawn_server(
+                move |request, _| match (request.method.as_str(), request.path()) {
+                    ("GET", "/session") => {
+                        connect(&database)
+                            .unwrap()
+                            .connection()
+                            .execute_batch("UPDATE tasks SET profile_hash='bad'")
+                            .unwrap();
+                        ok_json(&serde_json::json!([]))
+                    }
+                    ("POST", "/session") => ok_json(&session_json(
+                        Some("ses_profile"),
+                        Some(&title),
+                        Some(&directory),
+                    )),
+                    _ => status(500, b"unexpected"),
+                },
+            );
+        let client = build_client(port, &workspace);
+        let reference = round_ref(task, &project, number);
+        let error = if revision {
+            dispatch_revision_round(&client, &layout, reference)
+        } else {
+            dispatch_initial_round(&client, &layout, reference)
+        }
+        .unwrap_err();
+        assert_eq!(error.kind(), DispatchErrorKind::ProfileSnapshotCorrupt);
+        assert_eq!(server.prompt_posts().len(), 0);
+        assert_eq!(server.request_count(), 2);
+        assert_eq!(round_state(&storage, task, number).status, "failed");
+        assert_eq!(round_state(&storage, task, number).attempted, 0);
+    }
+}
+
+#[test]
+fn profile_failure_is_atomic_and_preserves_close_priority() {
+    use bridge_storage::profiles::ProfileReadError;
+    let dir = TempDir::new("profile-finish-atomic");
+    let (_, _, mut storage, task, project) = seed_profile_task(&dir, None, "");
+    let reference = round_ref(task, &project, 1);
+    install_trigger(
+        &storage,
+        "CREATE TRIGGER reject_profile_finish BEFORE INSERT ON events WHEN NEW.kind='failed' BEGIN SELECT RAISE(ABORT,'fixture'); END;",
+    );
+    assert!(
+        storage
+            .fail_profile_snapshot(reference.clone(), ProfileReadError::CorruptSnapshot)
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 1).status, "pending");
+    assert_eq!(
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::Implementing
+    );
+    storage
+        .connection()
+        .execute_batch("DROP TRIGGER reject_profile_finish")
+        .unwrap();
+    storage.request_task_close(task, "test close").unwrap();
+    let outcome = storage
+        .fail_profile_snapshot(reference.clone(), ProfileReadError::CorruptSnapshot)
+        .unwrap();
+    assert_eq!(outcome.task.status, TaskStatus::Closed);
+    assert_eq!(outcome.round.status, RoundStatus::Failed);
+    assert!(
+        storage
+            .fail_profile_snapshot(reference, ProfileReadError::CorruptSnapshot)
+            .is_err()
+    );
+}
+
+#[test]
+fn profile_failure_cannot_terminate_an_attempted_or_cross_project_round() {
+    use bridge_storage::profiles::ProfileReadError;
+    let dir = TempDir::new("profile-failure-fences");
+    let (_, _, mut storage, task, project) = seed_profile_task(&dir, None, "");
+    let reference = round_ref(task, &project, 1);
+    assert!(
+        storage
+            .fail_profile_snapshot(
+                round_ref(task, &self::project("other"), 1),
+                ProfileReadError::CorruptSnapshot
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .fail_profile_snapshot(reference.clone(), ProfileReadError::Database)
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 1).status, "pending");
+    storage
+        .prepare_round(reference.clone(), "msg_attempted".into())
+        .unwrap();
+    storage.mark_round_sent(reference.clone()).unwrap();
+    assert!(
+        storage
+            .fail_profile_snapshot(reference, ProfileReadError::MissingSnapshot)
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 1).status, "sent");
+    assert_eq!(round_state(&storage, task, 1).attempted, 1);
+    assert_eq!(
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::Implementing
+    );
+}

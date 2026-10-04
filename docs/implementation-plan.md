@@ -79,7 +79,8 @@ Targeted checks:
   **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
   **0B.5 завершён** (77 runtime/automation cases, без skips).
   **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
-  Ближайший шаг согласованного блока — **7.18 (Executor profiles)**; новые v16/v17 задачи идут по зависимостям.
+  Согласованный блок 7.14 → 7.15 → 8.18 → 7.18 завершён.
+  Следующий крупный блок backend — **7.16 (Worktree execution)**; новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -97,7 +98,7 @@ Targeted checks:
 Delta реализация остаётся открытой; **0B.1–0B.5 завершены**: manifest v17,
 AST/source verification, config/permission, SQLite, MCP и runtime/automation delta corpora.
 Fixtures 0A и Rust implementation сохраняют v15 baseline. Contract delta
-refresh завершён; 7.13 завершён; 7.14 завершён; реализация потребителей продолжается с 7.15.
+refresh завершён; 7.13 завершён; 7.14 завершён; 7.15, 8.18 и 7.18 завершены; следующие consumers — worktree execution/MCP/runtime.
 
 ## Поток 0. Контрактная база
 
@@ -413,7 +414,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; 7.13 также завершён. Ближайшая задача согласованного блока — 7.18.**
+  **0B завершён; 7.13 также завершён. Согласованный блок завершён; следующий крупный блок — 7.16.**
 
 ## Поток 1. Rust foundation
 
@@ -623,8 +624,9 @@ Data model и serde compatibility без runtime logic.
 - **Security:** private instruction gate проверяет девять категорий секретов
   по reference patterns и frozen fixtures; добавлены production `regex` и
   `base64`, `serde_json` перенесён в production dependencies.
-- **Границы:** только config definitions/resolution/snapshots; persistence,
-  runtime selection, prompt/UI wiring остаются у 3.12/7.18/8.18. Python runtime
+- **Границы:** этот foundation содержит config definitions/resolution/snapshots.
+  Persistence/submit selection и prompt wiring закрыты 8.18/7.18;
+  UI wiring остаётся у 12.13. Python runtime
   state не читался и не изменялся; reference HEAD подтверждён по manifest.
 - **Проверено:** 173 config tests, все 33 profile corpus cases без skips,
   четыре независимых Python canonical snapshot/hash goldens, effective-model
@@ -1050,7 +1052,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
-  **7.13 завершён**; ближайшая задача согласованного блока — **7.18**;
+  **7.13 завершён**; согласованный блок 7.14/7.15/8.18/7.18 завершён;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v17 в Rust не завершены.
 
@@ -2931,7 +2933,7 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
   - **Targeted checks:** delivery writer-gate tests.
   - **Зависит от:** 7.17a, 9.18a. **Открывает:** 9.18d.
 
-### 7.18. Executor profiles (v13, не завершено)
+### 7.18. Executor profiles (v13, завершено)
 
 - **Цель:** применить immutable submit-time profile snapshot к prompt overlay и
   effective model.
@@ -2953,6 +2955,16 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
 - **Targeted checks:** profile snapshot/integrity tests; prompt byte-identical
   historical test.
 - **Зависит от:** 0A.2, 2.12, 3.12a, 8.18. **Открывает:** 12.13.
+- **Реализовано:** обе dispatch-mode применяют только persisted snapshot;
+  профиль проверяется до render/session/HTTP и повторно после session resolution.
+  Missing/corrupt identity атомарно завершает unsent round/task, сохраняя close
+  priority. Явный pinned model=null не подхватывает новую модель config;
+  legacy profile=NULL сохраняет прежнее поведение. Fixed scope/Git/test/verifier
+  template не меняется. Шесть frozen Python cases проверяют оба prompt побайтово;
+  интеграционные тесты проходят через submission → storage → HTTP mock.
+  Production worker loop/CLI, MCP transport и GUI остаются отдельными задачами.
+- **Проверено:** 1045 workspace tests, all-targets Clippy без warnings, fmt/diff check.
+  Submit hash corpus включает Python float notation для дробных бюджетов.
 
 **Готовность потока:** worker scenarios совпадают по БД и результату.
 
@@ -3721,9 +3733,9 @@ improvement**. Limitation не выдаётся за реализованное 
    **0B.3 завершён** (4 SQLite delta fixtures и migration parity).
    **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
    **0B.5 завершён** (77 runtime/automation cases).
-   **7.13 завершён**; **ближайшая задача согласованного блока — 8.18**, затем 7.18; delta fixtures refresh завершён.
-2. После завершённых delta fixtures и 7.13 продолжить 7.15 и потребителей existing v15
-   (7.14–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
+   **7.13 завершён**; **7.14/7.15/8.18/7.18 завершены**; delta fixtures refresh завершён.
+2. После завершённого блока продолжить worktree execution 7.16 и remaining
+   consumers existing v15 (7.17, 8.12–8.17, 9.15–9.20, 12.13–12.15). Новые delivery/config/
    schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;
    recovery corrections 7.10/8.20 и startup wait 9.7a включены в свои потоки.
 3. On_accept 9.18e/8.19 зависит от existing crash-safe materializer и locks;

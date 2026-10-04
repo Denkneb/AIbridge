@@ -28,6 +28,36 @@ impl fmt::Display for ProfileReadError {
 }
 impl Error for ProfileReadError {}
 impl StorageConnection {
+    /// Atomically fails only a current pending, unattempted implement/revise
+    /// round. Cooperative close retains precedence over the failed task state.
+    /// # Errors
+    /// Rejects unrelated error categories and stale/already attempted rounds.
+    pub fn fail_profile_snapshot(
+        &mut self,
+        round: crate::RoundRef,
+        error: ProfileReadError,
+    ) -> Result<crate::RoundUpdateOutcome, crate::RoundUpdateError> {
+        if !matches!(
+            error,
+            ProfileReadError::MissingSnapshot | ProfileReadError::CorruptSnapshot
+        ) {
+            return Err(crate::RoundUpdateError::InvalidInput);
+        }
+        self.finish_round_inner(
+            crate::FinishRoundInput {
+                round,
+                round_status: bridge_domain::RoundStatus::Failed,
+                task_status: bridge_domain::TaskStatus::Failed,
+                response_message_id: None,
+                response: None,
+                error_code: Some(error.as_str().into()),
+                result_json: Some(serde_json::json!({"error":error.as_str()})),
+            },
+            true,
+            None,
+        )
+    }
+
     /// Project-scoped, read-only integrity check of the entire frozen identity.
     /// NULL profile is legacy; a present profile never falls back to config.
     pub fn get_task_profile(

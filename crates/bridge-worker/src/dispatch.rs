@@ -122,7 +122,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
-use bridge_domain::{RoundKind, RoundStatus, TaskId, TaskStatus};
+use bridge_domain::{ProfileSnapshot, RoundKind, RoundStatus, TaskId, TaskStatus};
 use bridge_opencode::OpenCodeClient;
 use bridge_storage::{
     RoundRef, RoundRow, RoundUpdateError, RustStateLayout, StorageConnection, Task,
@@ -132,10 +132,11 @@ use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use crate::findings::validate_revision_findings;
-use crate::prompt::{initial_prompt, revision_prompt};
+use crate::prompt::{initial_prompt_with_profile, revision_prompt_with_profile};
 use crate::session::{
     ResolvedSession, SessionResolutionSource, directory_matches_workspace, resolve_round_session,
 };
+use bridge_storage::profiles::ProfileReadError;
 
 /// Generates the reference outbound message id `"msg_" + uuid.uuid4().hex`.
 ///
@@ -180,6 +181,10 @@ pub enum DispatchErrorKind {
     Delivery,
     /// Persisted revision findings are malformed or outside the task scope.
     StructuredFindingsInvariant,
+    /// A present task profile has no persisted snapshot.
+    ProfileSnapshotMissing,
+    /// The persisted profile identity/hash/model is malformed or inconsistent.
+    ProfileSnapshotCorrupt,
 }
 
 impl DispatchErrorKind {
@@ -203,6 +208,8 @@ impl DispatchErrorKind {
             Self::Storage => "round lifecycle could not be persisted",
             Self::Delivery => "opencode prompt delivery failed",
             Self::StructuredFindingsInvariant => "structured_findings_invariant",
+            Self::ProfileSnapshotMissing => "profile_snapshot_missing",
+            Self::ProfileSnapshotCorrupt => "profile_snapshot_corrupt",
         }
     }
 }
@@ -321,9 +328,14 @@ impl RoundDispatchMode {
         row: &RoundRow,
         workspace: &Path,
         trusted_roots: &[&Path],
-    ) -> Result<String, DispatchError> {
-        match self {
-            Self::Initial => Ok(initial_prompt(task, workspace)),
+    ) -> Result<(String, Option<ProfileSnapshot>), DispatchError> {
+        let profile = validated_profile(storage, round)?;
+        let text = match self {
+            Self::Initial => Ok(initial_prompt_with_profile(
+                task,
+                workspace,
+                profile.as_ref(),
+            )),
             Self::Revision => {
                 let structured = match storage.get_round_structured_findings(round) {
                     Ok(value) => value,
@@ -354,14 +366,16 @@ impl RoundDispatchMode {
                     Ok(value) => value,
                     Err(_) => return fail_findings(storage, round),
                 };
-                Ok(revision_prompt(
+                Ok(revision_prompt_with_profile(
                     task,
                     workspace,
                     &findings.prompt_findings(),
                     row.round_number,
+                    profile.as_ref(),
                 ))
             }
-        }
+        }?;
+        Ok((text, profile))
     }
 
     /// The human label used by [`DispatchedRound`].
@@ -574,7 +588,7 @@ fn dispatch_round_with_roots(
     let mut storage = open_state(layout)?;
     let (task, row) = validate_task_and_round(client, &storage, &round, mode)?;
 
-    let text = mode.render_prompt(
+    let (text, profile) = mode.render_prompt(
         &mut storage,
         &round,
         &task,
@@ -582,6 +596,17 @@ fn dispatch_round_with_roots(
         client.workspace(),
         trusted_roots,
     )?;
+    let pinned_model = profile
+        .as_ref()
+        .map(|profile| {
+            profile
+                .model
+                .as_deref()
+                .map(bridge_config::OpenCodeModel::parse)
+                .transpose()
+        })
+        .transpose()
+        .map_err(|_| DispatchError::new(DispatchErrorKind::ProfileSnapshotCorrupt))?;
     let outbound = match row
         .outbound_message_id
         .as_deref()
@@ -601,9 +626,12 @@ fn dispatch_round_with_roots(
         .mark_round_sent(round.clone())
         .map_err(|error| DispatchError::with_source(DispatchErrorKind::Storage, error))?;
 
-    client
-        .send_prompt_async(session.id(), &outbound, &text)
-        .map_err(|error| DispatchError::with_source(DispatchErrorKind::Delivery, error))?;
+    let delivery = if let Some(model) = pinned_model {
+        client.send_prompt_async_with_model(session.id(), &outbound, &text, model.as_ref())
+    } else {
+        client.send_prompt_async(session.id(), &outbound, &text)
+    };
+    delivery.map_err(|error| DispatchError::with_source(DispatchErrorKind::Delivery, error))?;
 
     let outcome = storage
         .mark_round_observing(round.clone())
@@ -618,12 +646,34 @@ fn dispatch_round_with_roots(
     })
 }
 
-/// Validates the task/round/project/workspace/current-round preconditions
-/// before any HTTP request or write.
-fn fail_findings(
+fn validated_profile(
     storage: &mut StorageConnection,
     round: &RoundRef,
-) -> Result<String, DispatchError> {
+) -> Result<Option<ProfileSnapshot>, DispatchError> {
+    match storage.get_task_profile(round.task_id, &round.project_id) {
+        Ok(profile) => Ok(profile),
+        Err(error @ (ProfileReadError::MissingSnapshot | ProfileReadError::CorruptSnapshot)) => {
+            storage
+                .fail_profile_snapshot(round.clone(), error)
+                .map_err(|error| DispatchError::with_source(DispatchErrorKind::Storage, error))?;
+            Err(DispatchError::new(
+                if error == ProfileReadError::MissingSnapshot {
+                    DispatchErrorKind::ProfileSnapshotMissing
+                } else {
+                    DispatchErrorKind::ProfileSnapshotCorrupt
+                },
+            ))
+        }
+        Err(error) => Err(DispatchError::with_source(
+            DispatchErrorKind::Storage,
+            error,
+        )),
+    }
+}
+
+/// Validates the task/round/project/workspace/current-round preconditions
+/// before any HTTP request or write.
+fn fail_findings<T>(storage: &mut StorageConnection, round: &RoundRef) -> Result<T, DispatchError> {
     storage
         .fail_revision_findings(round.clone())
         .map_err(|error| DispatchError::with_source(DispatchErrorKind::Storage, error))?;

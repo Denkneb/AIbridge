@@ -367,10 +367,41 @@ pub fn request_payload_hash(value: &serde_json::Value) -> String {
                         .join(", ")
                 )
             }
+            serde_json::Value::Number(number) if number.is_f64() => {
+                python_float(number.as_f64().expect("JSON float"))
+            }
             scalar => scalar.to_string(),
         }
     }
     sha256(&render(value))
+}
+
+// Python repr uses scientific notation below 1e-4 and from 1e16, with an
+// explicit exponent sign and at least two exponent digits. Rust/serde_json
+// choose different fixed/scientific boundaries; budget hashes must not drift.
+fn python_float(value: f64) -> String {
+    let scientific = format!("{value:e}");
+    let (mantissa, exponent) = scientific.split_once('e').expect("scientific float");
+    let exponent: i32 = exponent.parse().expect("float exponent");
+    if !(-4..16).contains(&exponent) {
+        return format!("{mantissa}e{exponent:+03}");
+    }
+    let sign = if mantissa.starts_with('-') { "-" } else { "" };
+    let digits = mantissa.trim_start_matches('-').replace('.', "");
+    let point = exponent + 1;
+    if point <= 0 {
+        format!(
+            "{sign}0.{}{digits}",
+            "0".repeat(usize::try_from(-point).expect("bounded exponent"))
+        )
+    } else {
+        let point = usize::try_from(point).expect("positive exponent");
+        if point >= digits.len() {
+            format!("{sign}{digits}{}.0", "0".repeat(point - digits.len()))
+        } else {
+            format!("{sign}{}.{}", &digits[..point], &digits[point..])
+        }
+    }
 }
 validated_model! {
     /// Exact nine-key submit-time profile_json payload.

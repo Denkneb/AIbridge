@@ -2874,21 +2874,6 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.11. Verification integration
 
-- **7.11b. Persisted multi-repository verifier (service завершён).**
-  Domain `Verification.repositories` сохраняет root, before/after и relative
-  side_effects внешних репозиториев; historical single-repository JSON неизменён.
-  `run_round_verification_persisted_with_repositories` fingerprint-ит main и
-  canonical sorted/deduplicated external roots до единственного запуска checks,
-  затем после него; caller доказывает trusted roots и удерживает worker fences.
-  External before failure предотвращает запуск всех команд; after failure
-  сохраняет main fingerprints и уже собранные external entries с error outcome,
-  без ложного clean side_effects. Общие side_effects квалифицированы external
-  root, persisted reuse не теряет repositories и не повторяет команды.
-  Checks: real temporary Git repositories, identical path names, ordering,
-  storage roundtrip/reuse, before/after failure, unsafe/empty no-probe;
-  domain/storage/verifier suites и workspace Clippy прошли. Worker consumer
-  aggregation/checkpoint wiring остаются следующим этапом 7.11c.
-
 - **7.11a. Final candidate publication (single-repository service завершён).**
   `RoundObserver::publish_final` принимает только candidate того же observer,
   проверяет binding/close до verifier, после него и перед atomic finish.
@@ -2906,6 +2891,38 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   foreign candidate, close before/during verifier, actual timeout, lock lifetime,
   failed/unsafe review и persisted verifier reuse после collection failure.
   Full observer FSM и multi-repository publication остаются открыты.
+
+- **7.11b. Persisted multi-repository verifier (service завершён).**
+  Domain `Verification.repositories` сохраняет root, before/after и relative
+  side_effects внешних репозиториев; historical single-repository JSON неизменён.
+  `run_round_verification_persisted_with_repositories` fingerprint-ит main и
+  canonical sorted/deduplicated external roots до единственного запуска checks,
+  затем после него; caller доказывает trusted roots и удерживает worker fences.
+  External before failure предотвращает запуск всех команд; after failure
+  сохраняет main fingerprints и уже собранные external entries с error outcome,
+  без ложного clean side_effects. Общие side_effects квалифицированы external
+  root, persisted reuse не теряет repositories и не повторяет команды.
+  Checks: real temporary Git repositories, identical path names, ordering,
+  storage roundtrip/reuse, before/after failure, unsafe/empty no-probe;
+  domain/storage/verifier suites и workspace Clippy прошли. Worker consumer
+  aggregation/checkpoint wiring остаются следующим этапом 7.11c.
+
+- **7.11c. Multi-repository worker publication (service завершён).**
+  Direct execution сохраняет immutable submit snapshot/scope и external baselines,
+  доказывает canonical saved roots по configured trusted directories; extra,
+  duplicate, malformed, untrusted/nested-mismatch и отсутствующие baseline scopes
+  fail closed до HTTP/checks. Guards повторяются при observation/verification/
+  collection/finish, symlink rebindings запрещены, baseline не переснимается.
+  Verifier получает только authenticated affected roots. Final result сохраняет
+  main-first/sorted external repositories, qualified changed/committed/scope/
+  Git-policy lists, task_changed_paths и baseline_dirty_paths только main;
+  worker checkpoint получает configured trusted roots. Missing external repo
+  приводит к verifier error без запуска checks и external_repo_missing в review.
+  Worktree mode сохраняет запрет external scopes. Checks: 21 observation/publication
+  HTTP/Git/SQLite/subprocess tests (включая 8 invalid preparation cases), все 10
+  frozen aggregation fixtures, actual check effects, three-repository checkpoint,
+  snapshot/scope tamper и root/scope symlink rebindings. Full FSM, terminal error
+  change aggregation и live provider smoke остаются открыты.
 
 ### 7.12. Cooperative close
 

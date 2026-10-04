@@ -24,9 +24,9 @@
 //! existing atomic storage APIs *before* the single `prompt_async` request and
 //! records the successful `observing` transition. Separate services provide
 //! question/permission blockers, auto-approval, recovery, message observation,
-//! failed/delivery-unknown/deadline handling and single-repository publication
-//! after saved verification. The full worker state machine, multi-repository
-//! publication, delegated MCP wiring and production CLI `worker` remain open.
+//! failed/delivery-unknown/deadline handling and main/external repository
+//! publication after saved verification. The full worker state machine,
+//! delegated MCP wiring and production CLI `worker` remain open.
 //!
 //! # Argv contract
 //!

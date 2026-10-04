@@ -185,6 +185,10 @@ pub struct RoundExecution {
     pub root: PathBuf,
     pub server_port: Option<u16>,
     baseline: Option<RepositorySnapshot>,
+    submit_snapshot: Option<Value>,
+    allowed_paths: Vec<String>,
+    trusted_roots: Vec<PathBuf>,
+    externals: Vec<crate::completion::ExternalBaseline>,
     round: RoundRef,
 }
 impl fmt::Debug for RoundExecution {
@@ -226,6 +230,19 @@ impl RoundExecution {
             .map_err(|_| ExecutionError::Storage)?;
         if latest != self.round.round_number {
             return Err(ExecutionError::Round);
+        }
+        if task.snapshot != self.submit_snapshot || task.allowed_paths != self.allowed_paths {
+            return Err(ExecutionError::Baseline);
+        }
+        for external in &self.externals {
+            crate::completion::prove_path(&external.root)?;
+        }
+        for scope in self
+            .allowed_paths
+            .iter()
+            .filter(|p| Path::new(p).is_absolute())
+        {
+            crate::completion::prove_path(Path::new(scope))?;
         }
         if mode(&storage, &task)? == ExecutionMode::Worktree {
             let record = storage
@@ -273,10 +290,16 @@ impl RoundExecution {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        bridge_verifier::run_round_verification_persisted(
+        let external_roots = self
+            .externals
+            .iter()
+            .map(|e| e.root.as_path())
+            .collect::<Vec<_>>();
+        bridge_verifier::run_round_verification_persisted_with_repositories(
             &mut storage,
             self.round.clone(),
             &self.root,
+            &external_roots,
             &commands,
             timeout,
             tail_bytes,
@@ -304,6 +327,40 @@ impl RoundExecution {
             false,
         )
         .map_err(|_| ExecutionError::Git)
+    }
+    /// Collects the frozen main baseline and every affected external baseline.
+    /// # Errors
+    /// Rejects rebound state/paths; no baseline is refreshed from current files.
+    pub fn collect_repositories(
+        &self,
+        layout: &RustStateLayout,
+    ) -> Result<Vec<RepositoryComparison>, ExecutionError> {
+        let (_, task) = self.task_and_root(layout)?;
+        let mut repositories = vec![self.collect_changes(layout)?];
+        let allow_commit = task
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s["allow_commit"] == true);
+        let allowed = task
+            .allowed_paths
+            .iter()
+            .filter(|p| Path::new(p).is_absolute())
+            .cloned()
+            .collect::<Vec<_>>();
+        for external in &self.externals {
+            repositories.push(
+                bridge_git::compare_repository_snapshot(
+                    &external.root,
+                    &external.snapshot,
+                    &allowed,
+                    allow_commit,
+                    true,
+                )
+                .map_err(|_| ExecutionError::Git)?,
+            );
+        }
+        self.task_and_root(layout)?;
+        Ok(repositories)
     }
     /// Persists usage and checkpoint using the same checkout baseline and cwd.
     /// # Errors
@@ -336,7 +393,11 @@ impl RoundExecution {
             input,
             messages,
             &self.root,
-            &[],
+            &self
+                .trusted_roots
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
             baseline.as_ref(),
         )
         .map_err(|_| ExecutionError::Storage)
@@ -360,6 +421,9 @@ pub fn prepare_round_execution(
     let mut storage = layout.open().map_err(|_| ExecutionError::Ownership)?;
     let task = current_task(&mut storage, layout, project, &round)?;
     if mode(&storage, &task)? == ExecutionMode::Direct {
+        let trusted_roots = project.auto_approve_external_directories().to_vec();
+        let externals =
+            crate::completion::external_baselines(&task, project.workspace(), &trusted_roots)?;
         let client = OpenCodeClient::from_project(project, options.request_timeout)
             .map_err(|_| ExecutionError::Runtime)?;
         let baseline = task
@@ -374,6 +438,10 @@ pub fn prepare_round_execution(
             root: project.workspace().to_path_buf(),
             server_port: None,
             baseline,
+            submit_snapshot: task.snapshot.clone(),
+            allowed_paths: task.allowed_paths.clone(),
+            trusted_roots,
+            externals,
             round,
         });
     }
@@ -514,6 +582,10 @@ pub fn prepare_round_execution(
         root: paths.checkout,
         server_port: Some(server.port),
         baseline: Some(baseline),
+        submit_snapshot: task.snapshot.clone(),
+        allowed_paths: task.allowed_paths.clone(),
+        trusted_roots: Vec::new(),
+        externals: Vec::new(),
         round,
     })
 }

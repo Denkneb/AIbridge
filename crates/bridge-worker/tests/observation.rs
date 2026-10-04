@@ -35,6 +35,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_external(0)
+    }
+    fn with_external(count: usize) -> Self {
         let root = std::env::temp_dir().join(format!("bridge-observer-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("workspace")).unwrap();
         let workspace = std::fs::canonicalize(root.join("workspace")).unwrap();
@@ -46,10 +49,28 @@ impl Fixture {
                 .unwrap()
                 .success()
         );
-        let snapshot = bridge_git::take_snapshot(&workspace)
+        if count > 0 {
+            commit_seed(&workspace);
+        }
+        let mut snapshot = bridge_git::take_snapshot(&workspace)
             .unwrap()
             .to_json()
             .unwrap();
+        let mut external_roots = Vec::new();
+        let mut external_snapshots = Vec::new();
+        let mut allowed_paths = vec!["**".to_owned()];
+        for i in 0..count {
+            let path = root.join(format!("external-{i}"));
+            std::fs::create_dir(&path).unwrap();
+            git(&path, &["init", "-q"]);
+            commit_seed(&path);
+            let mut external = bridge_git::take_snapshot(&path).unwrap().to_json().unwrap();
+            external["root"] = json!(path.to_str().unwrap());
+            external_snapshots.push(external);
+            allowed_paths.push(path.join("same.txt").to_str().unwrap().to_owned());
+            external_roots.push(path.to_str().unwrap().to_owned());
+        }
+        snapshot["external_repositories"] = json!(external_snapshots);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
@@ -98,7 +119,7 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&password, std::fs::Permissions::from_mode(0o600)).unwrap();
         let config_path = root.join("config.toml");
-        std::fs::write(&config_path, format!("[projects.proj]\nworkspace = {:?}\nopencode_url = \"http://127.0.0.1:{port}\"\npassword_file = {:?}\nmax_rounds = 3\n", workspace.to_str().unwrap(), password.to_str().unwrap())).unwrap();
+        std::fs::write(&config_path, format!("[projects.proj]\nworkspace = {:?}\nopencode_url = \"http://127.0.0.1:{port}\"\npassword_file = {:?}\nauto_approve_external_directories = {:?}\nmax_rounds = 3\n", workspace.to_str().unwrap(), password.to_str().unwrap(), external_roots)).unwrap();
         let config = load_config(&config_path).unwrap();
         let project = config.project("proj").unwrap();
         let layout = RustStateLayout::new(root.join("state"), project.id().clone()).unwrap();
@@ -120,7 +141,7 @@ impl Fixture {
                 request_id: "submit".into(),
                 payload_hash: "hash".into(),
                 base_head: None,
-                allowed_paths: vec!["**".into()],
+                allowed_paths,
                 test_commands: vec!["cargo test --offline".into()],
                 snapshot: Some(snapshot),
             })
@@ -558,7 +579,7 @@ fn foreign_candidate_and_close_before_publication_do_not_start_verifier() {
 }
 
 #[test]
-fn external_scope_is_rejected_before_verifier() {
+fn changed_external_snapshot_is_rejected_before_verifier() {
     let f = Fixture::new();
     f.history(final_history());
     let mut o = f.observer();
@@ -578,7 +599,7 @@ fn external_scope_is_rejected_before_verifier() {
         .unwrap();
     assert_eq!(
         o.publish_final(&candidate, seconds(5), 4096).unwrap_err(),
-        bridge_worker::execution::ExecutionError::Unsupported
+        bridge_worker::execution::ExecutionError::Baseline
     );
     let marker: Option<String> = storage
         .connection()
@@ -706,4 +727,316 @@ fn cooperative_close_during_verifier_prevents_review_publication() {
         .query_row("SELECT result_json FROM rounds", [], |r| r.get(0))
         .unwrap();
     assert_eq!(result, None);
+}
+
+fn git(root: &std::path::Path, args: &[&str]) {
+    assert!(
+        Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+fn commit_seed(root: &std::path::Path) {
+    std::fs::write(root.join("tracked.txt"), "baseline").unwrap();
+    git(root, &["add", "tracked.txt"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "baseline",
+        ],
+    );
+}
+
+#[test]
+fn multi_repository_publication_qualifies_paths_and_preserves_main_checkpoint() {
+    let f = Fixture::with_external(2);
+    f.history(final_history());
+    for root in [
+        f.root.join("workspace"),
+        f.root.join("external-0"),
+        f.root.join("external-1"),
+    ] {
+        std::fs::write(root.join("same.txt"), "changed").unwrap();
+    }
+    let ext = f.root.join("external-0");
+    std::fs::write(ext.join("outside.txt"), "out of scope").unwrap();
+    git(&ext, &["add", "outside.txt"]);
+    git(
+        &ext,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "outside scope",
+        ],
+    );
+    let mut o = f.observer();
+    let Observation::Final(candidate) = o.poll(|| seconds(1), &[]).unwrap() else {
+        panic!("final");
+    };
+    o.publish_final(&candidate, seconds(5), 4096).unwrap();
+    let result = f.result();
+    assert_eq!(result["task_changed_paths"], json!(["same.txt"]));
+    for path in [
+        "external-0/same.txt",
+        "external-1/same.txt",
+        "external-0/outside.txt",
+    ] {
+        assert!(
+            result["changed_paths"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(f.root.join(path).to_str().unwrap()))
+        );
+    }
+    assert!(
+        result["scope_violations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(ext.join("outside.txt").to_str().unwrap()))
+    );
+    assert!(
+        result["committed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(ext.join("outside.txt").to_str().unwrap()))
+    );
+    assert!(
+        result["git_policy_violations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("{}:head_changed", ext.display())))
+    );
+    assert_eq!(result["repositories"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        result["verification"]["repositories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let raw: String = f
+        .layout
+        .open()
+        .unwrap()
+        .connection()
+        .query_row("SELECT checkpoint_json FROM rounds", [], |r| r.get(0))
+        .unwrap();
+    let checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(checkpoint["repositories"].as_array().unwrap().len(), 3);
+    for r in checkpoint["repositories"].as_array().unwrap() {
+        assert_eq!(r["available"], true);
+    }
+    assert!(!raw.contains(f.root.to_str().unwrap()));
+}
+
+#[test]
+fn vanished_external_is_reported_and_verifier_never_runs_checks() {
+    let f = Fixture::with_external(1);
+    f.history(final_history());
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET test_commands='[\"touch must-not-run\"]'",
+            [],
+        )
+        .unwrap();
+    std::fs::remove_dir_all(f.root.join("external-0")).unwrap();
+    let mut o = f.observer();
+    let Observation::Final(candidate) = o.poll(|| seconds(1), &[]).unwrap() else {
+        panic!("final");
+    };
+    o.publish_final(&candidate, seconds(5), 4096).unwrap();
+    let result = f.result();
+    assert_eq!(result["verification"]["status"], "error");
+    assert_eq!(
+        result["repositories"][1]["git_policy_violations"],
+        json!(["external_repo_missing"])
+    );
+    assert!(!f.execution.execution.root.join("must-not-run").exists());
+    assert_eq!(f.task_status(), TaskStatus::AwaitingReview);
+}
+
+#[test]
+fn rebound_external_root_and_scope_symlinks_are_rejected_before_http_or_verifier() {
+    use std::os::unix::fs::symlink;
+    for rebind_scope in [false, true] {
+        let f = Fixture::with_external(1);
+        f.history(final_history());
+        let ext = f.root.join("external-0");
+        let foreign = f.root.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        if rebind_scope {
+            symlink(&foreign, ext.join("same.txt")).unwrap();
+        } else {
+            std::fs::rename(&ext, f.root.join("old-external")).unwrap();
+            symlink(&foreign, &ext).unwrap();
+        }
+        assert!(RoundObserver::new(&f.execution, &f.layout, seconds(5), seconds(10)).is_err());
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+        let marker: Option<String> = f
+            .layout
+            .open()
+            .unwrap()
+            .connection()
+            .query_row("SELECT verifier_state FROM rounds", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(marker, None);
+    }
+}
+
+#[test]
+fn checks_touching_external_files_are_in_verifier_effects_and_final_collection() {
+    let f = Fixture::with_external(1);
+    f.history(final_history());
+    let ext = f.root.join("external-0");
+    let command = format!("touch main-effect.txt '{}/same.txt'", ext.display());
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET test_commands=?1",
+            [json!([command]).to_string()],
+        )
+        .unwrap();
+    let mut o = f.observer();
+    let Observation::Final(candidate) = o.poll(|| seconds(1), &[]).unwrap() else {
+        panic!("final");
+    };
+    o.publish_final(&candidate, seconds(5), 4096).unwrap();
+    let result = f.result();
+    assert_eq!(result["verification"]["status"], "passed");
+    assert_eq!(
+        result["verification"]["repositories"][0]["side_effects"],
+        json!(["same.txt"])
+    );
+    assert!(
+        result["verification"]["side_effects"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(ext.join("same.txt").to_str().unwrap()))
+    );
+    assert!(
+        result["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(ext.join("same.txt").to_str().unwrap()))
+    );
+    assert_eq!(result["task_changed_paths"], json!(["main-effect.txt"]));
+}
+
+#[test]
+fn preparation_rejects_untrusted_corrupt_duplicate_or_unreferenced_external_baselines() {
+    use bridge_worker::execution::{ExecutionError, prepare_round_execution};
+    for case in [
+        "untrusted",
+        "corrupt",
+        "duplicate",
+        "undeclared",
+        "unused",
+        "nested",
+        "alias",
+        "too_many",
+    ] {
+        let f = Fixture::with_external(2);
+        let storage = f.layout.open().unwrap();
+        let task = storage
+            .get_task("550e8400-e29b-41d4-a716-446655440000".parse().unwrap())
+            .unwrap()
+            .unwrap();
+        let mut snapshot = task.snapshot.unwrap();
+        let mut scopes = task.allowed_paths;
+        let expected = match case {
+            "untrusted" => {
+                snapshot["external_repositories"][0]["root"] =
+                    json!(f.root.join("untrusted").to_str().unwrap());
+                ExecutionError::Binding
+            }
+            "corrupt" => {
+                snapshot["external_repositories"][0]["manifest"] = json!([]);
+                ExecutionError::Baseline
+            }
+            "duplicate" => {
+                let duplicate = snapshot["external_repositories"][0].clone();
+                snapshot["external_repositories"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+                ExecutionError::Binding
+            }
+            "undeclared" => {
+                snapshot
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("external_repositories");
+                ExecutionError::Binding
+            }
+            "unused" => {
+                scopes.pop();
+                ExecutionError::Binding
+            }
+            "nested" => {
+                let nested = f.root.join("external-0/nested");
+                std::fs::create_dir(&nested).unwrap();
+                snapshot["external_repositories"][0]["root"] = json!(nested.to_str().unwrap());
+                ExecutionError::Binding
+            }
+            "alias" => {
+                snapshot["external_repositories"][0]["root"] =
+                    json!(format!("{}/", f.root.join("external-0").display()));
+                ExecutionError::Binding
+            }
+            "too_many" => {
+                snapshot["external_repositories"] =
+                    json!(vec![snapshot["external_repositories"][0].clone(); 64]);
+                ExecutionError::Baseline
+            }
+            _ => unreachable!(),
+        };
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET snapshot=?1, allowed_paths=?2",
+                [snapshot.to_string(), json!(scopes).to_string()],
+            )
+            .unwrap();
+        storage
+            .connection()
+            .execute("UPDATE rounds SET status='pending', attempted=0", [])
+            .unwrap();
+        let config = load_config(&f.root.join("config.toml")).unwrap();
+        let project = config.project("proj").unwrap();
+        let round = RoundRef {
+            task_id: task.task_id,
+            project_id: task.project_id,
+            round_number: 1,
+        };
+        let error = prepare_round_execution(
+            &f.layout,
+            project,
+            round,
+            &[&f.layout],
+            &[project],
+            &ServerCommand::opencode(),
+            RuntimeOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error, expected, "{case}");
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+    }
 }

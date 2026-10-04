@@ -22,13 +22,13 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 Message observer service **7.9a** завершён: delivery/assistant error/deadline
 и final candidate с guards до/после HTTP, без resend. Publication service
-**7.11a** готов для одного репозитория: saved verifier, change collection,
-checkpoint и awaiting_review, с удержанием worker fences. Full worker FSM,
-external-repository publication и пять delegated MCP handlers **9.5c**
-остаются открыты.
-
-Multi-repository verifier service **7.11b** сохраняет fingerprints и побочные
-изменения внешних репозиториев; worker aggregation/checkpoint consumer — **7.11c**.
+**7.11a–c** готов: saved verifier, change collection, checkpoint и awaiting_review,
+с удержанием worker fences. Direct tasks поддерживают сохранённые snapshots
+доверенных внешних Git-репозиториев: qualified paths/effects, violations и
+checkpoint для каждого repo. Baseline/scope заморожены, подменённые symlink roots
+отклоняются; исчезнувшие repo видны как `external_repo_missing`. Worktree tasks
+сохраняют ограничение на один checkout. Full worker FSM и пять delegated MCP
+handlers **9.5c** остаются открыты; live OpenCode/provider smoke ещё не выполнен.
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain

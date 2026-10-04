@@ -222,8 +222,8 @@ impl<'a> RoundObserver<'a> {
     /// and change collection. Failed/unsafe tests remain visible for review;
     /// they never imply acceptance. Caller retains the worker fences.
     /// # Errors
-    /// Rejects foreign candidates, close/rebinding, missing baselines and
-    /// unsupported external scopes before verification. A collection failure
+    /// Rejects foreign candidates, close/rebinding and missing baselines before
+    /// verification. A collection failure
     /// leaves the persisted verifier reusable for retry without rerunning it.
     pub fn publish_final(
         &mut self,
@@ -235,25 +235,12 @@ impl<'a> RoundObserver<'a> {
             return Err(ExecutionError::Round);
         }
         self.guard()?;
-        let (_, task) = self.execution.task_and_root(self.layout)?;
-        if task
-            .allowed_paths
-            .iter()
-            .any(|p| std::path::Path::new(p).is_absolute())
-            || task
-                .snapshot
-                .as_ref()
-                .and_then(|s| s.get("external_repositories"))
-                .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
-        {
-            return Err(ExecutionError::Unsupported);
-        }
         self.execution
             .baseline_json()?
             .ok_or(ExecutionError::Baseline)?;
         let verification = self.execution.verify(self.layout, timeout, tail_bytes)?;
         self.guard()?;
-        let changes = self.execution.collect_changes(self.layout)?;
+        let changes = self.execution.collect_repositories(self.layout)?;
         let mut result = crate::completion::collection_json(&changes)?;
         for (key, value) in candidate.result.as_object().ok_or(ExecutionError::Round)? {
             result[key] = value.clone();

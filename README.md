@@ -20,6 +20,13 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 ## Расхождение версий и ближайший шаг
 
+Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
+7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
+1.8, config 2.13/2.14, storage 3.15 и recovery services 7.10a/b. Schema target
+сохраняется v15 до 3.13. Public MCP/CLI и полный worker FSM ещё впереди.
+Подробнее и targeted checks — [план](docs/implementation-plan.md).
+
+
 Источник истины — READ-ONLY Python-репозиторий `/home/denis/Python/agent_bridge`
 на проверенном HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc` (schema **v17**).
 Manifest обновлён до v17 в 0B.1; fixtures 0A сохраняют frozen v15 HEAD

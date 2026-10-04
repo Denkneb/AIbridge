@@ -85,7 +85,9 @@ Targeted checks:
   **7.17a завершён** (B1 admission/activation services).
   **7.17b services завершены**, live-model smoke остаётся в 15.3.
   **7.17c service завершён**.
-  Delivery gate 7.17d ждёт 9.18a; следующие доступные foundations — 1.8/2.13/2.14.; полный worker FSM,
+  Delivery gate 7.17d ждёт 9.18a.
+  **1.8, 2.13, 2.14, 3.15 и recovery services 7.10a/b завершены**;
+  schema target всё ещё v15, schema16/17 extension 3.13 открыт.; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -2766,12 +2768,24 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   доказывает worker-start overwrite и stale claim release. Spawn/session/MCP
   orchestration остаётся в 7.10b/8.20.
 
-- **7.10b. Resume existing session (не завершено).** Explicit needs_user
+- **7.10b. Resume existing session (service завершён).** Explicit needs_user
   recovery проверяет endpoint identity, claim/spawn/release; observation
   delivered round без повторного prompt. Background/review actions сохраняют
   blocker gate. Source: `mcp_server._maybe_spawn` (v17).
   Checks: spawn failure, live/dead server, stale/real blockers/no-resend.
   Depends on 7.10a, 6.2, 6.6. Opens 8.20.
+  `bridge-worker::recovery::recover_needs_user` проверяет saved direct/worktree
+  endpoint+root, background permission/question blockers, затем повторно
+  проверяет current round/session/endpoint/close под admission lock, берёт
+  atomic claim и вызывает injected spawn после release admission fence.
+  Failed spawn делает exact-claim rollback. Нет prompt/session-create/reply/
+  question-answer; повтор/конкуренция не дублируют spawn. Worktree lifecycle
+  gate применяется до HTTP, static project endpoint не используется для worktree.
+  5 local HTTP/subprocess tests: same-round/no-resend, background/explicit
+  blockers, foreign session, failure rollback, dead/unhealthy/wrong-root
+  endpoint, concurrent single spawn и close during GET /path; clippy passed.
+  Полный observer FSM и public task_status adapter остаются в worker/MCP потоках.
+
 
 ### 7.11. Verification integration
 

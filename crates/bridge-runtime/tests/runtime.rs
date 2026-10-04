@@ -1105,3 +1105,309 @@ fn parallel_fenced_rounds_keep_distinct_checkouts_servers_and_task_local_recover
     );
     bridge_runtime::stop_worktree_server(&f.layout, &f.project, second, &[]).unwrap();
 }
+
+fn parked_fixture() -> Fixture {
+    let f = pending_execution_fixture();
+    let context = prepare_fixture(&f, 1).unwrap();
+    context.dispatch(&f.layout).unwrap();
+    f.layout
+        .open()
+        .unwrap()
+        .finish_round(bridge_storage::FinishRoundInput {
+            round: bridge_storage::RoundRef {
+                task_id: f.task,
+                project_id: f.project.id().clone(),
+                round_number: 1,
+            },
+            round_status: bridge_domain::RoundStatus::NeedsUser,
+            task_status: TaskStatus::NeedsUser,
+            response_message_id: None,
+            response: None,
+            error_code: Some("needs_user".into()),
+            result_json: Some(serde_json::json!({"blockers":[]})),
+        })
+        .unwrap();
+    f
+}
+#[test]
+fn needs_user_recovery_claims_saved_endpoint_and_never_resends_or_duplicates_spawn() {
+    use bridge_worker::recovery::{RecoverySpawnOutcome, recover_needs_user};
+    let _network = network_fence();
+    let f = parked_fixture();
+    let before = std::fs::read_to_string(f.runtime.join("fixture-prompts.jsonl")).unwrap();
+    let saved = f
+        .layout
+        .open()
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT outbound_message_id,session_id FROM rounds",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    let result = recover_needs_user(
+        &f.layout,
+        &f.project,
+        f.task,
+        true,
+        &[],
+        Duration::from_millis(100),
+        |round| {
+            assert_eq!(round.round_number, 1);
+            assert!(matches!(
+                bridge_worker::WorkerLock::try_acquire_admission(&f.layout).unwrap(),
+                bridge_worker::WorkerLockOutcome::Acquired(_)
+            ));
+            Ok::<_, ()>(42)
+        },
+    )
+    .unwrap();
+    assert_eq!(result, RecoverySpawnOutcome::Spawned(42));
+    let repeated = recover_needs_user(
+        &f.layout,
+        &f.project,
+        f.task,
+        true,
+        &[],
+        Duration::from_millis(100),
+        |_| -> Result<u32, ()> { panic!("must not spawn twice") },
+    )
+    .unwrap();
+    assert_eq!(repeated, RecoverySpawnOutcome::Unchanged);
+    let after = f
+        .layout
+        .open()
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT outbound_message_id,session_id FROM rounds",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after, saved);
+    assert_eq!(
+        std::fs::read_to_string(f.runtime.join("fixture-prompts.jsonl")).unwrap(),
+        before
+    );
+    let requests = std::fs::read_to_string(f.runtime.join("fixture-requests.log")).unwrap();
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|s| s.starts_with("POST /session/"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests.lines().filter(|s| *s == "POST /session").count(),
+        1
+    );
+    assert!(!requests.contains("POST /permission"));
+}
+#[test]
+fn needs_user_recovery_background_blockers_and_explicit_spawn_failure_preserve_parked_round() {
+    use bridge_worker::recovery::{RecoverySpawnOutcome, recover_needs_user};
+    let _network = network_fence();
+    let f = parked_fixture();
+    for mode in ["permission", "question"] {
+        std::fs::write(f.runtime.join("fixture-mode"), mode).unwrap();
+        assert_eq!(
+            recover_needs_user(
+                &f.layout,
+                &f.project,
+                f.task,
+                false,
+                &[],
+                Duration::from_millis(100),
+                |_| Ok::<_, ()>(())
+            )
+            .unwrap(),
+            RecoverySpawnOutcome::Blocked
+        );
+        // Explicit recovery may re-observe stale blockers; failed spawn rolls back.
+        assert_eq!(
+            recover_needs_user(
+                &f.layout,
+                &f.project,
+                f.task,
+                true,
+                &[],
+                Duration::from_millis(100),
+                |_| Err::<(), _>("private spawn diagnostic")
+            )
+            .unwrap(),
+            RecoverySpawnOutcome::SpawnFailed
+        );
+        assert_eq!(
+            f.layout
+                .open()
+                .unwrap()
+                .get_task(f.task)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::NeedsUser
+        );
+    }
+    std::fs::write(f.runtime.join("fixture-mode"), "foreign-question").unwrap();
+    assert_eq!(
+        recover_needs_user(
+            &f.layout,
+            &f.project,
+            f.task,
+            false,
+            &[],
+            Duration::from_millis(100),
+            |_| Ok::<_, ()>(())
+        )
+        .unwrap(),
+        RecoverySpawnOutcome::Spawned(())
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.runtime.join("fixture-prompts.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+#[test]
+fn needs_user_recovery_unhealthy_wrong_root_and_dead_server_never_claim_or_spawn() {
+    use bridge_worker::recovery::{RecoverySpawnOutcome, recover_needs_user};
+    let _network = network_fence();
+    let f = parked_fixture();
+    for mode in ["unhealthy", "bad-path"] {
+        std::fs::write(f.runtime.join("fixture-mode"), mode).unwrap();
+        assert_eq!(
+            recover_needs_user(
+                &f.layout,
+                &f.project,
+                f.task,
+                true,
+                &[],
+                Duration::from_millis(100),
+                |_| -> Result<(), ()> { panic!("must not spawn") }
+            )
+            .unwrap(),
+            RecoverySpawnOutcome::Unavailable
+        );
+        assert_eq!(
+            f.layout
+                .open()
+                .unwrap()
+                .get_task(f.task)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::NeedsUser
+        );
+    }
+    f.stop().unwrap();
+    assert_eq!(
+        recover_needs_user(
+            &f.layout,
+            &f.project,
+            f.task,
+            true,
+            &[],
+            Duration::from_millis(100),
+            |_| Ok::<_, ()>(())
+        )
+        .unwrap(),
+        RecoverySpawnOutcome::Unavailable
+    );
+}
+#[test]
+fn needs_user_recovery_close_during_identity_probe_is_revalidated_before_claim() {
+    use bridge_worker::recovery::{RecoverySpawnOutcome, recover_needs_user};
+    let _network = network_fence();
+    let f = parked_fixture();
+    std::fs::write(f.runtime.join("pause-path"), "pause").unwrap();
+    std::thread::scope(|scope| {
+        let recovery = scope.spawn(|| {
+            recover_needs_user(
+                &f.layout,
+                &f.project,
+                f.task,
+                true,
+                &[],
+                Duration::from_secs(1),
+                |_| -> Result<(), ()> { panic!("close must prevent spawn") },
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !f.runtime.join("path-seen").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(f.runtime.join("path-seen").exists());
+        f.layout
+            .open()
+            .unwrap()
+            .request_task_close(f.task, "user close")
+            .unwrap();
+        std::fs::write(f.runtime.join("resume-path"), "resume").unwrap();
+        assert_eq!(
+            recovery.join().unwrap().unwrap(),
+            RecoverySpawnOutcome::Unchanged
+        );
+    });
+    let claims: i64 = f
+        .layout
+        .open()
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind='needs_user_recovery'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(claims, 0);
+}
+
+#[test]
+fn concurrent_needs_user_recovery_spawns_once_after_http_probes() {
+    use bridge_worker::recovery::{RecoverySpawnOutcome, recover_needs_user};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _network = network_fence();
+    let f = parked_fixture();
+    let barrier = std::sync::Barrier::new(2);
+    let count = AtomicUsize::new(0);
+    let outcomes = std::thread::scope(|scope| {
+        let run = || {
+            barrier.wait();
+            recover_needs_user(
+                &f.layout,
+                &f.project,
+                f.task,
+                true,
+                &[],
+                Duration::from_millis(500),
+                |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap()
+        };
+        let a = scope.spawn(run);
+        let b = scope.spawn(run);
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|o| matches!(o, RecoverySpawnOutcome::Spawned(())))
+            .count(),
+        1
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.runtime.join("fixture-prompts.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}

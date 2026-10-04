@@ -64,10 +64,28 @@ fn main() {
             .split('?')
             .next()
             .unwrap_or("");
+        let mode = std::fs::read_to_string(runtime.join("fixture-mode"))
+            .unwrap_or_else(|_| mode.to_owned());
         let mut doc: serde_json::Value =
             serde_json::from_str(include_str!("openapi.json")).unwrap();
         if mode == "no-model" {
             doc["paths"]["/session/{sessionID}/prompt_async"]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"].as_object_mut().unwrap().remove("model");
+        }
+        {
+            use std::fs::OpenOptions;
+            let mut log = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(runtime.join("fixture-requests.log"))
+                .unwrap();
+            writeln!(log, "{method} {path}").unwrap();
+        }
+        if path == "/path" && runtime.join("pause-path").exists() {
+            std::fs::write(runtime.join("path-seen"), "seen").unwrap();
+            let limit = std::time::Instant::now() + Duration::from_secs(2);
+            while !runtime.join("resume-path").exists() && std::time::Instant::now() < limit {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         let body=match path {
    "/global/health"=>serde_json::json!({"healthy":mode!="unhealthy","version":"fixture"}),
@@ -75,6 +93,8 @@ fn main() {
    "/doc"=>if mode=="bad-doc"{serde_json::json!({})}else{doc},
    "/session" if method=="POST"=>serde_json::json!({"id":format!("ses_fixture_{}",data["title"].as_str().unwrap_or("").split_whitespace().last().unwrap_or("1")),"title":data["title"],"directory":root}),
    "/session"=>serde_json::json!([]),
+   "/permission"=>if mode=="permission"{serde_json::json!([{"id":"per_fixture","sessionID":"ses_fixture_1","permission":"bash","patterns":["pwd"]}])}else{serde_json::json!([])},
+   "/question"=>if mode=="question"{serde_json::json!([{"id":"que_fixture","sessionID":"ses_fixture_1","questions":[]}])}else if mode=="foreign-question"{serde_json::json!([{"id":"que_foreign","sessionID":"ses_other","questions":[]}])}else{serde_json::json!([])},
    _=>serde_json::json!({}),
   }.to_string();
         let response = format!(

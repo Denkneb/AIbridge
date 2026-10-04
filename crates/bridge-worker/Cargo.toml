@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+bridge-command-policy.workspace = true
 bridge-config.workspace = true
 bridge-domain.workspace = true
 bridge-git.workspace = true

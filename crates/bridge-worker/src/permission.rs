@@ -1,4 +1,10 @@
-//! Permission blocker detection for the current worker round (task 7.6).
+//! Current-round permission blockers and optional once-only approval (7.6/7.8a).
+//!
+//! The historical `handle_permission_blocker` contract below remains no-reply.
+//! `handle_permission_blocker_with_auto_approval` adds configured decisions,
+//! replies only `once`, keeps failed replies as blockers, and binds its success
+//! cache to one round/session. It revalidates state around HTTP and preserves
+//! needs_user idempotence. Question blockers and observer/FSM wiring are separate.
 //!
 //! This module is the narrow, reusable production step that turns the pending
 //! OpenCode permissions of one round into a persisted `needs_user` blocker. It
@@ -115,12 +121,13 @@
 //! `observing` round and each persist a `needs_user` transition. This module
 //! does not acquire the lock itself.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
 use bridge_domain::{RoundStatus, TaskId, TaskStatus};
-use bridge_opencode::{OpenCodeClient, Permission};
+use bridge_opencode::{OpenCodeClient, Permission, PermissionReply};
 use bridge_storage::{
     FinishRoundInput, RoundRef, RoundRow, RustStateLayout, StorageConnection, Task,
 };
@@ -411,6 +418,8 @@ impl fmt::Display for UserAction {
 pub struct PendingPermission {
     permission: Option<String>,
     patterns: Vec<String>,
+    reason: &'static str,
+    detail: Option<String>,
 }
 
 impl PendingPermission {
@@ -419,6 +428,8 @@ impl PendingPermission {
         Self {
             permission: permission.permission().map(str::to_owned),
             patterns: permission.patterns().to_vec(),
+            reason: PERMISSION_BLOCKER_REASON,
+            detail: None,
         }
     }
 
@@ -434,14 +445,25 @@ impl PendingPermission {
         &self.patterns
     }
 
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+
     /// Renders the reference `worker.py::_permission_blocker` JSON entry.
     fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "permission",
-            "permission": &self.permission,
-            "patterns": &self.patterns,
-            "reason": PERMISSION_BLOCKER_REASON,
-        })
+        let mut value = serde_json::json!({
+            "type": "permission", "permission": &self.permission,
+            "patterns": &self.patterns, "reason": self.reason,
+        });
+        if let Some(detail) = &self.detail {
+            value["detail"] = serde_json::Value::String(detail.clone());
+        }
+        value
     }
 }
 
@@ -611,6 +633,73 @@ pub fn handle_permission_blocker(
     layout: &RustStateLayout,
     round: RoundRef,
 ) -> Result<PermissionBlockerOutcome, PermissionBlockerError> {
+    handle_permission_blocker_inner(client, layout, round, None)
+}
+
+/// Successful replies are bound to exactly one round/session. Keep this buffer
+/// for the observer lifetime; a new worker may get newly issued requests.
+#[derive(Default)]
+pub struct PermissionReplies {
+    bound: Option<(RoundRef, String)>,
+    replied: HashSet<String>,
+    approvals: Vec<serde_json::Value>,
+}
+impl PermissionReplies {
+    #[must_use]
+    pub fn approvals(&self) -> &[serde_json::Value] {
+        &self.approvals
+    }
+    fn bind(&mut self, round: &RoundRef, session: &str) -> bool {
+        match &self.bound {
+            Some((saved, id)) => saved == round && id == session,
+            None => {
+                self.bound = Some((round.clone(), session.to_owned()));
+                true
+            }
+        }
+    }
+}
+impl fmt::Debug for PermissionReplies {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionReplies")
+            .field("approved", &self.replied.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Replies once to proven configured requests of the current session and
+/// persists all remaining blockers. Caller holds the same lifecycle fence as
+/// for `handle_permission_blocker`. The saved direct-round guard is retained;
+/// worktree observer/FSM wiring remains a separate consumer.
+/// # Errors
+/// Ownership, project/workspace/round/session changes, close requests, malformed
+/// GET and storage failures fail closed. Failed POST remains a reply_failed blocker.
+pub fn handle_permission_blocker_with_auto_approval(
+    client: &OpenCodeClient,
+    layout: &RustStateLayout,
+    round: RoundRef,
+    project: &bridge_config::ProjectEntry,
+    replies: &mut PermissionReplies,
+) -> Result<PermissionBlockerOutcome, PermissionBlockerError> {
+    if project.id() != &round.project_id {
+        return Err(PermissionBlockerError::new(
+            PermissionBlockerErrorKind::TaskMismatch,
+        ));
+    }
+    if std::fs::canonicalize(project.workspace()).ok().as_deref() != Some(client.workspace()) {
+        return Err(PermissionBlockerError::new(
+            PermissionBlockerErrorKind::WorkspaceMismatch,
+        ));
+    }
+    handle_permission_blocker_inner(client, layout, round, Some((project, replies)))
+}
+
+fn handle_permission_blocker_inner(
+    client: &OpenCodeClient,
+    layout: &RustStateLayout,
+    round: RoundRef,
+    mut auto: Option<(&bridge_config::ProjectEntry, &mut PermissionReplies)>,
+) -> Result<PermissionBlockerOutcome, PermissionBlockerError> {
     if round.round_number == 0 {
         return Err(PermissionBlockerError::new(
             PermissionBlockerErrorKind::InvalidInput,
@@ -626,7 +715,17 @@ pub fn handle_permission_blocker(
 
     // Pre-flight validation, before any HTTP request or write. A pending
     // cooperative close fails closed here without touching the network.
-    inspect_round_state(&storage, &round, client.workspace())?;
+    let before = inspect_round_state(&storage, &round, client.workspace())?;
+    let approvals_start = if let Some((_, replies)) = auto.as_mut() {
+        if !replies.bind(&round, &before.session_id) {
+            return Err(PermissionBlockerError::new(
+                PermissionBlockerErrorKind::InvalidInput,
+            ));
+        }
+        replies.approvals.len()
+    } else {
+        0
+    };
 
     let listed = client.list_permissions().map_err(|error| {
         PermissionBlockerError::with_source(PermissionBlockerErrorKind::Permissions, error)
@@ -642,11 +741,63 @@ pub fn handle_permission_blocker(
     let session_id = state.session_id;
     let session_title = round_session_title(round.task_id, round.round_number);
 
-    let pending: Vec<PendingPermission> = listed
+    if auto.is_some() && before.session_id != session_id {
+        return Err(PermissionBlockerError::new(
+            PermissionBlockerErrorKind::StaleRound,
+        ));
+    }
+    let mut pending = Vec::new();
+    for permission in listed
         .iter()
         .filter(|permission| permission.belongs_to_session(&session_id))
-        .map(PendingPermission::from_permission)
-        .collect();
+    {
+        let mut blocker = PendingPermission::from_permission(permission);
+        if let Some((project, replies)) = auto.as_mut() {
+            let current = inspect_round_state(&storage, &round, client.workspace())?;
+            if current.session_id != session_id {
+                return Err(PermissionBlockerError::new(
+                    PermissionBlockerErrorKind::StaleRound,
+                ));
+            }
+            let id = permission.id().unwrap_or("");
+            if replies.replied.contains(id) {
+                continue;
+            }
+            let raw = serde_json::json!({"id":permission.id(),"permission":permission.permission(),"patterns":permission.patterns(),"metadata":permission.metadata()});
+            let decision =
+                crate::auto_approval::permission_decision(project, layout.state_root(), &raw);
+            blocker.reason = decision.reason();
+            blocker.detail = decision.detail().map(str::to_owned);
+            if decision.approved() {
+                let current = inspect_round_state(&storage, &round, client.workspace())?;
+                if current.session_id != session_id {
+                    return Err(PermissionBlockerError::new(
+                        PermissionBlockerErrorKind::StaleRound,
+                    ));
+                }
+                if client
+                    .reply_permission(id, PermissionReply::Once, None)
+                    .is_ok()
+                {
+                    replies.replied.insert(id.to_owned());
+                    replies
+                        .approvals
+                        .push(serde_json::json!({"id":id,"permission":permission.permission()}));
+                    continue;
+                }
+                blocker.reason = "reply_failed";
+                blocker.detail = None;
+            }
+        }
+        pending.push(blocker);
+    }
+    // POST may synchronously change the task or session. Revalidate every outcome.
+    let state = inspect_round_state(&storage, &round, client.workspace())?;
+    if auto.is_some() && state.session_id != session_id {
+        return Err(PermissionBlockerError::new(
+            PermissionBlockerErrorKind::StaleRound,
+        ));
+    }
 
     if pending.is_empty() {
         return Ok(PermissionBlockerOutcome::NoBlocker);
@@ -668,6 +819,12 @@ pub fn handle_permission_blocker(
     }
 
     let blockers: Vec<serde_json::Value> = pending.iter().map(PendingPermission::to_json).collect();
+    let mut result = serde_json::json!({"blockers":blockers});
+    if let Some((_, replies)) = auto.as_ref()
+        && replies.approvals.len() > approvals_start
+    {
+        result["auto_approved"] = serde_json::json!(&replies.approvals[approvals_start..]);
+    }
     let outcome = storage
         .finish_round(FinishRoundInput {
             round: round.clone(),
@@ -676,7 +833,7 @@ pub fn handle_permission_blocker(
             response_message_id: None,
             response: None,
             error_code: Some(NEEDS_USER_ERROR_CODE.to_owned()),
-            result_json: Some(serde_json::json!({ "blockers": blockers })),
+            result_json: Some(result),
         })
         .map_err(|error| {
             PermissionBlockerError::with_source(PermissionBlockerErrorKind::Storage, error)
@@ -892,6 +1049,8 @@ mod tests {
         let permission = PendingPermission {
             permission: Some("bash".to_owned()),
             patterns: vec!["rm -rf /".to_owned()],
+            reason: PERMISSION_BLOCKER_REASON,
+            detail: None,
         };
         let rendered = format!("{permission} {permission:?}");
         assert!(!rendered.contains("bash"));

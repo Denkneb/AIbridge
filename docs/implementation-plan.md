@@ -2781,12 +2781,27 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.8. Auto-approval integration
 
-- **7.8a. Worker state-directory permissions (не завершено).**
+- **7.8a. Worker state-directory permissions (service завершён).**
   `_external_permission_roots` добавляет opt-in state_root только к permission
   checks, не к external Git/linked roots. Literal/glob/symlink/traversal
   confinement сохраняется; default false — прежнее поведение. Source:
   `worker.py:868-916` (v17). Checks: `tests/test_worker.py` state approval
   cases. Depends on 2.13, 6.7, 0B.2.
+  Реализованы pure `permission_decision` и
+  `handle_permission_blocker_with_auto_approval`: opt-in state_root только
+  permission roots, raw malformed decisions fail closed, bash использует
+  существующий command-policy. Literal/glob confinement сверяет lexical и
+  resolved roots, каждый direct glob child (включая symlink/dangling/loop),
+  traversal/unsafe pattern/root rejects. Успешные ответы всегда Once и
+  дедуплицируются в одном round/session buffer; foreign sessions игнорируются.
+  Неодобренные и failed replies сохраняют needs_user/reason; mixed success
+  evidence записывается как auto_approved. HTTP/storage/close/session checks
+  не дают stale outcomes; successful cache переживает storage rollback.
+  Проверены все 42 frozen worker delta cases, ordinary/bash policy и 6 новых
+  local HTTP scenarios (duplicate/foreign/default/mixed/failure/rollback/
+  close/session races). Default historical no-reply entry point сохранён.
+  Это service для saved direct round; worktree observer/full worker FSM и
+  production CLI/MCP wiring остаются отдельными consumers.
 - **7.8b. Controller permissions (не завершено).** Generated OpenCode config:
   external_directory `*→ask`, `<state_root>/*→allow` при opt-in; edit/task deny
   и bash ask сохраняются. Source: `opencode_launcher.controller_agent_permission`

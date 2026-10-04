@@ -88,6 +88,7 @@
 //! [`std::error::Error::source`].
 
 pub mod admission;
+pub mod auto_approval;
 pub mod checkpoint;
 pub mod dispatch;
 pub mod findings;

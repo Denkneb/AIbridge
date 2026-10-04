@@ -90,6 +90,7 @@ struct RecordedRequest {
     method: String,
     target: String,
     authorization: Option<String>,
+    body: Vec<u8>,
 }
 
 impl RecordedRequest {
@@ -221,6 +222,7 @@ fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {
         method,
         target,
         authorization,
+        body: data[head_end + 4..].to_vec(),
     })
 }
 
@@ -1106,4 +1108,453 @@ fn zero_round_is_rejected_before_http() {
         .expect_err("round zero must be rejected");
     assert_eq!(error.kind(), PermissionBlockerErrorKind::InvalidInput);
     assert_eq!(server.request_count(), 0);
+}
+
+fn approval_project(
+    dir: &TempDir,
+    workspace: &Path,
+    port: u16,
+    state: &Path,
+    extra: &str,
+) -> bridge_config::ProjectEntry {
+    let config = dir.path().join("auto-project.toml");
+    std::fs::write(&config,format!("[projects.proj]\nworkspace={}\nopencode_url=\"http://127.0.0.1:{port}\"\npassword_file=\"unused\"\nmax_rounds=3\n{extra}\n",serde_json::json!(workspace))).unwrap();
+    bridge_config::load_config_with_state_root(&config, state)
+        .unwrap()
+        .project("proj")
+        .unwrap()
+        .clone()
+}
+use bridge_worker::permission::{PermissionReplies, handle_permission_blocker_with_auto_approval};
+
+#[test]
+fn auto_approval_replies_once_only_to_current_session_and_keeps_observing_when_clear() {
+    let dir = TempDir::new("auto-once");
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(&dir, "proj");
+    let task = task_id();
+    let project_id = project("proj");
+    seed_observing(
+        &mut storage,
+        task,
+        &project_id,
+        workspace.to_str().unwrap(),
+        "current",
+    );
+    let pending = serde_json::json!([
+        permission_json("approved", "current", "read", &[]),
+        permission_json("approved", "current", "read", &[]),
+        permission_json("foreign", "other", "read", &[]),
+        permission_json(
+            "state",
+            "current",
+            "external_directory",
+            &[layout.project_dir().to_str().unwrap()]
+        ),
+    ]);
+    let (port, server) = spawn_server(move |request, _| {
+        if request.method == "GET" {
+            ok_json(&pending)
+        } else {
+            ok_json(&serde_json::json!({}))
+        }
+    });
+    let client = build_client(port, &workspace);
+    let config = approval_project(
+        &dir,
+        &workspace,
+        port,
+        layout.state_root(),
+        "auto_approve_permissions=[\"read\"]\nauto_approve_state_directory=true",
+    );
+    let roots = config.auto_approve_external_directories().to_vec();
+    let mut replies = PermissionReplies::default();
+    for _ in 0..2 {
+        assert!(
+            !handle_permission_blocker_with_auto_approval(
+                &client,
+                &layout,
+                round_ref(task, &project_id, 1),
+                &config,
+                &mut replies
+            )
+            .unwrap()
+            .is_blocked()
+        );
+    }
+    let posts: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 2);
+    for request in &posts {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
+            serde_json::json!({"reply":"once"})
+        );
+        assert!(!request.path().contains("foreign"));
+    }
+    assert_eq!(replies.approvals().len(), 2);
+    assert!(!format!("{replies:?}").contains("current"));
+    assert_eq!(round_status(&storage, task, 1), "observing");
+    assert_eq!(task_status(&storage, task), TaskStatus::Implementing);
+    assert_eq!(event_count(&storage, task, "needs_user"), 0);
+    assert_eq!(config.auto_approve_external_directories(), roots);
+}
+
+#[test]
+fn auto_approval_defaults_and_denied_bash_preserve_blockers_and_success_evidence() {
+    for configured in [false, true] {
+        let dir = TempDir::new("auto-mixed");
+        let workspace = dir.mkdir("ws");
+        let (layout, mut storage) = open_storage(&dir, "proj");
+        let task = task_id();
+        let project_id = project("proj");
+        seed_observing(
+            &mut storage,
+            task,
+            &project_id,
+            workspace.to_str().unwrap(),
+            "current",
+        );
+        let pending = serde_json::json!([
+            permission_json("read", "current", "read", &[]),
+            permission_json("git", "current", "bash", &["git push"])
+        ]);
+        let (port, server) = spawn_server(move |request, _| {
+            if request.method == "GET" {
+                ok_json(&pending)
+            } else {
+                ok_json(&serde_json::json!({}))
+            }
+        });
+        let client = build_client(port, &workspace);
+        let config = approval_project(
+            &dir,
+            &workspace,
+            port,
+            layout.state_root(),
+            if configured {
+                "auto_approve_permissions=[\"read\",\"bash\"]"
+            } else {
+                ""
+            },
+        );
+        let mut replies = PermissionReplies::default();
+        let outcome = handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies,
+        )
+        .unwrap();
+        assert!(outcome.is_blocked());
+        let blocked = outcome.blocked().unwrap();
+        assert_eq!(blocked.permissions().len(), if configured { 1 } else { 2 });
+        assert_eq!(
+            blocked.permissions().last().unwrap().reason(),
+            if configured {
+                "git_write_blocked"
+            } else {
+                "not_configured"
+            }
+        );
+        let result: serde_json::Value =
+            serde_json::from_str(&round_result_json(&storage, task, 1).unwrap()).unwrap();
+        if configured {
+            assert_eq!(
+                result["auto_approved"],
+                serde_json::json!([{"id":"read","permission":"read"}])
+            );
+        } else {
+            assert!(result.get("auto_approved").is_none());
+        }
+        assert_eq!(
+            server
+                .requests()
+                .iter()
+                .filter(|request| request.method == "POST")
+                .count(),
+            usize::from(configured)
+        );
+        assert_eq!(task_status(&storage, task), TaskStatus::NeedsUser);
+        assert!(!format!("{outcome:?}").contains("git push"));
+    }
+}
+
+#[test]
+fn failed_auto_reply_is_redacted_blocker_and_never_marked_as_success() {
+    let dir = TempDir::new("auto-failure");
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(&dir, "proj");
+    let task = task_id();
+    let project_id = project("proj");
+    seed_observing(
+        &mut storage,
+        task,
+        &project_id,
+        workspace.to_str().unwrap(),
+        "current",
+    );
+    let pending = serde_json::json!([permission_json("request", "current", "read", &[])]);
+    let (port, server) = spawn_server(move |request, _| {
+        if request.method == "GET" {
+            ok_json(&pending)
+        } else {
+            status(500, b"secret-error-body")
+        }
+    });
+    let client = build_client(port, &workspace);
+    let config = approval_project(
+        &dir,
+        &workspace,
+        port,
+        layout.state_root(),
+        "auto_approve_permissions=[\"read\"]",
+    );
+    let mut replies = PermissionReplies::default();
+    for _ in 0..2 {
+        let outcome = handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.blocked().unwrap().permissions()[0].reason(),
+            "reply_failed"
+        );
+        assert!(replies.approvals().is_empty());
+        assert!(
+            !round_result_json(&storage, task, 1)
+                .unwrap()
+                .contains("secret-error-body")
+        );
+    }
+    assert_eq!(event_count(&storage, task, "needs_user"), 1);
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn close_during_get_or_first_reply_stops_further_auto_replies() {
+    for close_method in ["GET", "POST"] {
+        let dir = TempDir::new("auto-close");
+        let workspace = dir.mkdir("ws");
+        let (layout, mut storage) = open_storage(&dir, "proj");
+        let task = task_id();
+        let project_id = project("proj");
+        seed_observing(
+            &mut storage,
+            task,
+            &project_id,
+            workspace.to_str().unwrap(),
+            "current",
+        );
+        let pending = serde_json::json!([
+            permission_json("first", "current", "read", &[]),
+            permission_json("second", "current", "read", &[])
+        ]);
+        let database = layout.database();
+        let (port, server) = spawn_server(move |request, _| {
+            if request.method == close_method {
+                connect(&database)
+                    .unwrap()
+                    .request_task_close(task, "user-close")
+                    .unwrap();
+            }
+            if request.method == "GET" {
+                ok_json(&pending)
+            } else {
+                ok_json(&serde_json::json!({}))
+            }
+        });
+        let client = build_client(port, &workspace);
+        let config = approval_project(
+            &dir,
+            &workspace,
+            port,
+            layout.state_root(),
+            "auto_approve_permissions=[\"read\"]",
+        );
+        let mut replies = PermissionReplies::default();
+        let error = handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), PermissionBlockerErrorKind::CloseRequested);
+        assert_eq!(
+            server
+                .requests()
+                .iter()
+                .filter(|request| request.method == "POST")
+                .count(),
+            usize::from(close_method == "POST")
+        );
+        assert_eq!(event_count(&storage, task, "needs_user"), 0);
+    }
+}
+
+#[test]
+fn successful_reply_survives_storage_rollback_without_a_second_post() {
+    let dir = TempDir::new("auto-rollback");
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(&dir, "proj");
+    let task = task_id();
+    let project_id = project("proj");
+    seed_observing(
+        &mut storage,
+        task,
+        &project_id,
+        workspace.to_str().unwrap(),
+        "current",
+    );
+    storage.connection().execute_batch("CREATE TRIGGER reject_auto_blocker BEFORE INSERT ON events WHEN NEW.kind='needs_user' BEGIN SELECT RAISE(ABORT,'secret-trigger'); END").unwrap();
+    let pending = serde_json::json!([
+        permission_json("read", "current", "read", &[]),
+        permission_json("git", "current", "bash", &["git push"])
+    ]);
+    let (port, server) = spawn_server(move |request, _| {
+        if request.method == "GET" {
+            ok_json(&pending)
+        } else {
+            ok_json(&serde_json::json!({}))
+        }
+    });
+    let client = build_client(port, &workspace);
+    let config = approval_project(
+        &dir,
+        &workspace,
+        port,
+        layout.state_root(),
+        "auto_approve_permissions=[\"read\",\"bash\"]",
+    );
+    let mut replies = PermissionReplies::default();
+    let error = handle_permission_blocker_with_auto_approval(
+        &client,
+        &layout,
+        round_ref(task, &project_id, 1),
+        &config,
+        &mut replies,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), PermissionBlockerErrorKind::Storage);
+    assert!(!format!("{error} {error:?}").contains("secret-trigger"));
+    assert_eq!(round_status(&storage, task, 1), "observing");
+    assert_eq!(replies.approvals().len(), 1);
+    storage
+        .connection()
+        .execute_batch("DROP TRIGGER reject_auto_blocker")
+        .unwrap();
+    assert!(
+        handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies
+        )
+        .unwrap()
+        .is_blocked()
+    );
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(event_count(&storage, task, "needs_user"), 1);
+}
+
+#[test]
+fn reply_buffer_cannot_cross_sessions_or_approve_a_changed_session_after_get() {
+    for during_get in [false, true] {
+        let dir = TempDir::new("auto-session");
+        let workspace = dir.mkdir("ws");
+        let (layout, mut storage) = open_storage(&dir, "proj");
+        let task = task_id();
+        let project_id = project("proj");
+        seed_observing(
+            &mut storage,
+            task,
+            &project_id,
+            workspace.to_str().unwrap(),
+            "current",
+        );
+        let database = layout.database();
+        let pending = serde_json::json!([permission_json("read", "current", "read", &[])]);
+        let (port, server) = spawn_server(move |request, _| {
+            if during_get && request.method == "GET" {
+                connect(&database)
+                    .unwrap()
+                    .connection()
+                    .execute("UPDATE rounds SET session_id='new-session'", [])
+                    .unwrap();
+            }
+            if request.method == "GET" {
+                ok_json(&pending)
+            } else {
+                ok_json(&serde_json::json!({}))
+            }
+        });
+        let client = build_client(port, &workspace);
+        let config = approval_project(
+            &dir,
+            &workspace,
+            port,
+            layout.state_root(),
+            "auto_approve_permissions=[\"read\"]",
+        );
+        let mut replies = PermissionReplies::default();
+        let first = handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies,
+        );
+        if during_get {
+            assert_eq!(
+                first.unwrap_err().kind(),
+                PermissionBlockerErrorKind::StaleRound
+            );
+            assert_eq!(server.request_count(), 1);
+        } else {
+            assert!(!first.unwrap().is_blocked());
+            storage
+                .connection()
+                .execute("UPDATE rounds SET session_id='new-session'", [])
+                .unwrap();
+            let count = server.request_count();
+            assert_eq!(
+                handle_permission_blocker_with_auto_approval(
+                    &client,
+                    &layout,
+                    round_ref(task, &project_id, 1),
+                    &config,
+                    &mut replies
+                )
+                .unwrap_err()
+                .kind(),
+                PermissionBlockerErrorKind::InvalidInput
+            );
+            assert_eq!(server.request_count(), count);
+        }
+    }
 }

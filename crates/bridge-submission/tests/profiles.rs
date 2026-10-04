@@ -442,3 +442,30 @@ fn unsupported_worktree_requests_refuse_before_any_database_writes() {
     ));
     assert_eq!(count(&storage, "tasks"), 0);
 }
+
+#[test]
+fn submit_pins_delivery_policy_and_replay_survives_config_switch() {
+    use bridge_domain::DeliveryMode;
+    for (initial, changed, expected) in [
+        ("on_accept", "manual", DeliveryMode::OnAccept),
+        ("manual", "on_accept", DeliveryMode::Manual),
+    ] {
+        let f = Fixture::new();
+        worktree_project(&f);
+        let project = f.project(&format!(
+            "execution_mode=\"worktree\"\ndelivery_mode=\"{initial}\"\n"
+        ));
+        let mut storage = f.layout.open().unwrap();
+        let first = submit_task_with_profile(&mut storage, &project, f.input(None)).unwrap();
+        assert_eq!(first.task().delivery_mode, expected);
+        let changed = f.project(&format!(
+            "execution_mode=\"worktree\"\ndelivery_mode=\"{changed}\"\n"
+        ));
+        let replay = submit_task_with_profile(&mut storage, &changed, f.input(None)).unwrap();
+        assert!(replay.is_replayed());
+        assert_eq!(replay.task().delivery_mode, expected);
+        assert_eq!(count(&storage, "tasks"), 1);
+        assert_eq!(count(&storage, "rounds"), 1);
+        assert_eq!(count(&storage, "worktrees"), 1);
+    }
+}

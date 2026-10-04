@@ -99,6 +99,7 @@ pub fn submit_task_with_profile(
         project.allow_parallel_writers(),
         project.execution_mode(),
     )
+    .and_then(|settings| settings.with_delivery_mode(project.delivery_mode()))
     .map_err(|_| SubmissionError::InvalidSettings)?;
     if project.execution_mode() == bridge_domain::ExecutionMode::Worktree {
         let reject = SubmissionError::WorktreeUnsupported;

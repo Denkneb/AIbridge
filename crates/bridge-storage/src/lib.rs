@@ -1471,6 +1471,10 @@ impl StorageConnection {
         {
             return Err(CreateTaskError::InvalidInput);
         }
+        let schema = query_user_version(&transaction).map_err(CreateTaskError::Database)?;
+        if schema < 16 && settings.delivery_mode() != bridge_domain::DeliveryMode::Manual {
+            return Err(CreateTaskError::InvalidInput);
+        }
         let active: i64 = transaction.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status IN ('waiting_dependencies','implementing','awaiting_review','revising','needs_user','failed','delivery_unknown')",
             [&prepared.project_id], |row| row.get(0),
@@ -1522,6 +1526,17 @@ impl StorageConnection {
             )
             .map_err(classify_task_insert_error)?;
 
+        if schema == 16 {
+            transaction
+                .execute(
+                    "UPDATE tasks SET delivery_mode=?1 WHERE task_id=?2",
+                    params![
+                        settings.delivery_mode().as_str(),
+                        prepared.task_id.to_string()
+                    ],
+                )
+                .map_err(CreateTaskError::Database)?;
+        }
         if v15 {
             transaction
                 .execute(
@@ -3366,6 +3381,8 @@ pub struct Task {
     pub close_requested_at: Option<String>,
     /// Reason for a cooperative close (`close_reason`).
     pub close_reason: Option<String>,
+    /// Effective saved delivery policy; missing/corrupt values default to manual.
+    pub delivery_mode: bridge_domain::DeliveryMode,
     /// Normalized optional budget. Corrupt non-NULL data fails row mapping.
     pub budget: Option<TaskBudget>,
 }
@@ -3416,6 +3433,13 @@ impl Task {
             Err(error) => return Err(TaskRowError::Database(error)),
         };
 
+        let delivery_mode = match row.get_ref("delivery_mode") {
+            Ok(rusqlite::types::ValueRef::Text(b"on_accept")) => {
+                bridge_domain::DeliveryMode::OnAccept
+            }
+            _ => bridge_domain::DeliveryMode::Manual,
+        };
+
         Ok(Self {
             task_id,
             project_id,
@@ -3432,6 +3456,7 @@ impl Task {
             revision_count,
             close_requested_at,
             close_reason,
+            delivery_mode,
             budget,
         })
     }
@@ -3846,6 +3871,7 @@ fn check_verifier_consistency(
 #[cfg(test)]
 mod tests {
     mod budgets;
+    mod delivery_policy;
     mod dependencies;
     mod recovery;
     mod schema16;

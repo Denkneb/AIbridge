@@ -1,6 +1,6 @@
 //! Atomic admission and fail-closed writer scope identity.
 use super::{StorageConnection, Task, TaskRowError, utc_now_rfc3339_millis};
-use bridge_domain::{ExecutionMode, ProjectId, TaskId, TaskStatus};
+use bridge_domain::{DeliveryMode, ExecutionMode, ProjectId, TaskId, TaskStatus};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{
     error::Error,
@@ -15,6 +15,7 @@ pub struct AdmissionSettings {
     max_active_tasks: u64,
     parallel: bool,
     mode: ExecutionMode,
+    delivery_mode: DeliveryMode,
 }
 impl Default for AdmissionSettings {
     fn default() -> Self {
@@ -22,6 +23,7 @@ impl Default for AdmissionSettings {
             max_active_tasks: 1,
             parallel: false,
             mode: ExecutionMode::Direct,
+            delivery_mode: DeliveryMode::Manual,
         }
     }
 }
@@ -41,7 +43,22 @@ impl AdmissionSettings {
             max_active_tasks,
             parallel: allow_parallel_writers,
             mode,
+            delivery_mode: DeliveryMode::Manual,
         })
+    }
+    /// Pins submit-time delivery policy; automatic delivery requires worktrees.
+    /// # Errors
+    /// Rejects on-accept delivery outside worktree execution.
+    pub fn with_delivery_mode(mut self, mode: DeliveryMode) -> Result<Self, WriterError> {
+        if mode == DeliveryMode::OnAccept && self.mode != ExecutionMode::Worktree {
+            return Err(WriterError::InvalidSettings);
+        }
+        self.delivery_mode = mode;
+        Ok(self)
+    }
+    #[must_use]
+    pub const fn delivery_mode(self) -> DeliveryMode {
+        self.delivery_mode
     }
     #[must_use]
     pub const fn max_active_tasks(self) -> u64 {

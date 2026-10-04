@@ -87,7 +87,7 @@ Targeted checks:
   **7.17c service завершён**.
   Delivery gate 7.17d ждёт 9.18a.
   **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
-  schema target v16 после 3.13a; policy persistence 3.13b и schema17 3.13c открыты; полный worker FSM,
+  schema target v16; 3.13a/b завершены, schema17 3.13c открыт; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -1100,12 +1100,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   274 storage tests: независимый delta schema/default contract, сохранение
   всех таблиц v15, idempotent initialize, foreign owner/default refusal и
   rollback DDL/user_version/meta при trigger failure.
-- **3.13b. Frozen delivery policy persistence.** Mapping/create/replay/read-only
+- **3.13b. Frozen delivery policy persistence (завершено).** Mapping/create/replay/read-only
   читают эффективный task mode; existing rows manual, new rows получают
   submit-time config. Live config не влияет на repeat accept. Source:
   `Storage.create_task_with_round`, `_row_to_task`, `_row_to_task_readonly`,
   `_normalize_delivery_mode`. Checks: legacy/default/frozen/replay/corrupt
   normalization. Depends on 3.13a, 1.8. Opens 8.19a.
+  Task mapping читает delivery_mode из сохранённой строки; отсутствующий
+  столбец, неизвестная строка и неверный SQLite type дают Manual.
+  AdmissionSettings принимает worktree-only OnAccept; создание сохраняет
+  политику в одной transaction с task/round/profile/reservation/checkout.
+  Submit service передаёт config mode; replay возвращает старую policy до
+  применения текущих settings. Request hash сохраняет historical semantics:
+  смена config не конфликтует с повтором запроса. Проверены оба направления
+  config switch, readonly mapping, corrupt/legacy fallback и rollback;
+  автоматическая доставка при accept остаётся consumer 8.19a.
 - **3.13c. Additive schema17.** `automation_runs(run_id,status,control,document,
   created_at,updated_at)`, control default run; unique expression index
   `ux_automation_unfinished ON automation_runs((1)) WHERE status NOT IN

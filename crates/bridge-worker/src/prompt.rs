@@ -314,6 +314,7 @@ mod tests {
             close_requested_at: None,
             close_reason: None,
             budget: None,
+            delivery_mode: bridge_domain::DeliveryMode::Manual,
         }
     }
 

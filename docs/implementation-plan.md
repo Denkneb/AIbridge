@@ -522,7 +522,7 @@ Data model и serde compatibility без runtime logic.
   missing/unknown/malformed fields, duplicate dependencies и redaction;
   workspace/all-targets clippy, format и `git diff --check`.
 
-### 1.8. DeliveryMode (v16, не завершено)
+### 1.8. DeliveryMode (v16, завершено)
 
 - **Цель:** typed `manual|on_accept`, historical default manual, раздельный
   config parse и persisted normalization.
@@ -531,6 +531,11 @@ Data model и serde compatibility без runtime logic.
   absent/corrupt value деградирует в manual, как Python, и никогда не включает
   автоматическую доставку. Это отличается от strict budget parsing.
 - **Проверки:** table-driven enum/normalization tests. Зависит от 0B.1.
+- **Результат:** `bridge-domain::DeliveryMode` с exact serde/TryFrom,
+  default Manual и отдельным defensive `normalize_persisted`: только точное
+  `on_accept` сохраняет opt-in, отсутствующие/неизвестные/нестроковые значения
+  дают Manual. Domain table-driven tests; storage/config wiring — 2.14/3.13b.
+
 
 ## Поток 2. Конфигурация
 

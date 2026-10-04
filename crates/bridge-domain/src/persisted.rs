@@ -307,6 +307,23 @@ impl WorkflowMetadata {
 }
 
 vocabulary! {
+    /// Frozen task delivery policy introduced by schema v16.
+    #[derive(Default)]
+    DeliveryMode { #[default] Manual => "manual", OnAccept => "on_accept" }
+}
+impl DeliveryMode {
+    /// Defensive persisted boundary: absent/corrupt values never enable delivery.
+    /// Config uses strict TryFrom/Deserialize instead of this normalization.
+    #[must_use]
+    pub fn normalize_persisted(value: Option<&serde_json::Value>) -> Self {
+        match value.and_then(serde_json::Value::as_str) {
+            Some("on_accept") => Self::OnAccept,
+            _ => Self::Manual,
+        }
+    }
+}
+
+vocabulary! {
     /// Origin of the profile definition.
     ProfileDefinitionSource { Builtin => "builtin", Config => "config" }
 }
@@ -1282,5 +1299,48 @@ mod tests {
         let mut checkpoint: RoundCheckpoint = serde_json::from_value(checkpoint()).unwrap();
         checkpoint.repositories[0].changed = None;
         assert!(checkpoint.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod delivery_mode_tests {
+    use super::DeliveryMode;
+    use serde_json::json;
+    #[test]
+    fn config_decode_is_exact_and_persisted_corruption_defaults_manual() {
+        assert_eq!(DeliveryMode::default(), DeliveryMode::Manual);
+        for (raw, expected) in [
+            (json!("manual"), DeliveryMode::Manual),
+            (json!("on_accept"), DeliveryMode::OnAccept),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<DeliveryMode>(raw.clone()).unwrap(),
+                expected
+            );
+            assert_eq!(DeliveryMode::normalize_persisted(Some(&raw)), expected);
+            assert_eq!(serde_json::to_value(expected).unwrap(), raw);
+        }
+        for raw in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!(" on_accept"),
+            json!("on_accept "),
+            json!("ON_ACCEPT"),
+            json!("invalid"),
+        ] {
+            assert!(serde_json::from_value::<DeliveryMode>(raw.clone()).is_err());
+            assert_eq!(
+                DeliveryMode::normalize_persisted(Some(&raw)),
+                DeliveryMode::Manual
+            );
+        }
+        assert_eq!(
+            DeliveryMode::normalize_persisted(None),
+            DeliveryMode::Manual
+        );
     }
 }

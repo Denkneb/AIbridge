@@ -1558,3 +1558,92 @@ fn reply_buffer_cannot_cross_sessions_or_approve_a_changed_session_after_get() {
         }
     }
 }
+
+#[test]
+fn reply_buffer_rejects_another_namespace_or_endpoint_before_http() {
+    let dir = TempDir::new("auto-namespace");
+    let workspace = dir.mkdir("ws");
+    let (layout, mut storage) = open_storage(&dir, "proj");
+    let task = task_id();
+    let project_id = project("proj");
+    seed_observing(
+        &mut storage,
+        task,
+        &project_id,
+        workspace.to_str().unwrap(),
+        "current",
+    );
+    let pending = serde_json::json!([permission_json("read", "current", "read", &[])]);
+    let (port, server) = spawn_server(move |request, _| {
+        if request.method == "GET" {
+            ok_json(&pending)
+        } else {
+            ok_json(&serde_json::json!({}))
+        }
+    });
+    let client = build_client(port, &workspace);
+    let config = approval_project(
+        &dir,
+        &workspace,
+        port,
+        layout.state_root(),
+        "auto_approve_permissions=[\"read\"]",
+    );
+    let mut replies = PermissionReplies::default();
+    assert!(
+        !handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies
+        )
+        .unwrap()
+        .is_blocked()
+    );
+    let other =
+        bridge_storage::RustStateLayout::new(dir.path().join("other-state"), project_id.clone())
+            .unwrap();
+    other.initialize().unwrap();
+    let mut other_storage = other.open().unwrap();
+    seed_observing(
+        &mut other_storage,
+        task,
+        &project_id,
+        workspace.to_str().unwrap(),
+        "current",
+    );
+    let count = server.request_count();
+    assert_eq!(
+        handle_permission_blocker_with_auto_approval(
+            &client,
+            &other,
+            round_ref(task, &project_id, 1),
+            &config,
+            &mut replies
+        )
+        .unwrap_err()
+        .kind(),
+        PermissionBlockerErrorKind::InvalidInput
+    );
+    let changed = approval_project(
+        &dir,
+        &workspace,
+        if port == 65535 { port - 1 } else { port + 1 },
+        layout.state_root(),
+        "auto_approve_permissions=[\"read\"]",
+    );
+    assert_eq!(
+        handle_permission_blocker_with_auto_approval(
+            &client,
+            &layout,
+            round_ref(task, &project_id, 1),
+            &changed,
+            &mut replies
+        )
+        .unwrap_err()
+        .kind(),
+        PermissionBlockerErrorKind::InvalidInput
+    );
+    assert_eq!(server.request_count(), count);
+}

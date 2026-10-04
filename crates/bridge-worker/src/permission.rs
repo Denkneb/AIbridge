@@ -124,7 +124,7 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bridge_domain::{RoundStatus, TaskId, TaskStatus};
 use bridge_opencode::{OpenCodeClient, Permission, PermissionReply};
@@ -636,11 +636,11 @@ pub fn handle_permission_blocker(
     handle_permission_blocker_inner(client, layout, round, None)
 }
 
-/// Successful replies are bound to exactly one round/session. Keep this buffer
+/// Successful replies are bound to one namespace, endpoint and round/session. Keep this buffer
 /// for the observer lifetime; a new worker may get newly issued requests.
 #[derive(Default)]
 pub struct PermissionReplies {
-    bound: Option<(RoundRef, String)>,
+    bound: Option<(RoundRef, String, PathBuf, bridge_config::Endpoint)>,
     replied: HashSet<String>,
     approvals: Vec<serde_json::Value>,
 }
@@ -649,11 +649,24 @@ impl PermissionReplies {
     pub fn approvals(&self) -> &[serde_json::Value] {
         &self.approvals
     }
-    fn bind(&mut self, round: &RoundRef, session: &str) -> bool {
+    fn bind(
+        &mut self,
+        round: &RoundRef,
+        session: &str,
+        root: &Path,
+        endpoint: bridge_config::Endpoint,
+    ) -> bool {
         match &self.bound {
-            Some((saved, id)) => saved == round && id == session,
+            Some((saved, id, saved_root, saved_endpoint)) => {
+                saved == round && id == session && saved_root == root && *saved_endpoint == endpoint
+            }
             None => {
-                self.bound = Some((round.clone(), session.to_owned()));
+                self.bound = Some((
+                    round.clone(),
+                    session.to_owned(),
+                    root.to_path_buf(),
+                    endpoint,
+                ));
                 true
             }
         }
@@ -716,8 +729,13 @@ fn handle_permission_blocker_inner(
     // Pre-flight validation, before any HTTP request or write. A pending
     // cooperative close fails closed here without touching the network.
     let before = inspect_round_state(&storage, &round, client.workspace())?;
-    let approvals_start = if let Some((_, replies)) = auto.as_mut() {
-        if !replies.bind(&round, &before.session_id) {
+    let approvals_start = if let Some((project, replies)) = auto.as_mut() {
+        if !replies.bind(
+            &round,
+            &before.session_id,
+            layout.state_root(),
+            *project.opencode_endpoint(),
+        ) {
             return Err(PermissionBlockerError::new(
                 PermissionBlockerErrorKind::InvalidInput,
             ));

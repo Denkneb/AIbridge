@@ -2793,13 +2793,14 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   существующий command-policy. Literal/glob confinement сверяет lexical и
   resolved roots, каждый direct glob child (включая symlink/dangling/loop),
   traversal/unsafe pattern/root rejects. Успешные ответы всегда Once и
-  дедуплицируются в одном round/session buffer; foreign sessions игнорируются.
+  дедуплицируются в buffer одного state namespace/endpoint/round/session;
+  foreign sessions игнорируются.
   Неодобренные и failed replies сохраняют needs_user/reason; mixed success
   evidence записывается как auto_approved. HTTP/storage/close/session checks
   не дают stale outcomes; successful cache переживает storage rollback.
-  Проверены все 42 frozen worker delta cases, ordinary/bash policy и 6 новых
+  Проверены все 42 frozen worker delta cases, ordinary/bash policy и 7 новых
   local HTTP scenarios (duplicate/foreign/default/mixed/failure/rollback/
-  close/session races). Default historical no-reply entry point сохранён.
+  close/session/namespace/endpoint races). Default historical no-reply entry point сохранён.
   Это service для saved direct round; worktree observer/full worker FSM и
   production CLI/MCP wiring остаются отдельными consumers.
 - **7.8b. Controller permissions (не завершено).** Generated OpenCode config:

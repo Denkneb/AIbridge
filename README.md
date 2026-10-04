@@ -20,6 +20,10 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 ## Расхождение версий и ближайший шаг
 
+Recovery context service **7.10c** готов: attempted round подключается к saved
+session/runtime без нового prompt, checkout или baseline. Remote identity/session
+probes, blocker grace и полный worker loop подключаются следующими consumers.
+
 Message observer service **7.9a** завершён: delivery/assistant error/deadline
 и final candidate с guards до/после HTTP, без resend. Publication service
 **7.11a–c** готов: saved verifier, change collection, checkpoint и awaiting_review,

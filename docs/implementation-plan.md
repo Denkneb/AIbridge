@@ -2872,6 +2872,20 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   Полный observer FSM и public task_status adapter остаются в worker/MCP потоках.
 
 
+- **7.10c. Reconstruct attempted execution (service завершён).**
+  `resume_round_execution`/`resume_fenced_round_execution` восстанавливают
+  current sent/observing/needs_user/delivery_unknown round из saved session,
+  outbound, snapshot/scope/profile. Task должен быть implementing/revising:
+  parked tasks сначала проходят explicit recovery claim; attach не активирует их.
+  Нет HTTP, новых sessions/checkouts/runtime, prompt/resend или baseline refresh.
+  Worktree attach требует created checkout и exact saved port/endpoint/runtime,
+  допускает executor commits с исходным frozen baseline. Эти endpoint guards
+  повторяются у downstream execution consumers. Checks: 23 observer tests,
+  включая four open round states и no-resend, invalid identifiers/close/terminal;
+  real runtime fixture after checkout commit доказывает unchanged process record,
+  baseline и saved port, rejects rebound endpoint. Workspace Clippy прошёл.
+  Remote identity/session probes и полный loop остаются следующими consumers.
+
 ### 7.11. Verification integration
 
 - **7.11a. Final candidate publication (single-repository service завершён).**

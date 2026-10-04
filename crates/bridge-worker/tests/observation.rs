@@ -1040,3 +1040,76 @@ fn preparation_rejects_untrusted_corrupt_duplicate_or_unreferenced_external_base
         assert_eq!(f.requests.load(Ordering::Relaxed), 0);
     }
 }
+
+#[test]
+fn reconstruct_attempted_direct_round_reuses_session_and_never_dispatches() {
+    use bridge_worker::execution::resume_round_execution;
+    for (round_status, task_status) in [
+        ("sent", "implementing"),
+        ("observing", "implementing"),
+        ("needs_user", "implementing"),
+        ("delivery_unknown", "implementing"),
+    ] {
+        let mut f = Fixture::with_external(1);
+        f.history(final_history());
+        let storage = f.layout.open().unwrap();
+        storage
+            .connection()
+            .execute("UPDATE rounds SET status=?1", [round_status])
+            .unwrap();
+        storage
+            .connection()
+            .execute("UPDATE tasks SET status=?1", [task_status])
+            .unwrap();
+        let config = load_config(&f.root.join("config.toml")).unwrap();
+        let project = config.project("proj").unwrap();
+        let round = RoundRef {
+            task_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+            project_id: project.id().clone(),
+            round_number: 1,
+        };
+        let before = f.execution.execution.baseline_json().unwrap();
+        f.execution.execution =
+            resume_round_execution(&f.layout, project, round, seconds(2)).unwrap();
+        assert_eq!(f.execution.execution.baseline_json().unwrap(), before);
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+        assert!(f.execution.execution.dispatch(&f.layout).is_err());
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+        let mut o = f.observer();
+        let Observation::Final(candidate) = o.poll(|| seconds(1), &[]).unwrap() else {
+            panic!("final");
+        };
+        o.publish_final(&candidate, seconds(5), 4096).unwrap();
+        assert_eq!(f.task_status(), TaskStatus::AwaitingReview);
+        assert_eq!(f.requests.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[test]
+fn resume_requires_attempt_and_saved_identifiers_and_refuses_terminal_or_close() {
+    use bridge_worker::execution::resume_round_execution;
+    for sql in [
+        "UPDATE rounds SET attempted=0",
+        "UPDATE rounds SET session_id=NULL",
+        "UPDATE rounds SET outbound_message_id=NULL",
+        "UPDATE rounds SET status='complete'",
+        "UPDATE tasks SET close_requested_at='2026-10-05T00:00:00Z'",
+    ] {
+        let f = Fixture::new();
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute(sql, [])
+            .unwrap();
+        let config = load_config(&f.root.join("config.toml")).unwrap();
+        let project = config.project("proj").unwrap();
+        let round = RoundRef {
+            task_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+            project_id: project.id().clone(),
+            round_number: 1,
+        };
+        assert!(resume_round_execution(&f.layout, project, round, seconds(2)).is_err());
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+    }
+}

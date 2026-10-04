@@ -124,6 +124,7 @@ fn current_task(
     layout: &RustStateLayout,
     project: &ProjectEntry,
     round: &RoundRef,
+    observing: bool,
 ) -> Result<Task, ExecutionError> {
     if layout.project_id() != project.id() || &round.project_id != project.id() {
         return Err(ExecutionError::Binding);
@@ -154,8 +155,20 @@ fn current_task(
         .map_err(|_| ExecutionError::Round)?;
     if latest != round.round_number
         || row.project_id != round.project_id
-        || row.status != RoundStatus::Pending
-        || row.attempted
+        || if observing {
+            !row.attempted
+                || !matches!(
+                    row.status,
+                    RoundStatus::Sent
+                        | RoundStatus::Observing
+                        | RoundStatus::NeedsUser
+                        | RoundStatus::DeliveryUnknown
+                )
+                || row.session_id.as_deref().is_none_or(str::is_empty)
+                || row.outbound_message_id.as_deref().is_none_or(str::is_empty)
+        } else {
+            row.status != RoundStatus::Pending || row.attempted
+        }
         || task.close_requested_at.is_some()
         || !matches!(
             (row.kind, task.status),
@@ -249,6 +262,14 @@ impl RoundExecution {
                 .get_worktree(task.task_id, &task.project_id)
                 .map_err(|_| ExecutionError::Storage)?
                 .ok_or(ExecutionError::MissingRecord)?;
+            let port = record.server_port.ok_or(ExecutionError::Runtime)?.get();
+            let endpoint =
+                bridge_config::Endpoint::loopback(port).map_err(|_| ExecutionError::Binding)?;
+            if self.server_port != Some(port)
+                || record.server_endpoint.as_deref() != Some(endpoint.url().as_str())
+            {
+                return Err(ExecutionError::Binding);
+            }
             let saved: Value = serde_json::from_str(
                 record
                     .baseline_json
@@ -419,7 +440,7 @@ pub fn prepare_round_execution(
     options: RuntimeOptions,
 ) -> Result<RoundExecution, ExecutionError> {
     let mut storage = layout.open().map_err(|_| ExecutionError::Ownership)?;
-    let task = current_task(&mut storage, layout, project, &round)?;
+    let task = current_task(&mut storage, layout, project, &round, false)?;
     if mode(&storage, &task)? == ExecutionMode::Direct {
         let trusted_roots = project.auto_approve_external_directories().to_vec();
         let externals =
@@ -619,6 +640,99 @@ pub fn prepare_fenced_round_execution(
         .ok_or(ExecutionError::Round)?;
     let execution =
         prepare_round_execution(layout, project, round, layouts, projects, command, options)?;
+    Ok(FencedRoundExecution {
+        execution,
+        _fences: fences,
+    })
+}
+
+/// Reconstructs an attempted round from persisted evidence only. Caller holds
+/// worker fences. No checkout/session creation, runtime start, prompt or HTTP.
+/// # Errors
+/// Requires a current open attempted round and intact saved root/baseline/profile.
+pub fn resume_round_execution(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    round: RoundRef,
+    timeout: Duration,
+) -> Result<RoundExecution, ExecutionError> {
+    let mut storage = layout.open().map_err(|_| ExecutionError::Ownership)?;
+    let task = current_task(&mut storage, layout, project, &round, true)?;
+    let worktree = mode(&storage, &task)? == ExecutionMode::Worktree;
+    let root = execution_root(&storage, layout, &task, false)?;
+    let view = crate::recovery::saved_view(&storage, layout, project, &task)
+        .map_err(|_| ExecutionError::Binding)?;
+    let (baseline, port, trusted_roots, externals) = if worktree {
+        if task
+            .allowed_paths
+            .iter()
+            .any(|p| Path::new(p).is_absolute())
+            || task
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.get("external_repositories"))
+                .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            return Err(ExecutionError::Unsupported);
+        }
+        let record = storage
+            .get_worktree(task.task_id, &task.project_id)
+            .map_err(|_| ExecutionError::Storage)?
+            .ok_or(ExecutionError::MissingRecord)?;
+        let saved: Value = serde_json::from_str(
+            record
+                .baseline_json
+                .as_deref()
+                .ok_or(ExecutionError::Baseline)?,
+        )
+        .map_err(|_| ExecutionError::Baseline)?;
+        (
+            Some(RepositorySnapshot::from_json(&saved).map_err(|_| ExecutionError::Baseline)?),
+            Some(record.server_port.ok_or(ExecutionError::Runtime)?.get()),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        let trusted = project.auto_approve_external_directories().to_vec();
+        let externals = crate::completion::external_baselines(&task, &root, &trusted)?;
+        let baseline = task
+            .snapshot
+            .as_ref()
+            .filter(|s| s.get("manifest").is_some())
+            .map(RepositorySnapshot::from_json)
+            .transpose()
+            .map_err(|_| ExecutionError::Baseline)?;
+        (baseline, None, trusted, externals)
+    };
+    let execution = RoundExecution {
+        client: OpenCodeClient::from_project(&view, timeout)
+            .map_err(|_| ExecutionError::Runtime)?,
+        root,
+        server_port: port,
+        baseline,
+        submit_snapshot: task.snapshot.clone(),
+        allowed_paths: task.allowed_paths.clone(),
+        trusted_roots,
+        externals,
+        round,
+    };
+    current_task(&mut storage, layout, project, execution.round(), true)?;
+    execution.task_and_root(layout)?;
+    Ok(execution)
+}
+/// Acquires worker fences before reconstructing a previously attempted round.
+/// # Errors
+/// Busy/closed/stale/foreign rounds refuse without runtime or prompt operations.
+pub fn resume_fenced_round_execution(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    round: RoundRef,
+    timeout: Duration,
+) -> Result<FencedRoundExecution, ExecutionError> {
+    let fences = crate::admission::acquire_worker_fences(layout, project, round.task_id)
+        .map_err(|_| ExecutionError::Binding)?
+        .ok_or(ExecutionError::Round)?;
+    let execution = resume_round_execution(layout, project, round, timeout)?;
     Ok(FencedRoundExecution {
         execution,
         _fences: fences,

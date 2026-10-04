@@ -1411,3 +1411,45 @@ fn concurrent_needs_user_recovery_spawns_once_after_http_probes() {
         1
     );
 }
+
+#[test]
+fn resume_worktree_context_uses_saved_runtime_and_baseline_after_executor_commit() {
+    use bridge_worker::execution::resume_round_execution;
+    let _network = network_fence();
+    let f = pending_execution_fixture();
+    let prepared = prepare_fixture(&f, 1).unwrap();
+    let before = prepared.baseline_json().unwrap();
+    let record = std::fs::read(f.record()).unwrap();
+    let round = bridge_storage::RoundRef {
+        task_id: f.task,
+        project_id: f.project.id().clone(),
+        round_number: 1,
+    };
+    let mut storage = f.layout.open().unwrap();
+    storage
+        .bind_round_session(round.clone(), "saved-session".into())
+        .unwrap();
+    storage
+        .prepare_round(round.clone(), "saved-outbound".into())
+        .unwrap();
+    storage.mark_round_sent(round.clone()).unwrap();
+    std::fs::write(f.checkout.join("file"), "executor committed\n").unwrap();
+    git(&f.checkout, &["add", "file"]);
+    git(&f.checkout, &["commit", "-qm", "executor"]);
+    let resumed =
+        resume_round_execution(&f.layout, &f.project, round.clone(), Duration::from_secs(1))
+            .unwrap();
+    assert_eq!(resumed.root, f.checkout);
+    assert_eq!(resumed.server_port, prepared.server_port);
+    assert_eq!(resumed.baseline_json().unwrap(), before);
+    assert_eq!(std::fs::read(f.record()).unwrap(), record);
+    assert!(resumed.dispatch(&f.layout).is_err());
+    storage
+        .connection()
+        .execute(
+            "UPDATE worktrees SET server_endpoint='http://127.0.0.1:1'",
+            [],
+        )
+        .unwrap();
+    assert!(resume_round_execution(&f.layout, &f.project, round, Duration::from_secs(1)).is_err());
+}

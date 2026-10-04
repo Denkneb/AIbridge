@@ -86,7 +86,7 @@ fn saved_round(storage: &StorageConnection, task: &Task) -> Result<RoundRow, Rec
     }
     Ok(row)
 }
-fn saved_view(
+pub(crate) fn saved_view(
     storage: &StorageConnection,
     layout: &RustStateLayout,
     project: &ProjectEntry,

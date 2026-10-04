@@ -84,7 +84,8 @@ Targeted checks:
   revision/cwd, close/recovery/quarantine); manager lock **9.7a завершён**.
   **7.17a завершён** (B1 admission/activation services).
   **7.17b services завершены**, live-model smoke остаётся в 15.3.
-  Следующий блок backend — **7.17c (shared active-set read model)**; полный worker FSM,
+  **7.17c service завершён**.
+  Delivery gate 7.17d ждёт 9.18a; следующие доступные foundations — 1.8/2.13/2.14.; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -2988,7 +2989,7 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
     independent dispatch/collection/close. Это не live-model smoke:
     production CLI и реальный `smoke-opencode --parallel-worktrees` остаются 15.3.
 
-- **7.17c. Shared safe full active set.**
+- **7.17c. Shared safe full active set (service завершён).**
   - **Цель:** read-model полного active set для API/UI/diagnostics/hook.
   - **Source evidence:** `storage.py:2182-2346`;
     `diagnostics.py:351-367`; `mcp_server.py:2567-2596,2032-2052`.
@@ -2998,6 +2999,16 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
     read-only список.
   - **Targeted checks:** active-set read-model tests.
   - **Зависит от:** 7.17a. **Открывает:** 8.16, 9.19a, 12.15.
+  - **Результат:** `bridge-storage::active_set` читает полный unfinished set
+    и strict reservations одним read transaction; writers идут перед waiters,
+    counts и activity fence не зависят от config или целостности ledger.
+    `resolve_status_task` с ID проверяет project и допускает terminal lookup;
+    без ID при >1 возвращает typed `Ambiguous`/`ambiguous_task` и безопасные
+    task summaries. Read path не активирует задачи, не восстанавливает ledger
+    и не пишет state; query_only tests проходят. Unknown nonterminal status,
+    malformed task/mode/reservation fail closed. Transport/UI wiring — 8.16,
+    9.19a, 12.15. Проверки: 5 active-set tests и storage all-targets clippy.
+
 - **7.17d. Delivery gate on active writer.**
   - **Цель:** `deliver` gated on any real/reserved active writer под admission
     lock.

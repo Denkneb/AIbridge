@@ -193,6 +193,7 @@ pub use budgets::{
     BUDGET_USAGE_FIELDS, BudgetReadError, BudgetValidationError, DEFAULT_BUDGET_WARNING_THRESHOLD,
     TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,
 };
+pub mod active_set;
 mod dependencies;
 pub mod profiles;
 mod schema_v15;

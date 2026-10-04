@@ -877,3 +877,172 @@ fn saved_writer_admission_freezes_flags_repairs_missing_rows_and_rolls_back_corr
     ));
     assert_eq!(rows(&storage), before);
 }
+
+#[test]
+fn full_active_set_orders_writers_before_waiters_and_resolves_ambiguity_readonly() {
+    use crate::active_set::TaskSelection;
+    let (_root, layout, workspace, project) = state("full-active-set");
+    let mut storage = layout.open().unwrap();
+    storage
+        .create_task_with_admission(
+            input(1, &project, &workspace, &["src/a.rs"]),
+            &settings(10, true),
+            TaskStatus::WaitingDependencies,
+        )
+        .unwrap();
+    storage
+        .create_task_with_admission(
+            input(2, &project, &workspace, &["src/b.rs"]),
+            &settings(10, true),
+            TaskStatus::Implementing,
+        )
+        .unwrap();
+    let before = rows(&storage);
+    storage
+        .connection()
+        .execute_batch("PRAGMA query_only=ON")
+        .unwrap();
+    let set = storage.active_set(&project).unwrap();
+    assert_eq!(
+        set.tasks.iter().map(|t| t.task_id).collect::<Vec<_>>(),
+        vec![query_task_id(2), query_task_id(1)]
+    );
+    assert_eq!(set.writer_count, 1);
+    assert_eq!(set.waiting_count, 1);
+    assert_eq!(set.unfinished_count(), 2);
+    assert!(set.writer_activity_present());
+    assert_eq!(set.reservations.len(), 1);
+    let outcome = storage.resolve_status_task(&project, None).unwrap();
+    assert_eq!(outcome.error_code(), Some("ambiguous_task"));
+    assert!(matches!(outcome,TaskSelection::Ambiguous(ref tasks) if tasks.len()==2));
+    assert!(
+        matches!(storage.resolve_status_task(&project,Some(query_task_id(1))).unwrap(),TaskSelection::Selected(t) if t.status==TaskStatus::WaitingDependencies)
+    );
+    assert_eq!(rows(&storage), before);
+}
+#[test]
+fn active_set_counts_all_unfinished_statuses_without_ledger_and_preserves_terminal_lookup() {
+    use crate::active_set::TaskSelection;
+    let (_root, layout, workspace, project) = state("active-status-matrix");
+    let mut storage = layout.open().unwrap();
+    for (i, status) in TaskStatus::ALL.iter().enumerate() {
+        let id = u32::try_from(i + 1).unwrap();
+        storage
+            .create_task_with_admission(
+                input(id, &project, &workspace, &[&format!("src/{id}.rs")]),
+                &settings(20, true),
+                TaskStatus::WaitingDependencies,
+            )
+            .unwrap();
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                rusqlite::params![status.as_str(), query_task_id(id).to_string()],
+            )
+            .unwrap();
+        assert!(
+            matches!(storage.resolve_status_task(&project,Some(query_task_id(id))).unwrap(),TaskSelection::Selected(t) if t.status==*status)
+        );
+    }
+    let set = storage.active_set(&project).unwrap();
+    assert_eq!(set.unfinished_count(), 7);
+    assert_eq!(set.writer_count, 6);
+    assert_eq!(set.waiting_count, 1);
+    assert!(set.reservations.is_empty());
+    assert!(set.writer_activity_present());
+    assert!(matches!(
+        storage
+            .resolve_status_task(&query_project("other"), Some(query_task_id(1)))
+            .unwrap(),
+        TaskSelection::Missing
+    ));
+    assert_eq!(
+        storage
+            .resolve_status_task(&query_project("other"), None)
+            .unwrap()
+            .error_code(),
+        Some("task_not_found")
+    );
+}
+#[test]
+fn active_set_reservations_are_independent_of_task_counts_and_no_repair_runs() {
+    let (_root, layout, workspace, project) = state("active-set-orphan");
+    let mut storage = layout.open().unwrap();
+    assert!(
+        !storage
+            .active_set(&project)
+            .unwrap()
+            .writer_activity_present()
+    );
+    storage
+        .create_task_with_admission(
+            input(1, &project, &workspace, &["src/a.rs"]),
+            &settings(10, true),
+            TaskStatus::Implementing,
+        )
+        .unwrap();
+    storage
+        .connection()
+        .execute("UPDATE tasks SET status='accepted'", [])
+        .unwrap();
+    let before = rows(&storage);
+    let set = storage.active_set(&project).unwrap();
+    assert_eq!(set.unfinished_count(), 0);
+    assert_eq!(set.reservations.len(), 1);
+    assert!(set.writer_activity_present());
+    assert_eq!(rows(&storage), before);
+}
+#[test]
+fn active_set_corruption_returns_safe_error_instead_of_partial_or_idle_result() {
+    use crate::active_set::ActiveSetError;
+    let (_root, layout, workspace, project) = state("active-set-corruption");
+    let mut storage = layout.open().unwrap();
+    storage
+        .create_task_with_admission(
+            input(1, &project, &workspace, &["src/a.rs"]),
+            &settings(10, true),
+            TaskStatus::Implementing,
+        )
+        .unwrap();
+    storage
+        .connection()
+        .execute("UPDATE active_writers SET scopes_json='secret-invalid'", [])
+        .unwrap();
+    assert!(matches!(
+        storage.active_set(&project),
+        Err(ActiveSetError::ReservationData)
+    ));
+    storage
+        .connection()
+        .execute("UPDATE active_writers SET scopes_json='[]';", [])
+        .unwrap();
+    storage
+        .connection()
+        .execute("UPDATE tasks SET execution_mode='secret-mode'", [])
+        .unwrap();
+    let error = storage.active_set(&project).unwrap_err();
+    assert_eq!(error, ActiveSetError::TaskData);
+    assert!(!format!("{error} {error:?}").contains("secret"));
+}
+
+#[test]
+fn active_set_unknown_unfinished_status_is_not_treated_as_idle() {
+    let (_root, layout, workspace, project) = state("active-set-status-corruption");
+    let mut storage = layout.open().unwrap();
+    storage
+        .create_task_with_admission(
+            input(1, &project, &workspace, &["src/a.rs"]),
+            &settings(10, true),
+            TaskStatus::Implementing,
+        )
+        .unwrap();
+    storage
+        .connection()
+        .execute("UPDATE tasks SET status='unknown'", [])
+        .unwrap();
+    assert!(matches!(
+        storage.active_set(&project),
+        Err(crate::active_set::ActiveSetError::TaskData)
+    ));
+}

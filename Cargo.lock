@@ -70,6 +70,7 @@ name = "bridge-git"
 version = "0.1.0"
 dependencies = [
  "bridge-path-policy",
+ "serde_json",
 ]
 
 [[package]]
@@ -112,6 +113,7 @@ version = "0.1.0"
 dependencies = [
  "bridge-config",
  "bridge-domain",
+ "bridge-git",
  "bridge-opencode",
  "bridge-path-policy",
  "bridge-storage",

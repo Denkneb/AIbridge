@@ -45,6 +45,7 @@
 //! [`GitError`] carries no payload, so `Display`/`Debug` can never leak the
 //! workspace, argv, stdout/stderr, Git configuration, OS error text or secrets.
 
+pub mod checkpoint;
 mod comparison;
 mod multi_repo;
 mod runner;

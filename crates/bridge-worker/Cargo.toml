@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 bridge-domain.workspace = true
+bridge-git.workspace = true
 bridge-path-policy.workspace = true
 bridge-opencode.workspace = true
 bridge-storage.workspace = true

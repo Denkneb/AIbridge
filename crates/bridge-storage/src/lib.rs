@@ -11708,7 +11708,40 @@ impl StorageConnection {
         &mut self,
         input: FinishRoundInput,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
-        self.finish_round_inner(input, false)
+        self.finish_round_inner(input, false, None)
+    }
+
+    /// Atomically persists a complete validated checkpoint (or unavailable SQL
+    /// NULL) with the ordinary round/task/event finish. Legacy finish calls leave
+    /// the diagnostic column untouched. A checkpoint is not rollback state.
+    pub fn finish_round_with_checkpoint(
+        &mut self,
+        input: FinishRoundInput,
+        checkpoint: Option<&bridge_domain::RoundCheckpoint>,
+    ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+        let json = checkpoint
+            .map(|value| {
+                value
+                    .validate()
+                    .map_err(|_| RoundUpdateError::InvalidInput)?;
+                serde_json::to_string(value).map_err(|_| RoundUpdateError::InvalidJson)
+            })
+            .transpose()?;
+        self.finish_round_inner(input, false, Some(json))
+    }
+
+    /// Read-only diagnostic parsing: absent/corrupt/incompatible checkpoints
+    /// are unavailable. No older checkpoint is substituted for a missing round.
+    pub fn get_round_checkpoint(
+        &self,
+        round: &RoundRef,
+    ) -> Result<Option<bridge_domain::RoundCheckpoint>, RoundUpdateError> {
+        let raw = self.connection.query_row(
+            "SELECT checkpoint_json FROM rounds WHERE task_id=?1 AND project_id=?2 AND round_number=?3",
+            params![round.task_id.to_string(),round.project_id.as_str(),round.round_number],
+            |row| Ok(row.get::<_,Option<String>>(0).ok().flatten()),
+        ).optional().map_err(RoundUpdateError::Database)?.flatten();
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
     }
 
     /// Fails a pending, unattempted revision on corrupt findings before send.
@@ -11729,6 +11762,7 @@ impl StorageConnection {
                 result_json: None,
             },
             true,
+            None,
         )
     }
 
@@ -11736,6 +11770,7 @@ impl StorageConnection {
         &mut self,
         input: FinishRoundInput,
         findings_invariant: bool,
+        checkpoint: Option<Option<String>>,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
         let result_column = match &input.result_json {
             None => None,
@@ -11796,6 +11831,10 @@ impl StorageConnection {
         if let Some(value) = result_column {
             sets.push("result_json = ?");
             values.push(value);
+        }
+        if let Some(value) = checkpoint {
+            sets.push("checkpoint_json = ?");
+            values.push(value.map(SqlValue::Text).unwrap_or(SqlValue::Null));
         }
         values.push(SqlValue::Text(input.round.task_id.to_string()));
         values.push(SqlValue::Integer(i64::from(input.round.round_number)));

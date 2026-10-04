@@ -3233,3 +3233,265 @@ fn accounting_history_persistence_and_budget_snapshot() {
     );
     assert_eq!(round_state(&storage, task, 2).status, "complete");
 }
+
+fn checkpoint_git(root: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+fn checkpoint_repo(dir: &TempDir) -> PathBuf {
+    let root = dir.mkdir("repo");
+    checkpoint_git(&root, &["init", "-q"]);
+    std::fs::write(root.join("a"), "before").unwrap();
+    std::fs::write(root.join("b"), "rename me").unwrap();
+    std::fs::write(root.join(".gitignore"), "ignored\n").unwrap();
+    checkpoint_git(&root, &["add", "."]);
+    checkpoint_git(&root, &["commit", "-qm", "baseline"]);
+    root
+}
+fn checkpoint_baseline(root: &Path) -> serde_json::Value {
+    let manifest = bridge_git::worktree_manifest(root)
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|entry| {
+            (
+                entry.path().to_str().unwrap().to_owned(),
+                serde_json::json!(entry.digest_hex()),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({"manifest":manifest})
+}
+
+#[test]
+fn checkpoint_rounds_are_predecessor_only_and_finish_atomically() {
+    let dir = TempDir::new("checkpoint-rounds");
+    let root = checkpoint_repo(&dir);
+    let baseline = checkpoint_baseline(&root);
+    let (_layout, mut storage) = open_storage(&dir, "proj-1");
+    let project = project("proj-1");
+    let task = task_id();
+    create_task_full(
+        &mut storage,
+        task,
+        &project,
+        root.to_str().unwrap(),
+        "task",
+        vec!["a".to_owned()],
+        Vec::new(),
+        Some(baseline),
+    );
+    std::fs::write(root.join("a"), "round one").unwrap();
+    std::fs::rename(root.join("b"), root.join("c")).unwrap();
+    std::fs::write(root.join("binary"), [0, 1, 2]).unwrap();
+    std::fs::write(root.join("ignored"), "never read").unwrap();
+    let first = bridge_worker::checkpoint::build_round_checkpoint(
+        &storage,
+        &round_ref(task, &project, 1),
+        &root,
+        &[],
+        None,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&first).unwrap();
+    assert_eq!(
+        value["repositories"][0]["diff_stat"]["counts"],
+        serde_json::json!({"added":1,"modified":1,"deleted":0,"renamed":1})
+    );
+    assert_eq!(
+        value["repositories"][0]["changed"]["binary"]["kind"],
+        "binary"
+    );
+    assert!(value["repositories"][0]["changed"].get("ignored").is_none());
+    assert!(!value.to_string().contains(root.to_str().unwrap()));
+    storage
+        .mark_round_observing(round_ref(task, &project, 1))
+        .unwrap();
+    let input = FinishRoundInput {
+        round: round_ref(task, &project, 1),
+        round_status: RoundStatus::Complete,
+        task_status: TaskStatus::AwaitingReview,
+        response_message_id: None,
+        response: None,
+        error_code: None,
+        result_json: None,
+    };
+    install_trigger(
+        &storage,
+        "CREATE TRIGGER reject_checkpoint BEFORE UPDATE OF checkpoint_json ON rounds BEGIN SELECT RAISE(ABORT,'test'); END;",
+    );
+    assert!(
+        storage
+            .finish_round_with_checkpoint(input.clone(), Some(&first))
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 1).status, "observing");
+    assert!(
+        storage
+            .get_round_checkpoint(&round_ref(task, &project, 1))
+            .unwrap()
+            .is_none()
+    );
+    storage
+        .connection()
+        .execute_batch("DROP TRIGGER reject_checkpoint")
+        .unwrap();
+    storage
+        .finish_round_with_checkpoint(input, Some(&first))
+        .unwrap();
+    assert_eq!(
+        storage
+            .get_round_checkpoint(&round_ref(task, &project, 1))
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    let revision = bridge_worker::validate_revision_findings("fix", None, &root, &[], &[]).unwrap();
+    revision
+        .create_round(&mut storage, round_ref(task, &project, 2), "rev".to_owned())
+        .unwrap();
+    std::fs::write(root.join("a"), "round two").unwrap();
+    let second = bridge_worker::checkpoint::build_round_checkpoint(
+        &storage,
+        &round_ref(task, &project, 2),
+        &root,
+        &[],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&second).unwrap()["repositories"][0]["diff_stat"]["counts"],
+        serde_json::json!({"added":0,"modified":1,"deleted":0,"renamed":0})
+    );
+    assert!(
+        bridge_worker::checkpoint::build_round_checkpoint(
+            &storage,
+            &round_ref(task, &project, 3),
+            &root,
+            &[],
+            None
+        )
+        .is_none()
+    );
+    storage
+        .prepare_round(round_ref(task, &project, 2), "msg_checkpoint".to_owned())
+        .unwrap();
+    storage
+        .mark_round_sent(round_ref(task, &project, 2))
+        .unwrap();
+    storage
+        .mark_round_observing(round_ref(task, &project, 2))
+        .unwrap();
+    let input = FinishRoundInput {
+        round: round_ref(task, &project, 2),
+        round_status: RoundStatus::Complete,
+        task_status: TaskStatus::AwaitingReview,
+        response_message_id: None,
+        response: None,
+        error_code: None,
+        result_json: None,
+    };
+    let outcome = bridge_worker::checkpoint::finish_round_with_diagnostics(
+        &mut storage,
+        input,
+        &[],
+        &root,
+        &[],
+        None,
+    )
+    .unwrap();
+    assert_eq!(outcome.round.result_json.unwrap()["usage"]["input"], 0);
+    assert_eq!(
+        storage
+            .get_round_checkpoint(&round_ref(task, &project, 2))
+            .unwrap()
+            .unwrap(),
+        second
+    );
+    storage
+        .connection()
+        .execute(
+            "UPDATE rounds SET checkpoint_json='{}' WHERE round_number=1",
+            [],
+        )
+        .unwrap();
+    assert!(
+        bridge_worker::checkpoint::build_round_checkpoint(
+            &storage,
+            &round_ref(task, &project, 2),
+            &root,
+            &[],
+            None
+        )
+        .is_none()
+    );
+    assert!(
+        storage
+            .get_round_checkpoint(&round_ref(task, &crate::project("foreign"), 1))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn checkpoint_bounds_topology_and_unavailable_repository() {
+    let dir = TempDir::new("checkpoint-bounds");
+    let root = checkpoint_repo(&dir);
+    let baseline = serde_json::from_value(checkpoint_baseline(&root)["manifest"].clone()).unwrap();
+    let specs = vec![(root.clone(), baseline)];
+    let previous = bridge_worker::checkpoint::capture_checkpoint(&specs, None).unwrap();
+    assert!(
+        bridge_worker::checkpoint::capture_checkpoint(
+            &[
+                (root.clone(), std::collections::BTreeMap::new()),
+                (root.clone(), std::collections::BTreeMap::new())
+            ],
+            Some(&previous)
+        )
+        .is_none()
+    );
+    let missing = dir.path().join("missing");
+    let unavailable = bridge_worker::checkpoint::capture_checkpoint(
+        &[(missing, std::collections::BTreeMap::new())],
+        None,
+    )
+    .unwrap();
+    assert!(!unavailable.repositories[0].available);
+    assert!(bridge_worker::checkpoint::capture_checkpoint(&specs, Some(&unavailable)).is_none());
+    for index in 0..2001 {
+        std::fs::write(root.join(format!("new-{index}")), "x").unwrap();
+    }
+    assert!(bridge_worker::checkpoint::capture_checkpoint(&specs, Some(&previous)).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn checkpoint_symlinks_and_exec_bit_are_content_free() {
+    let dir = TempDir::new("checkpoint-symlinks");
+    let root = checkpoint_repo(&dir);
+    std::os::unix::fs::symlink("missing", root.join("link")).unwrap();
+    let state = bridge_git::checkpoint::worktree_state(&root).unwrap();
+    assert_eq!(state["files"]["link"]["kind"], "symlink");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.join("a"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let changed = bridge_git::checkpoint::worktree_state(&root).unwrap();
+    assert_ne!(
+        state["files"]["a"]["digest"],
+        changed["files"]["a"]["digest"]
+    );
+    assert!(!changed.to_string().contains("before"));
+}

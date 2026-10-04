@@ -45,9 +45,18 @@ pub fn observed_accounting(messages: &[Message], outbound: &str) -> Value {
 /// Other result fields remain intact; accounting is the observed history total.
 pub fn finish_round_with_accounting(
     storage: &mut StorageConnection,
-    mut input: FinishRoundInput,
+    input: FinishRoundInput,
     messages: &[Message],
 ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
+    let input = accounted_input(storage, input, messages)?;
+    storage.finish_round(input)
+}
+
+pub(crate) fn accounted_input(
+    storage: &StorageConnection,
+    mut input: FinishRoundInput,
+    messages: &[Message],
+) -> Result<FinishRoundInput, RoundUpdateError> {
     let outbound: Option<String> = storage.connection().query_row(
         "SELECT outbound_message_id FROM rounds WHERE task_id=?1 AND project_id=?2 AND round_number=?3",
         rusqlite::params![input.round.task_id.to_string(), input.round.project_id.as_str(), input.round.round_number],
@@ -70,5 +79,5 @@ pub fn finish_round_with_accounting(
         result.insert("model".to_owned(), model.clone());
     }
     input.result_json = Some(Value::Object(result.clone()));
-    storage.finish_round(input)
+    Ok(input)
 }

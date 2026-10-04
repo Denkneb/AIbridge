@@ -79,7 +79,7 @@ Targeted checks:
   **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
   **0B.5 завершён** (77 runtime/automation cases, без skips).
   **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
-  Ближайший шаг — **7.15 (Per-round checkpoints)**; новые v16/v17 задачи идут по зависимостям.
+  Ближайший шаг согласованного блока — **8.18 (Submit-time profile resolution)**, затем 7.18; новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -413,7 +413,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; 7.13 также завершён. Ближайшая задача — 7.15.**
+  **0B завершён; 7.13 также завершён. Ближайшая задача согласованного блока — 8.18, затем 7.18.**
 
 ## Поток 1. Rust foundation
 
@@ -1050,7 +1050,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
-  **7.13 завершён**; ближайшая задача — **7.15**;
+  **7.13 завершён**; ближайшая задача согласованного блока — **8.18**, затем 7.18;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v17 в Rust не завершены.
 
@@ -2802,7 +2802,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   workspace all-targets clippy, format и diff check.
 - **Зависит от:** 0A.3, 1.7, 3.12f. **Открывает:** 12.14.
 
-### 7.15. Per-round checkpoints (v12, не завершено)
+### 7.15. Per-round checkpoints (v12, завершено)
 
 - **Цель:** считать и persist per-round `checkpoint_json`.
 - **Source evidence:** `git_snapshot.py:32-458`; `worker.py:1366-1529`;
@@ -2817,6 +2817,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   canonical topology `workspace`/`external N`.
 - **Targeted checks:** `diff_round_stat` tests; worker checkpoint tests;
   storage `parse_round_checkpoint` tests.
+- **Результат:** Git checkpoint state использует тот же listed-file set и digests,
+  с file/binary/symlink classification и отдельным kind-aware fingerprint.
+  `diff_round_stat` считает predecessor-only add/modify/delete/rename, включая
+  deterministic duplicate-digest rename pairing и baseline unknown kind.
+  Worker builder берёт строго round N-1, проверяет topology/availability/trusted
+  external roots, хранит exact changed/absent до 2000 entries; oversized или
+  non-UTF8/unrepresentable state unavailable без усечения. Только relative paths
+  и workspace/external N labels сериализуются. Worktree root/baseline передаются
+  явно от authenticated caller; worktree execution wiring остаётся в 7.16.
+  `finish_round_with_checkpoint` и worker `finish_round_with_diagnostics` пишут
+  checkpoint/usage/task/round/event атомарно; read-only corrupt parsing unavailable.
+- **Проверки:** 9 frozen Python diff-stat goldens; 481 Git/storage/worker tests,
+  реальные temporary repos, predecessor-only delta, corrupt/missing predecessor,
+  exact-state bound/topology, binary/symlink/exec, ignored files, rollback и
+  combined checkpoint/usage finish. Clippy/format/diff check прошли.
 - **Зависит от:** 0A.4, 1.7, 3.12a. **Открывает:** 12.13.
 
 ### 7.16. execution_mode=worktree execution (v10, не завершено)
@@ -3699,7 +3714,7 @@ improvement**. Limitation не выдаётся за реализованное 
    **0B.3 завершён** (4 SQLite delta fixtures и migration parity).
    **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
    **0B.5 завершён** (77 runtime/automation cases).
-   **7.13 завершён**; **ближайшая задача — 7.15**; delta fixtures refresh завершён.
+   **7.13 завершён**; **ближайшая задача согласованного блока — 8.18**, затем 7.18; delta fixtures refresh завершён.
 2. После завершённых delta fixtures и 7.13 продолжить 7.15 и потребителей existing v15
    (7.14–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
    schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;

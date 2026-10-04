@@ -282,6 +282,10 @@ fn surrogateescape_key_bytes(bytes: &[u8]) -> Vec<u32> {
 
 /// Hashes one listed path, or returns `None` when it is absent.
 fn hash_listed_file(path: &Path) -> Result<Option<[u8; 32]>, GitError> {
+    Ok(listed_file_state(path)?.map(|(digest, _)| digest))
+}
+
+pub(crate) fn listed_file_state(path: &Path) -> Result<Option<([u8; 32], &'static str)>, GitError> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -290,7 +294,9 @@ fn hash_listed_file(path: &Path) -> Result<Option<[u8; 32]>, GitError> {
 
     let file_type = metadata.file_type();
     let mut hasher = Sha256::new();
+    let mut kind = "file";
     if file_type.is_symlink() {
+        kind = "symlink";
         let target = std::fs::read_link(path).map_err(|_| GitError::ManifestIo)?;
         hasher.update(b"link\0");
         update_os(&mut hasher, target.as_os_str());
@@ -308,11 +314,14 @@ fn hash_listed_file(path: &Path) -> Result<Option<[u8; 32]>, GitError> {
                 break;
             }
             hasher.update(&buffer[..read]);
+            if buffer[..read].contains(&0) {
+                kind = "binary";
+            }
         }
     } else {
         return Err(GitError::UnsupportedFileType);
     }
-    Ok(Some(hasher.finalize()))
+    Ok(Some((hasher.finalize(), kind)))
 }
 
 /// Returns whether any executable bit is set.

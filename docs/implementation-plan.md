@@ -2803,11 +2803,20 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   close/session/namespace/endpoint races). Default historical no-reply entry point сохранён.
   Это service для saved direct round; worktree observer/full worker FSM и
   production CLI/MCP wiring остаются отдельными consumers.
-- **7.8b. Controller permissions (не завершено).** Generated OpenCode config:
+- **7.8b. Controller permissions (permission service завершён; launch wiring открыт).** Generated OpenCode config:
   external_directory `*→ask`, `<state_root>/*→allow` при opt-in; edit/task deny
   и bash ask сохраняются. Source: `opencode_launcher.controller_agent_permission`
   (v17). Checks: `tests/test_launchers.py`; unsupported pattern fail closed.
   Depends on 2.13, 0B.2, 9.13.
+  `bridge-runtime::controller_permissions::controller_agent_permission`
+  генерирует точные hard denies/ask и opt-in external_directory scope, не
+  создавая state и не расширяя trusted external Git roots. Общий generator
+  state pattern повторно проверяется при вызове; filesystem root, wildcards,
+  relative/unrepresentable root fail closed. CONTROLLER_SUBAGENT_DEPTH=0
+  сохранён отдельным security constant для launch consumer. Шесть frozen
+  controller cases и дополнительные default/normalization/no-creation cases
+  пройдены; workspace all-targets clippy без предупреждений. Полный generated
+  config и применение этих правил при реальном launch остаются в 9.13.
 
 ### 7.9. Failed/delivery_unknown
 

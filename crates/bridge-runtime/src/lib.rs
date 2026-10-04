@@ -2,6 +2,7 @@
 //! Production uses `opencode serve`; fixtures may inject a trusted executable.
 //! All service artifacts live outside the proven checkout. No MCP/CLI startup
 //! is performed by this library; callers hold the task lifecycle/worker fence.
+pub mod controller_permissions;
 pub mod lock;
 mod process;
 use bridge_config::{Endpoint, ProjectEntry};

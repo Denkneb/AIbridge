@@ -131,6 +131,46 @@ pub fn main_common_dir(workspace: &Path) -> Result<PathBuf, CheckoutError> {
     }
     git_path(&workspace, "--git-common-dir")
 }
+/// Checks the repository containing each allowed scope, including absent paths.
+/// # Errors
+/// External, traversing and nested-repository scopes cannot use one checkout.
+pub fn check_worktree_scopes(workspace: &Path, scopes: &[String]) -> Result<(), CheckoutError> {
+    let root = fs::canonicalize(workspace).map_err(|_| CheckoutError::Io)?;
+    main_common_dir(&root)?;
+    for scope in scopes {
+        let relative = Path::new(scope);
+        if relative.is_absolute()
+            || relative.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(CheckoutError::Unsupported);
+        }
+        let mut directory = root.join(relative);
+        if fs::symlink_metadata(&directory).is_ok() {
+            directory = fs::canonicalize(directory).map_err(|_| CheckoutError::Io)?;
+            if !directory.starts_with(&root) {
+                return Err(CheckoutError::Unsupported);
+            }
+        }
+        while !directory.is_dir() {
+            directory = directory
+                .parent()
+                .ok_or(CheckoutError::Unsupported)?
+                .to_path_buf();
+        }
+        let directory = fs::canonicalize(directory).map_err(|_| CheckoutError::Io)?;
+        if !directory.starts_with(&root) || git_path(&directory, "--show-toplevel")? != root {
+            return Err(CheckoutError::Unsupported);
+        }
+    }
+    Ok(())
+}
 /// Cheap runtime recheck, including committed attributes at the pinned base.
 /// # Errors
 /// Rejects submodules, LFS and sparse checkout; infrastructure failures refuse.

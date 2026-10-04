@@ -402,6 +402,8 @@ pub fn prepare_round_execution(
         return Err(ExecutionError::Binding);
     }
     check_supported(project.workspace(), base).map_err(|_| ExecutionError::Unsupported)?;
+    bridge_git::checkout::check_worktree_scopes(project.workspace(), &task.allowed_paths)
+        .map_err(|_| ExecutionError::Unsupported)?;
     let paths = CheckoutPaths::new(&layout.project_dir(), task.task_id)
         .map_err(|_| ExecutionError::Binding)?;
     paths

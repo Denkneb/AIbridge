@@ -119,6 +119,8 @@ pub fn submit_task_with_profile(
         }
         bridge_git::checkout::main_common_dir(project.workspace())
             .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        bridge_git::checkout::check_worktree_scopes(project.workspace(), &input.task.allowed_paths)
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?;
         let base = bridge_git::head(project.workspace())
             .map_err(|_| SubmissionError::WorktreeUnsupported)?
             .ok_or(SubmissionError::WorktreeUnsupported)?

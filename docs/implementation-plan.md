@@ -63,7 +63,7 @@ Targeted checks:
   (structured findings, budgets, workflow/dependencies, checkpoints,
   worktree execution, executor profiles, parallel writers, quarantine,
   delivery, diagnostics/hook, config migration, on_accept и automatic plan
-  execution) в Rust **не завершены**.
+  execution) в Rust **не завершены end-to-end**; готовые application services указаны ниже.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
@@ -80,7 +80,10 @@ Targeted checks:
   **0B.5 завершён** (77 runtime/automation cases, без skips).
   **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
   Согласованный блок 7.14 → 7.15 → 8.18 → 7.18 завершён.
-  Следующий крупный блок backend — **7.16 (Worktree execution)**; новые v16/v17 задачи идут по зависимостям.
+  **7.16 завершён** как исполнимый блок application services (checkout, task runtime,
+  revision/cwd, close/recovery/quarantine); manager lock **9.7a завершён**.
+  Следующий блок backend — **7.17 (writer admission/locks)**; полный worker FSM,
+  CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -414,7 +417,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; 7.13 также завершён. Согласованный блок завершён; следующий крупный блок — 7.16.**
+  **0B завершён; 7.13–7.16 и согласованный профильный блок завершены на уровне services; следующий крупный блок — 7.17.**
 
 ## Поток 1. Rust foundation
 
@@ -2836,11 +2839,13 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   combined checkpoint/usage finish. Clippy/format/diff check прошли.
 - **Зависит от:** 0A.4, 1.7, 3.12a. **Открывает:** 12.13.
 
-### 7.16. execution_mode=worktree execution (v10, не завершено)
+### 7.16. execution_mode=worktree execution (v10, завершено)
 
-Не завершено. Разбито на малые подзадачи; config validation — 2.10, storage
-lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача меняет один
-компонент.
+Завершено как исполнимые application services: подготовка checkout/runtime,
+исполнение round consumers в execution root, recovery/close и logical quarantine.
+Config validation — 2.10, storage lifecycle — 3.12e, security policy — 0A.5.
+Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
+остаются отдельными пунктами; live OpenCode/model smoke ещё не заявлен.
 
 - **7.16a. Git checkout/binding и base HEAD (завершено).**
   - **Цель:** dedicated checkout + submit-time base HEAD, task execution root vs
@@ -2853,7 +2858,7 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
     submit-time OID, доказывает canonical slot/root/common-dir и admin backref.
     Symlink/foreign/missing registered paths fail closed; explicit remove без
     global prune. Unsupported LFS/submodule/sparse и state внутри workspace
-    отклоняются до add. Worker/storage binding интегрируется в 7.16c.
+    отклоняются до add. Worker/storage binding реализован в 7.16c.
   - **Проверено:** 72 Git tests, включая 7 real-repository checkout scenarios;
     Clippy, fmt и diff check.
   - **Зависит от:** 0A.5, 2.10, 3.12e. **Открывает:** 7.16b.
@@ -2895,13 +2900,29 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
     реальные Git checkout, два раунда с fixture server и verifier cwd;
     workspace all-target clippy без warnings.
   - **Зависит от:** 7.16b, 5.4. **Открывает:** 7.16d.
-- **7.16d. Close/recovery/retention и orphan logical quarantine.**
+- **7.16d. Close/recovery/retention и orphan logical quarantine (завершено).**
   - **Цель:** close/recovery/retention и logical orphan quarantine.
   - **Source evidence:** `git_worktree.py:455-769`;
     `storage.py:3319-3929`.
   - **Критерии приёмки:** fail-closed transition maps; orphan logical
     quarantine без физической очистки.
   - **Targeted checks:** worktree recovery/quarantine tests.
+  - **Результат:** `bridge-worker::lifecycle` persist close → nonblocking
+    worker lock → removing → owned server stop → proven checkout removal →
+    private task dir removal → removed → closed. Pending terminalizes logically;
+    error rows and review/failed/needs-user/delivery-unknown/accepted results retained.
+    Failed cleanup сохраняет close marker/removing и фиксированный deferred event;
+    crash after physical removal retries idempotently. Storage forbids early
+    worktree close in the same transaction; historical v6/direct behavior preserved.
+    Created missing checkout fails active round with worktree_missing, blocks
+    admission and never recreates; existing checkout requires Git binding proof.
+    Orphan scan is logical/idempotent, without move/remove/chmod/global prune.
+    Nested/external/symlinked scopes проверяются до создания/HTTP.
+  - **Проверено:** 24 runtime/worker integration scenarios и 8 checkout scenarios,
+    включая close while busy, foreign record, pending/creating/error, failure after
+    physical cleanup, missing registered checkout, retained results, orphan
+    idempotency и symlink root/entry refusal; **1080 workspace tests passed**,
+    all-target clippy без warnings, format/diff checks passed.
   - **Зависит от:** 7.16c, 3.12e. **Открывает:** 9.17, 9.18a.
 
 ### 7.17. Writers admission/locks (v14 B1 + v15 B2, не завершено)
@@ -3761,7 +3782,7 @@ improvement**. Limitation не выдаётся за реализованное 
    **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
    **0B.5 завершён** (77 runtime/automation cases).
    **7.13 завершён**; **7.14/7.15/8.18/7.18 завершены**; delta fixtures refresh завершён.
-2. После завершённого блока продолжить worktree execution 7.16 и remaining
+2. После завершённого worktree service блока 7.16 продолжить writer locks 7.17 и remaining
    consumers existing v15 (7.17, 8.12–8.17, 9.15–9.20, 12.13–12.15). Новые delivery/config/
    schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;
    recovery corrections 7.10/8.20 и startup wait 9.7a включены в свои потоки.

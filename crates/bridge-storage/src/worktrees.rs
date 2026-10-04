@@ -249,6 +249,55 @@ impl StorageConnection {
         owner(&self.connection, id, project)?;
         wt(&self.connection, id)
     }
+    /// Fail an active round when its previously created checkout was lost.
+    /// Caller proves absence under the worker lifecycle lock; no re-creation.
+    pub fn fail_worktree_missing(
+        &mut self,
+        round: super::RoundRef,
+    ) -> Result<super::RoundUpdateOutcome, super::RoundUpdateError> {
+        let valid: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks JOIN worktrees USING(task_id) WHERE tasks.task_id=?1 AND tasks.project_id=?2 AND execution_mode='worktree' AND worktrees.status='created')",
+            params![round.task_id.to_string(), round.project_id.as_str()], |r| r.get(0),
+        ).map_err(super::RoundUpdateError::Database)?;
+        if !valid {
+            return Err(super::RoundUpdateError::InvalidPersistedState);
+        }
+        let pending: bool = self.connection.query_row(
+            "SELECT status='pending' AND attempted=0 FROM rounds WHERE task_id=?1 AND round_number=?2",
+            params![round.task_id.to_string(), round.round_number], |r| r.get(0),
+        ).map_err(super::RoundUpdateError::Database)?;
+        self.finish_round_inner(
+            super::FinishRoundInput {
+                round,
+                round_status: bridge_domain::RoundStatus::Failed,
+                task_status: bridge_domain::TaskStatus::Failed,
+                response_message_id: None,
+                response: None,
+                error_code: Some("worktree_missing".into()),
+                result_json: Some(serde_json::json!({"error":"worktree_missing"})),
+            },
+            pending,
+            None,
+        )
+    }
+
+    /// Records a fixed-label retry diagnostic without exposing paths or OS errors.
+    pub fn record_worktree_cleanup_deferred(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+    ) -> Result<(), WorktreeStorageError> {
+        self.mutate_worktree(id, project, |tx, _, now| {
+            event(
+                tx,
+                id,
+                "worktree_cleanup_deferred",
+                "worktree cleanup deferred",
+                now,
+            )
+        })?;
+        Ok(())
+    }
     pub fn update_worktree_status(
         &mut self,
         id: TaskId,

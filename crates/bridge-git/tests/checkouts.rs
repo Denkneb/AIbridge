@@ -236,3 +236,28 @@ impl Fixture {
         create_checkout(&self.repo, &self.state, self.id(), &self.base).is_err()
     }
 }
+
+#[test]
+fn worktree_scopes_reject_nested_external_and_traversing_paths_before_creation() {
+    use bridge_git::checkout::check_worktree_scopes;
+    let f = Fixture::new();
+    assert!(check_worktree_scopes(&f.repo, &["file.txt".into(), "new/sub/file".into()]).is_ok());
+    let nested = f.repo.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    git(&nested, &["init", "-q"]);
+    for scope in ["nested", "nested/new/file", "../outside", "/tmp/outside"] {
+        assert!(check_worktree_scopes(&f.repo, &[scope.into()]).is_err());
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&f.state, f.repo.join("external")).unwrap();
+        std::os::unix::fs::symlink(&nested, f.repo.join("nested-link")).unwrap();
+        std::fs::write(f.state.join("external-file"), "external").unwrap();
+        std::os::unix::fs::symlink(f.state.join("external-file"), f.repo.join("file-link"))
+            .unwrap();
+        for scope in ["external", "nested-link", "file-link"] {
+            assert!(check_worktree_scopes(&f.repo, &[scope.into()]).is_err());
+        }
+    }
+    assert!(!f.state.join("worktrees").exists());
+}

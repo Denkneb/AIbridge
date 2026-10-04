@@ -11907,6 +11907,9 @@ impl StorageConnection {
         } else {
             input.task_status
         };
+        if effective_task_status == TaskStatus::Closed {
+            require_removed_worktree_for_close(&transaction, task.task_id)?;
+        }
         if effective_task_status != task.status {
             task.status
                 .require_transition(effective_task_status)
@@ -12303,6 +12306,58 @@ impl StorageConnection {
 // the Python `reason[:300]` slice.
 // ---------------------------------------------------------------------------
 
+// Closing a worktree task is allowed only after the physical lifecycle finished.
+// Runs in the same writer transaction as the terminal transition.
+fn require_removed_worktree_for_close(
+    connection: &Connection,
+    task: TaskId,
+) -> Result<(), RoundUpdateError> {
+    let has_execution: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='execution_mode')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(RoundUpdateError::Database)?;
+    if !has_execution {
+        // Historical v6 lifecycle has no execution mode or worktree registry.
+        let has_registry: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worktrees')",
+            [], |r| r.get(0),
+        ).map_err(RoundUpdateError::Database)?;
+        return if has_registry {
+            Err(RoundUpdateError::InvalidPersistedState)
+        } else {
+            Ok(())
+        };
+    }
+    let execution: String = connection
+        .query_row(
+            "SELECT execution_mode FROM tasks WHERE task_id=?1",
+            [task.to_string()],
+            |r| r.get(0),
+        )
+        .map_err(RoundUpdateError::Database)?;
+    match execution.as_str() {
+        "direct" => Ok(()),
+        "worktree" => {
+            let removed: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM worktrees WHERE task_id=?1 AND status='removed')",
+                    [task.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(RoundUpdateError::Database)?;
+            if removed {
+                Ok(())
+            } else {
+                Err(RoundUpdateError::InvalidPersistedState)
+            }
+        }
+        _ => Err(RoundUpdateError::InvalidPersistedState),
+    }
+}
+
 impl StorageConnection {
     /// Atomically persists a cooperative close request for a running worker.
     ///
@@ -12399,6 +12454,8 @@ impl StorageConnection {
     ///
     /// A repeat after the task is `closed` returns
     /// [`CompleteRequestedCloseOutcome::Terminal`] and writes nothing.
+    /// Modern worktree tasks require a `removed` registry row before closing;
+    /// the lifecycle service completes cleanup first. Historical v6 is direct.
     ///
     /// # Errors
     ///
@@ -12425,6 +12482,7 @@ impl StorageConnection {
         if task.close_requested_at.is_none() {
             return Ok(CompleteRequestedCloseOutcome::NoCloseRequest);
         }
+        require_removed_worktree_for_close(&transaction, task_id)?;
         task.status
             .require_transition(TaskStatus::Closed)
             .map_err(|_| RoundUpdateError::InvalidTaskTransition)?;

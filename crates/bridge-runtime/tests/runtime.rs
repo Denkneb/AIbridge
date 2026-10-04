@@ -605,3 +605,370 @@ fn creating_crash_recovers_only_a_proven_partial_checkout_and_keeps_frozen_base(
     );
     f.stop().unwrap();
 }
+
+fn recover(f: &Fixture) -> bridge_worker::lifecycle::RecoveryOutcome {
+    bridge_worker::lifecycle::recover_worktree_task(&f.layout, &f.project, f.task, &[]).unwrap()
+}
+fn close(f: &Fixture) -> bridge_worker::lifecycle::RecoveryOutcome {
+    bridge_worker::lifecycle::close_worktree_task(&f.layout, &f.project, f.task, "finished", &[])
+        .unwrap()
+}
+#[test]
+fn explicit_close_stops_owned_server_removes_only_task_checkout_then_closes() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = Fixture::new();
+    let before = bridge_git::take_snapshot(f.project.workspace()).unwrap();
+    f.start("serve").unwrap();
+    std::fs::write(f.checkout.join("file"), "executor result\n").unwrap();
+    assert_eq!(close(&f), RecoveryOutcome::Closed);
+    assert!(!f.checkout.parent().unwrap().exists());
+    let s = f.layout.open().unwrap();
+    assert_eq!(
+        s.get_task(f.task).unwrap().unwrap().status,
+        TaskStatus::Closed
+    );
+    assert_eq!(
+        s.get_worktree(f.task, f.project.id())
+            .unwrap()
+            .unwrap()
+            .status,
+        WorktreeStatus::Removed
+    );
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        before
+    );
+    assert_eq!(close(&f), RecoveryOutcome::Blocked);
+}
+#[test]
+fn busy_worker_defers_close_and_storage_cannot_terminalize_before_cleanup() {
+    use bridge_worker::{WorkerLock, WorkerLockOutcome, lifecycle::RecoveryOutcome};
+    let _network = network_fence();
+    let f = Fixture::new();
+    let WorkerLockOutcome::Acquired(guard) = WorkerLock::try_acquire(&f.layout).unwrap() else {
+        panic!()
+    };
+    assert_eq!(close(&f), RecoveryOutcome::Deferred);
+    let mut s = f.layout.open().unwrap();
+    assert!(matches!(
+        s.complete_requested_close(f.task),
+        Err(bridge_storage::RoundUpdateError::InvalidPersistedState)
+    ));
+    assert!(
+        s.finish_round(bridge_storage::FinishRoundInput {
+            round: bridge_storage::RoundRef {
+                task_id: f.task,
+                project_id: f.project.id().clone(),
+                round_number: 1
+            },
+            round_status: bridge_domain::RoundStatus::Failed,
+            task_status: TaskStatus::Failed,
+            response_message_id: None,
+            response: None,
+            error_code: None,
+            result_json: None,
+        })
+        .is_err()
+    );
+    assert_eq!(
+        s.get_task(f.task).unwrap().unwrap().status,
+        TaskStatus::Implementing
+    );
+    assert!(f.checkout.exists());
+    drop(guard);
+    assert_eq!(recover(&f), RecoveryOutcome::Closed);
+}
+#[test]
+fn pending_close_is_logical_and_error_rows_retain_diagnostics() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = pending_execution_fixture();
+    // A pending row does not authorize deletion of an unexpected directory.
+    std::fs::create_dir_all(&f.checkout).unwrap();
+    std::fs::write(f.checkout.join("sentinel"), "retain").unwrap();
+    assert_eq!(close(&f), RecoveryOutcome::Closed);
+    assert_eq!(
+        std::fs::read_to_string(f.checkout.join("sentinel")).unwrap(),
+        "retain"
+    );
+    let g = Fixture::new();
+    g.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE worktrees SET status='error'", [])
+        .unwrap();
+    assert_eq!(recover(&g), RecoveryOutcome::Blocked);
+    assert_eq!(close(&g), RecoveryOutcome::Deferred);
+    assert!(g.checkout.exists());
+    assert_ne!(
+        g.layout
+            .open()
+            .unwrap()
+            .get_task(g.task)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Closed
+    );
+}
+#[test]
+fn cleanup_crash_after_physical_removal_retries_before_terminal_transition() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = Fixture::new();
+    f.layout.open().unwrap().connection().execute_batch("CREATE TRIGGER defer_removed BEFORE UPDATE OF status ON worktrees WHEN NEW.status='removed' BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+    assert_eq!(close(&f), RecoveryOutcome::Deferred);
+    assert!(!f.checkout.parent().unwrap().exists());
+    let s = f.layout.open().unwrap();
+    assert_eq!(
+        s.get_worktree(f.task, f.project.id())
+            .unwrap()
+            .unwrap()
+            .status,
+        WorktreeStatus::Removing
+    );
+    assert_eq!(
+        s.get_task(f.task).unwrap().unwrap().status,
+        TaskStatus::Implementing
+    );
+    let n: u32 = s
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind='worktree_cleanup_deferred'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    s.connection()
+        .execute_batch("DROP TRIGGER defer_removed")
+        .unwrap();
+    assert_eq!(recover(&f), RecoveryOutcome::Closed);
+}
+#[test]
+fn foreign_live_record_defers_cleanup_without_signalling_or_removing_checkout() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = Fixture::new();
+    f.start("serve").unwrap();
+    let original = f.change_record(|r| {
+        r["task_id"] = serde_json::json!("22222222-2222-4222-8222-222222222222")
+    });
+    assert_eq!(close(&f), RecoveryOutcome::Deferred);
+    assert!(f.checkout.is_dir());
+    std::fs::write(f.record(), original).unwrap();
+    assert_eq!(
+        worktree_server_state(&f.layout, &f.project, f.task).unwrap(),
+        ServerState::Live
+    );
+    assert_eq!(recover(&f), RecoveryOutcome::Closed);
+}
+#[test]
+fn created_missing_active_checkout_fails_without_recreation_or_server_spawn() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = Fixture::new();
+    bridge_git::checkout::remove_checkout(
+        f.project.workspace(),
+        &f.layout.project_dir(),
+        f.task,
+        &f.checkout,
+    )
+    .unwrap();
+    assert_eq!(recover(&f), RecoveryOutcome::MissingCheckout);
+    assert!(!f.checkout.exists());
+    assert!(!f.record().exists());
+    let s = f.layout.open().unwrap();
+    assert_eq!(
+        s.get_task(f.task).unwrap().unwrap().status,
+        TaskStatus::Failed
+    );
+    let error: String = s
+        .connection()
+        .query_row(
+            "SELECT error_code FROM rounds WHERE task_id=?1",
+            [f.task.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(error, "worktree_missing");
+    assert!(!recover(&f).may_spawn());
+}
+#[test]
+fn review_failed_needs_user_delivery_unknown_and_accepted_keep_checkout_and_contents() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    for status in [
+        "awaiting_review",
+        "failed",
+        "needs_user",
+        "delivery_unknown",
+        "accepted",
+    ] {
+        let f = Fixture::new();
+        std::fs::write(f.checkout.join("file"), "keep result\n").unwrap();
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute("UPDATE tasks SET status=?1", [status])
+            .unwrap();
+        assert_eq!(recover(&f), RecoveryOutcome::Retained);
+        assert_eq!(
+            std::fs::read_to_string(f.checkout.join("file")).unwrap(),
+            "keep result\n"
+        );
+    }
+}
+#[test]
+fn orphan_quarantine_is_idempotent_logical_and_preserves_git_registration_and_files() {
+    let _network = network_fence();
+    let f = Fixture::new();
+    let orphan: TaskId = "22222222-2222-4222-8222-222222222222".parse().unwrap();
+    let base = git(f.project.workspace(), &["rev-parse", "HEAD"]);
+    let o = bridge_git::checkout::create_checkout(
+        f.project.workspace(),
+        &f.layout.project_dir(),
+        orphan,
+        &base,
+    )
+    .unwrap();
+    std::fs::write(o.paths.checkout.join("file"), "keep orphan\n").unwrap();
+    let invalid = f.layout.project_dir().join("worktrees/invalid-id");
+    std::fs::create_dir_all(&invalid).unwrap();
+    std::fs::write(invalid.join("sentinel"), "keep invalid").unwrap();
+    let registrations = bridge_git::checkout::registrations(f.project.workspace()).unwrap();
+    let original = bridge_git::take_snapshot(&o.paths.checkout).unwrap();
+    let metadata = std::fs::metadata(&o.paths.task_dir).unwrap();
+    assert_eq!(
+        bridge_worker::lifecycle::quarantine_orphans(&f.layout, &f.project).unwrap(),
+        2
+    );
+    let entries = f.layout.open().unwrap().list_worktree_quarantine().unwrap();
+    assert_eq!(
+        bridge_worker::lifecycle::quarantine_orphans(&f.layout, &f.project).unwrap(),
+        0
+    );
+    assert_eq!(
+        entries,
+        f.layout.open().unwrap().list_worktree_quarantine().unwrap()
+    );
+    assert!(entries.iter().all(|e| e.quarantined_path.is_none()));
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.reason.as_deref() == Some("orphan_registered"))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.reason.as_deref() == Some("invalid_task_id"))
+    );
+    assert_eq!(
+        bridge_git::checkout::registrations(f.project.workspace()).unwrap(),
+        registrations
+    );
+    assert_eq!(
+        bridge_git::take_snapshot(&o.paths.checkout).unwrap(),
+        original
+    );
+    assert_eq!(
+        std::fs::metadata(o.paths.task_dir).unwrap().permissions(),
+        metadata.permissions()
+    );
+    assert_eq!(
+        std::fs::read_to_string(invalid.join("sentinel")).unwrap(),
+        "keep invalid"
+    );
+}
+
+#[test]
+fn creating_close_cleans_proven_partial_checkout_or_absent_slot() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    for present in [true, false] {
+        let f = Fixture::new();
+        if !present {
+            bridge_git::checkout::remove_checkout(
+                f.project.workspace(),
+                &f.layout.project_dir(),
+                f.task,
+                &f.checkout,
+            )
+            .unwrap();
+        }
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute("UPDATE worktrees SET status='creating'", [])
+            .unwrap();
+        assert_eq!(close(&f), RecoveryOutcome::Closed);
+        assert!(!f.checkout.parent().unwrap().exists());
+    }
+}
+#[test]
+fn missing_checkout_with_live_registration_defers_close_without_global_pruning() {
+    use bridge_worker::lifecycle::RecoveryOutcome;
+    let _network = network_fence();
+    let f = Fixture::new();
+    std::fs::remove_dir_all(&f.checkout).unwrap();
+    let before = bridge_git::checkout::registrations(f.project.workspace()).unwrap();
+    assert!(before.contains(&f.checkout));
+    assert_eq!(close(&f), RecoveryOutcome::Deferred);
+    assert_eq!(
+        before,
+        bridge_git::checkout::registrations(f.project.workspace()).unwrap()
+    );
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(f.task)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Implementing
+    );
+}
+#[cfg(unix)]
+#[test]
+fn orphan_scan_refuses_symlink_root_and_never_traverses_symlink_entries() {
+    let _network = network_fence();
+    let f = Fixture::new();
+    let outside = f.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("sentinel"), "keep outside").unwrap();
+    let root = f.layout.project_dir().join("worktrees");
+    std::os::unix::fs::symlink(&outside, root.join("symlink-orphan")).unwrap();
+    assert_eq!(
+        bridge_worker::lifecycle::quarantine_orphans(&f.layout, &f.project).unwrap(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "keep outside"
+    );
+    std::fs::rename(&root, f.layout.project_dir().join("saved-worktrees")).unwrap();
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+    assert_eq!(
+        bridge_worker::lifecycle::quarantine_orphans(&f.layout, &f.project),
+        Err(bridge_worker::execution::ExecutionError::Binding)
+    );
+    assert!(
+        f.layout
+            .open()
+            .unwrap()
+            .list_worktree_quarantine()
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_file(root).unwrap();
+    std::fs::rename(
+        f.layout.project_dir().join("saved-worktrees"),
+        f.layout.project_dir().join("worktrees"),
+    )
+    .unwrap();
+}

@@ -52,7 +52,7 @@ pub struct RoundObserver<'a> {
     owner: uuid::Uuid,
     pub(crate) execution: &'a RoundExecution,
     pub(crate) layout: &'a RustStateLayout,
-    session: String,
+    pub(crate) session: String,
     outbound: String,
     grace: Duration,
     deadline: Duration,
@@ -60,6 +60,11 @@ pub struct RoundObserver<'a> {
     delivered: bool,
     last_messages: Vec<Message>,
     done: bool,
+    pub(crate) visible_history: bool,
+    pub(crate) pending_blockers: Vec<Value>,
+    pub(crate) blockers_since: Option<Duration>,
+    pub(crate) replied: HashSet<String>,
+    pub(crate) approvals: Vec<Value>,
 }
 impl fmt::Debug for RoundObserver<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -92,6 +97,11 @@ impl<'a> RoundObserver<'a> {
             delivered: false,
             last_messages: Vec::new(),
             done: false,
+            visible_history: false,
+            pending_blockers: Vec::new(),
+            blockers_since: None,
+            replied: HashSet::new(),
+            approvals: Vec::new(),
         };
         observer.guard()?;
         Ok(observer)
@@ -120,14 +130,12 @@ impl<'a> RoundObserver<'a> {
         if self.done {
             return Err(ExecutionError::Round);
         }
+        self.visible_history = false;
         self.guard()?;
         let messages = self.execution.client.list_messages(&self.session);
         let row = self.guard()?;
         let elapsed = clock();
-        if elapsed < self.elapsed {
-            return Err(ExecutionError::Round);
-        }
-        self.elapsed = elapsed;
+        self.record_time(elapsed)?;
         if messages.as_ref().is_ok_and(|history| {
             history
                 .iter()
@@ -148,6 +156,7 @@ impl<'a> RoundObserver<'a> {
                 .any(|m| m.is_user() && m.info().id() == Some(&self.outbound))
         });
         if has_outbound {
+            self.visible_history = true;
             self.delivered = true;
             self.last_messages = messages.map_err(|_| ExecutionError::Runtime)?;
         }
@@ -262,13 +271,30 @@ impl<'a> RoundObserver<'a> {
             &candidate.messages,
         )
     }
-    fn finish(
+    pub(crate) fn record_time(&mut self, elapsed: Duration) -> Result<(), ExecutionError> {
+        if elapsed < self.elapsed {
+            return Err(ExecutionError::Round);
+        }
+        self.elapsed = elapsed;
+        Ok(())
+    }
+    pub(crate) fn finish(
         &mut self,
         round_status: RoundStatus,
         task_status: TaskStatus,
         code: &str,
         result: Value,
     ) -> Result<Observation, ExecutionError> {
+        self.guard()?;
+        let mut result = result;
+        if self.execution.baseline_json()?.is_some() {
+            let changes = self.execution.collect_repositories(self.layout)?;
+            let mut collected = crate::completion::collection_json(&changes)?;
+            for (key, value) in result.as_object().ok_or(ExecutionError::Round)? {
+                collected[key] = value.clone();
+            }
+            result = collected;
+        }
         self.guard()?;
         let outcome = self.execution.finish(
             self.layout,

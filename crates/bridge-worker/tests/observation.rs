@@ -28,6 +28,11 @@ struct Fixture {
     layout: RustStateLayout,
     execution: FencedRoundExecution,
     body: Arc<Mutex<(u16, Value)>>,
+    permissions: Arc<Mutex<(u16, Value)>>,
+    questions: Arc<Mutex<(u16, Value)>>,
+    replies_status: Arc<Mutex<u16>>,
+    calls: Arc<Mutex<Vec<String>>>,
+    permission_hook: RequestHook,
     hook: RequestHook,
     requests: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
@@ -75,10 +80,22 @@ impl Fixture {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let body = Arc::new(Mutex::new((200, json!([]))));
+        let permissions = Arc::new(Mutex::new((200, json!([]))));
+        let questions = Arc::new(Mutex::new((200, json!([]))));
+        let replies_status = Arc::new(Mutex::new(200));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let permission_hook: RequestHook = Arc::new(Mutex::new(None));
         let hook: RequestHook = Arc::new(Mutex::new(None));
         let requests = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (b, h, r, s) = (body.clone(), hook.clone(), requests.clone(), stop.clone());
+        let (p, q, rs, recorded, ph) = (
+            permissions.clone(),
+            questions.clone(),
+            replies_status.clone(),
+            calls.clone(),
+            permission_hook.clone(),
+        );
         let server = thread::spawn(move || {
             while !s.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -95,15 +112,44 @@ impl Fixture {
                             request.push(byte[0]);
                         }
                         let request = String::from_utf8(request).unwrap();
-                        assert!(
-                            request.starts_with("GET /session/session/message?"),
-                            "unexpected method/path"
-                        );
-                        r.fetch_add(1, Ordering::Relaxed);
-                        if let Some(action) = h.lock().unwrap().take() {
-                            action();
-                        }
-                        let (status, value) = b.lock().unwrap().clone();
+                        let first = request.lines().next().unwrap();
+                        let target = first.split_whitespace().nth(1).unwrap();
+                        let path = target.split('?').next().unwrap();
+                        let length = request
+                            .lines()
+                            .filter_map(|l| l.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, v)| v.trim().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        let mut payload = vec![0; length];
+                        stream.read_exact(&mut payload).unwrap();
+                        recorded
+                            .lock()
+                            .unwrap()
+                            .push(format!("{first}|{}", String::from_utf8(payload).unwrap()));
+                        let (status, value) = match (first.split_whitespace().next().unwrap(), path)
+                        {
+                            ("GET", "/session/session/message") => {
+                                r.fetch_add(1, Ordering::Relaxed);
+                                if let Some(action) = h.lock().unwrap().take() {
+                                    action();
+                                }
+                                b.lock().unwrap().clone()
+                            }
+                            ("GET", "/permission") => {
+                                if let Some(action) = ph.lock().unwrap().take() {
+                                    action();
+                                }
+                                p.lock().unwrap().clone()
+                            }
+                            ("GET", "/question") => q.lock().unwrap().clone(),
+                            ("POST", path)
+                                if path.starts_with("/permission/") && path.ends_with("/reply") =>
+                            {
+                                (*rs.lock().unwrap(), json!({}))
+                            }
+                            _ => panic!("unexpected method/path"),
+                        };
                         let payload = value.to_string();
                         write!(stream, "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).unwrap();
                     }
@@ -168,6 +214,11 @@ impl Fixture {
             layout,
             execution,
             body,
+            permissions,
+            questions,
+            replies_status,
+            calls,
+            permission_hook,
             hook,
             requests,
             stop,
@@ -1112,4 +1163,207 @@ fn resume_requires_attempt_and_saved_identifiers_and_refuses_terminal_or_close()
         assert!(resume_round_execution(&f.layout, project, round, seconds(2)).is_err());
         assert_eq!(f.requests.load(Ordering::Relaxed), 0);
     }
+}
+
+fn running_history() -> Value {
+    json!([
+        user("outbound"),
+        assistant("outbound", "tool-calls", json!([]))
+    ])
+}
+fn permission(id: &str, session: &str) -> Value {
+    json!({"id":id,"sessionID":session,"permission":"bash","patterns":["cargo test --offline"]})
+}
+fn project(f: &Fixture, approve: bool) -> bridge_config::ProjectEntry {
+    if approve {
+        use std::io::Write;
+        let mut config = std::fs::OpenOptions::new()
+            .append(true)
+            .open(f.root.join("config.toml"))
+            .unwrap();
+        writeln!(config, "auto_approve_permissions = [\"bash\"]").unwrap();
+    }
+    load_config(&f.root.join("config.toml"))
+        .unwrap()
+        .project("proj")
+        .unwrap()
+        .clone()
+}
+#[test]
+fn stale_blocker_clears_or_final_response_wins_before_grace() {
+    let f = Fixture::new();
+    f.history(running_history());
+    *f.permissions.lock().unwrap() = (200, json!([permission("pending", "session")]));
+    let project = project(&f, false);
+    let mut o = f.observer();
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(1), seconds(3))
+            .unwrap(),
+        Observation::Pending
+    ));
+    assert_eq!(f.task_status(), TaskStatus::Implementing);
+    *f.permissions.lock().unwrap() = (200, json!([]));
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(3), seconds(3))
+            .unwrap(),
+        Observation::Pending
+    ));
+    *f.permissions.lock().unwrap() = (200, json!([permission("pending", "session")]));
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(4), seconds(3))
+            .unwrap(),
+        Observation::Pending
+    ));
+    f.history(final_history());
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(5), seconds(3))
+            .unwrap(),
+        Observation::Final(_)
+    ));
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
+}
+#[test]
+fn grace_boundary_combines_permissions_and_questions_preserving_usage_and_changes() {
+    let f = Fixture::with_external(1);
+    f.history(running_history());
+    std::fs::write(f.root.join("external-0/same.txt"), "executor").unwrap();
+    *f.permissions.lock().unwrap() = (
+        200,
+        json!([
+            permission("pending", "session"),
+            permission("foreign", "other")
+        ]),
+    );
+    *f.questions.lock().unwrap() = (
+        200,
+        json!([{"id":"q","sessionID":"session","questions":[{"question":"Which approach?","header":"Question","options":[]}]}, {"id":"other","sessionID":"other","questions":[{"question":"foreign","header":"Question","options":[]}]}]),
+    );
+    let project = project(&f, false);
+    let mut o = f.observer();
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(1), seconds(3))
+            .unwrap(),
+        Observation::Pending
+    ));
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(4), seconds(3))
+            .unwrap(),
+        Observation::Finished(_)
+    ));
+    let result = f.result();
+    assert_eq!(result["blockers"].as_array().unwrap().len(), 2);
+    assert_eq!(result["blockers"][1]["text"], "Which approach?");
+    assert_eq!(result["usage"]["input"].as_f64(), Some(12.0));
+    assert_eq!(result["repositories"].as_array().unwrap().len(), 2);
+    assert!(!result.to_string().contains("foreign"));
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
+}
+#[test]
+fn deadline_inside_stale_grace_reports_real_question_without_answering_it() {
+    let f = Fixture::new();
+    f.history(running_history());
+    *f.questions.lock().unwrap() = (
+        200,
+        json!([{"id":"q","sessionID":"session","questions":[{"question":"Answer in TUI","header":"Question","options":[]}]}]),
+    );
+    let project = project(&f, false);
+    let mut o = f.observer();
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(9), seconds(15))
+            .unwrap(),
+        Observation::Pending
+    ));
+    assert!(matches!(
+        o.poll_with_blockers(&project, || seconds(11), seconds(15))
+            .unwrap(),
+        Observation::Finished(_)
+    ));
+    assert_eq!(f.result()["blockers"][0]["type"], "question");
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
+}
+#[test]
+fn configured_permission_once_is_cached_and_foreign_session_never_replied() {
+    let f = Fixture::new();
+    f.history(running_history());
+    *f.permissions.lock().unwrap() = (
+        200,
+        json!([
+            permission("allow", "session"),
+            permission("foreign", "other")
+        ]),
+    );
+    let project = project(&f, true);
+    let mut o = f.observer();
+    for now in [1, 2, 3] {
+        assert!(matches!(
+            o.poll_with_blockers(&project, || seconds(now), seconds(3))
+                .unwrap(),
+            Observation::Pending
+        ));
+    }
+    let calls = f.calls.lock().unwrap();
+    let posts: Vec<_> = calls.iter().filter(|c| c.starts_with("POST")).collect();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].starts_with("POST /permission/allow/reply?"));
+    assert!(posts[0].contains("\"reply\":\"once\""));
+}
+#[test]
+fn failed_permission_reply_is_a_blocker_and_close_during_get_prevents_reply() {
+    let f = Fixture::new();
+    f.history(running_history());
+    *f.permissions.lock().unwrap() = (200, json!([permission("allow", "session")]));
+    *f.replies_status.lock().unwrap() = 503;
+    let configured = project(&f, true);
+    assert!(matches!(
+        f.observer()
+            .poll_with_blockers(&configured, || seconds(1), Duration::ZERO)
+            .unwrap(),
+        Observation::Finished(_)
+    ));
+    assert_eq!(f.result()["blockers"][0]["reason"], "reply_failed");
+    let f = Fixture::new();
+    f.history(running_history());
+    *f.permissions.lock().unwrap() = (200, json!([permission("allow", "session")]));
+    let configured = project(&f, true);
+    let layout = f.layout.clone();
+    *f.permission_hook.lock().unwrap() = Some(Box::new(move || {
+        layout
+            .open()
+            .unwrap()
+            .request_task_close(
+                "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+                "close",
+            )
+            .unwrap();
+    }));
+    assert!(
+        f.observer()
+            .poll_with_blockers(&configured, || seconds(1), Duration::ZERO)
+            .is_err()
+    );
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
 }

@@ -2835,6 +2835,22 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   decreasing clock. Caller держит worker fences, доказывает session identity
   и управляет permission/question grace; full FSM остаётся открыт.
 
+- **7.9b. Combined blocker grace (service завершён).**
+  `RoundObserver::poll_with_blockers` сначала наблюдает messages/final/errors и
+  deadline, затем permission/question lists только при видимом outbound history.
+  Exact session filtering; shared stale window сбрасывается при исчезновении всех
+  blockers, boundary `>= grace` сохраняет needs_user, final выигрывает до grace.
+  Configured permissions отвечаются Once; successful reply кешируется до
+  post-HTTP guard. Questions никогда не получают answer. Failed reply становится
+  blocker; list transport/malformed failures игнорируются как в frozen worker,
+  last pending blockers используются при deadline. Main/external change collection
+  теперь выполняется и для failed/delivery_unknown/needs_user, без verifier;
+  immutable baseline и close guards повторяются перед terminal publication.
+  28 observer tests прошли: stale исчезновение/final, combined permission+question,
+  foreign filtering, grace/deadline boundary, accounting/external changes,
+  Once deduplication, failed reply и close во время GET. Workspace Clippy прошёл.
+  Remote session identity, sleep loop, cooperative cleanup и CLI остаются consumers.
+
 ### 7.10. Continuation recovery
 
 - **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock

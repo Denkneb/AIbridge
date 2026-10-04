@@ -8600,6 +8600,7 @@ mod tests {
             before: None,
             after: None,
             side_effects: None,
+            repositories: None,
         }
     }
 

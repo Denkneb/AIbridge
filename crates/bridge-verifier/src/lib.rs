@@ -226,7 +226,9 @@ use std::time::{Duration, Instant};
 use bridge_command_policy::{
     PolicyReason, TestCommandReason, leading_assignments, split_command, validate_test_commands,
 };
-use bridge_domain::{GitFingerprint, Verification, VerificationCommand, VerificationStatus};
+use bridge_domain::{
+    GitFingerprint, Verification, VerificationCommand, VerificationRepository, VerificationStatus,
+};
 use bridge_git::{CommitId, IndexFingerprint, WorktreeFingerprint, WorktreeManifest};
 use bridge_storage::{
     CompleteVerifierInput, RoundRef, RoundUpdateError, RoundUpdateOutcome, StorageConnection,
@@ -1157,6 +1159,21 @@ pub fn run_test_command_sequence_fingerprinted(
     timeout: Duration,
     tail_bytes: usize,
 ) -> Result<FingerprintedSequenceOutcome, FingerprintedSequenceError> {
+    Ok(run_fingerprinted_repositories(workspace, &[], commands, timeout, tail_bytes)?.outcome)
+}
+
+struct RepositoryRun {
+    outcome: FingerprintedSequenceOutcome,
+    repositories: Vec<VerificationRepository>,
+    external_failure: bool,
+}
+fn run_fingerprinted_repositories(
+    workspace: &Path,
+    external_roots: &[&Path],
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+) -> Result<RepositoryRun, FingerprintedSequenceError> {
     // The reference validates the entire list before the first fingerprint,
     // so a rejected command can never leave a captured fingerprint or a
     // partially run sequence behind.
@@ -1181,6 +1198,22 @@ pub fn run_test_command_sequence_fingerprinted(
         )
     };
 
+    let mut roots = external_roots.to_vec();
+    roots.sort();
+    roots.dedup();
+    let mut external_before = Vec::new();
+    if !commands.is_empty() {
+        for root in roots {
+            // The caller authenticates trusted roots. Never run commands if
+            // even one affected repository cannot be fingerprinted.
+            external_before.push((
+                root,
+                capture_fingerprint(root)
+                    .map_err(|_| FingerprintedSequenceError::BeforeSnapshot)?,
+            ));
+        }
+    }
+
     // A spawn/wait failure is recorded like the reference `spawn_failed`
     // command entry — the run and the typed failure are retained — and the
     // loop stops; the after fingerprint below is still captured.
@@ -1200,12 +1233,45 @@ pub fn run_test_command_sequence_fingerprinted(
         }
     };
 
-    Ok(FingerprintedSequenceOutcome {
-        sequence,
-        run_failure: run_failure.map(|(index, error)| FingerprintedRunFailure { index, error }),
-        before,
-        after,
-        after_snapshot_failed,
+    let mut repositories = Vec::new();
+    let mut external_failure = false;
+    if after.is_some() {
+        for (root, before) in external_before {
+            let Ok(after) = capture_fingerprint(root) else {
+                external_failure = true;
+                break;
+            };
+            let effects = changed_paths(&before.manifest, &after.manifest);
+            let Some(root) = root.to_str() else {
+                external_failure = true;
+                break;
+            };
+            let effects = effects
+                .iter()
+                .map(|p| p.to_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>();
+            let Some(effects) = effects else {
+                external_failure = true;
+                break;
+            };
+            repositories.push(VerificationRepository {
+                root: root.to_owned(),
+                before: to_git_fingerprint(&before),
+                after: to_git_fingerprint(&after),
+                side_effects: (!effects.is_empty()).then_some(effects),
+            });
+        }
+    }
+    Ok(RepositoryRun {
+        outcome: FingerprintedSequenceOutcome {
+            sequence,
+            run_failure: run_failure.map(|(index, error)| FingerprintedRunFailure { index, error }),
+            before,
+            after,
+            after_snapshot_failed,
+        },
+        repositories,
+        external_failure,
     })
 }
 
@@ -1577,6 +1643,31 @@ pub fn run_round_verification_persisted(
     timeout: Duration,
     tail_bytes: usize,
 ) -> Result<PersistedVerification, PersistVerificationError> {
+    run_round_verification_persisted_with_repositories(
+        storage,
+        round,
+        workspace,
+        &[],
+        commands,
+        timeout,
+        tail_bytes,
+    )
+}
+
+/// Runs commands in the main workspace, fingerprinting every affected root.
+/// The caller authenticates canonical external roots and retains worker fences.
+/// # Errors
+/// Storage lifecycle/conflict failures fail closed; fingerprint failures are
+/// persisted as reviewable error outcomes. A completed result is reused intact.
+pub fn run_round_verification_persisted_with_repositories(
+    storage: &mut StorageConnection,
+    round: RoundRef,
+    workspace: &Path,
+    external_roots: &[&Path],
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+) -> Result<PersistedVerification, PersistVerificationError> {
     // Begin first: a finished result is reused without spawning anything.
     let begun = storage
         .begin_verifier(round.clone())
@@ -1591,14 +1682,38 @@ pub fn run_round_verification_persisted(
     // Run the existing fingerprinted flow and convert its outcome into the
     // compact persisted contract; verifier-level failures become the reference
     // `unsafe`/`error` verification variants instead of errors.
-    let verification =
-        match run_test_command_sequence_fingerprinted(workspace, commands, timeout, tail_bytes) {
-            Ok(outcome) => verification_from_outcome(&outcome, commands, &round),
-            Err(FingerprintedSequenceError::Rejected { index, reason }) => {
-                rejected_verification(index, reason, &round)
+    let verification = match run_fingerprinted_repositories(
+        workspace,
+        external_roots,
+        commands,
+        timeout,
+        tail_bytes,
+    ) {
+        Ok(run) => {
+            let mut verification = verification_from_outcome(&run.outcome, commands, &round);
+            if run.external_failure {
+                verification.status = VerificationStatus::Error;
+                verification.reason = Some(GIT_FINGERPRINT_FAILED.to_owned());
+                verification.side_effects = None;
+            } else if run.outcome.after().is_some() {
+                let mut effects = verification.side_effects.take().unwrap_or_default();
+                for repo in &run.repositories {
+                    for path in repo.side_effects.iter().flatten() {
+                        effects.push(format!("{}/{path}", repo.root));
+                    }
+                }
+                effects.sort();
+                effects.dedup();
+                verification.side_effects = (!effects.is_empty()).then_some(effects);
             }
-            Err(FingerprintedSequenceError::BeforeSnapshot) => error_verification(&round),
-        };
+            verification.repositories = (!run.repositories.is_empty()).then_some(run.repositories);
+            verification
+        }
+        Err(FingerprintedSequenceError::Rejected { index, reason }) => {
+            rejected_verification(index, reason, &round)
+        }
+        Err(FingerprintedSequenceError::BeforeSnapshot) => error_verification(&round),
+    };
 
     // Persist exactly once; the storage rejects a conflicting result.
     let completed = storage
@@ -1699,6 +1814,7 @@ fn normal_verification(
         before: outcome.before().map(to_git_fingerprint),
         after: outcome.after().map(to_git_fingerprint),
         side_effects: side_effect_paths(outcome),
+        repositories: None,
     }
 }
 
@@ -1717,6 +1833,7 @@ fn rejected_verification(
         before: None,
         after: None,
         side_effects: None,
+        repositories: None,
     }
 }
 
@@ -1735,6 +1852,7 @@ fn error_verification(round: &RoundRef) -> Verification {
         before: None,
         after: None,
         side_effects: None,
+        repositories: None,
     }
 }
 
@@ -1760,6 +1878,7 @@ fn after_snapshot_error_verification(
         before: outcome.before().map(to_git_fingerprint),
         after: None,
         side_effects: None,
+        repositories: None,
     }
 }
 
@@ -3492,6 +3611,139 @@ mod tests {
             .round
             .verifier_json
             .expect("a done round carries a verification")
+    }
+
+    #[test]
+    fn multi_repository_verifier_persists_qualified_effects_and_reuses_exact_result() {
+        let (main, mut storage) = open_persist_storage("multi-main");
+        let a = TempDir::new("multi-a");
+        let b = TempDir::new("multi-b");
+        for root in [main.path(), a.path(), b.path()] {
+            init_repo(root);
+        }
+        let round = create_persist_round(&mut storage, main.path());
+        let command = format!(
+            "touch same.txt '{}/same.txt' '{}/same.txt'",
+            a.path().display(),
+            b.path().display()
+        );
+        let result = super::run_round_verification_persisted_with_repositories(
+            &mut storage,
+            round.clone(),
+            main.path(),
+            &[b.path(), a.path(), b.path()],
+            &[&command],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .unwrap();
+        let verification = result.verification();
+        assert_eq!(verification.status, VerificationStatus::Passed);
+        let repos = verification.repositories.as_ref().unwrap();
+        assert_eq!(repos.len(), 2);
+        assert!(repos[0].root < repos[1].root);
+        for repo in repos {
+            assert_eq!(repo.side_effects.as_ref().unwrap(), &["same.txt"]);
+        }
+        let effects = verification.side_effects.as_ref().unwrap();
+        assert!(effects.contains(&"same.txt".to_owned()));
+        assert!(effects.contains(&format!("{}/same.txt", a.path().display())));
+        assert!(effects.contains(&format!("{}/same.txt", b.path().display())));
+        assert_eq!(
+            persisted_round_verification(&mut storage, &round),
+            *verification
+        );
+        let reused = super::run_round_verification_persisted_with_repositories(
+            &mut storage,
+            round,
+            main.path(),
+            &[a.path(), b.path()],
+            &["touch never-rerun"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .unwrap();
+        assert!(reused.reused());
+        assert_eq!(reused.verification(), verification);
+        assert!(!main.path().join("never-rerun").exists());
+        assert!(!format!("{result:?}").contains("same.txt"));
+    }
+
+    #[test]
+    fn external_before_failure_prevents_all_commands() {
+        let (main, mut storage) = open_persist_storage("multi-before");
+        let external = TempDir::new("multi-not-git");
+        init_repo(main.path());
+        let round = create_persist_round(&mut storage, main.path());
+        let result = super::run_round_verification_persisted_with_repositories(
+            &mut storage,
+            round,
+            main.path(),
+            &[external.path()],
+            &["touch must-not-run"],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .unwrap();
+        assert_eq!(result.verification().status, VerificationStatus::Error);
+        assert!(result.verification().commands.is_none());
+        assert!(!main.path().join("must-not-run").exists());
+    }
+
+    #[test]
+    fn external_after_failure_keeps_main_and_preceding_repository_fingerprints() {
+        let (main, mut storage) = open_persist_storage("multi-after");
+        let a = TempDir::new("multi-after-a");
+        let b = TempDir::new("multi-after-b");
+        for root in [main.path(), a.path(), b.path()] {
+            init_repo(root);
+        }
+        let mut roots = [a.path(), b.path()];
+        roots.sort();
+        let command = format!("rm -rf '{}/.git'", roots[1].display());
+        let round = create_persist_round(&mut storage, main.path());
+        let result = super::run_round_verification_persisted_with_repositories(
+            &mut storage,
+            round,
+            main.path(),
+            &roots,
+            &[&command],
+            Duration::from_secs(5),
+            DEFAULT_TAIL_BYTES,
+        )
+        .unwrap();
+        let v = result.verification();
+        assert_eq!(v.status, VerificationStatus::Error);
+        assert_eq!(v.reason.as_deref(), Some("git_fingerprint_failed"));
+        assert!(v.before.is_some() && v.after.is_some());
+        assert_eq!(v.repositories.as_ref().unwrap().len(), 1);
+        assert!(v.side_effects.is_none());
+        assert!(v.commands.as_ref().unwrap()[0].exit_code == Some(0));
+    }
+
+    #[test]
+    fn empty_or_unsafe_multi_verification_does_not_probe_external_roots() {
+        for (tag, commands, expected) in [
+            ("multi-empty", vec![], VerificationStatus::Passed),
+            ("multi-unsafe", vec!["git push"], VerificationStatus::Unsafe),
+        ] {
+            let (main, mut storage) = open_persist_storage(tag);
+            let external = TempDir::new("multi-unavailable");
+            let round = create_persist_round(&mut storage, main.path());
+            let result = super::run_round_verification_persisted_with_repositories(
+                &mut storage,
+                round,
+                main.path(),
+                &[external.path()],
+                &commands,
+                Duration::from_secs(5),
+                DEFAULT_TAIL_BYTES,
+            )
+            .unwrap();
+            assert_eq!(result.verification().status, expected);
+            assert!(result.verification().before.is_none());
+            assert!(result.verification().repositories.is_none());
+        }
     }
 
     #[test]

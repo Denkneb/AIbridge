@@ -904,7 +904,7 @@ pub struct VerificationCommand {
 /// (`{status, index, reason, log}` / `{status, reason, log}`), so it is
 /// optional and omitted on serialization when it was absent instead of being
 /// rewritten as an empty array. `index` and `reason` likewise appear only in
-/// some variants. Unknown *keys* (for example `repositories`) are ignored on
+/// some variants. Unknown *keys* are ignored on
 /// deserialization, while unknown enum *values* are rejected safely.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Verification {
@@ -932,6 +932,19 @@ pub struct Verification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<GitFingerprint>,
     /// Repository-qualified paths created or modified by the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<Vec<String>>,
+    /// External repository fingerprints in canonical root order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repositories: Option<Vec<VerificationRepository>>,
+}
+
+/// Before/after diagnostics for one trusted external repository.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationRepository {
+    pub root: String,
+    pub before: GitFingerprint,
+    pub after: GitFingerprint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_effects: Option<Vec<String>>,
 }

@@ -27,6 +27,9 @@ checkpoint и awaiting_review, с удержанием worker fences. Full worke
 external-repository publication и пять delegated MCP handlers **9.5c**
 остаются открыты.
 
+Multi-repository verifier service **7.11b** сохраняет fingerprints и побочные
+изменения внешних репозиториев; worker aggregation/checkpoint consumer — **7.11c**.
+
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target

@@ -2874,6 +2874,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.11. Verification integration
 
+- **7.11b. Persisted multi-repository verifier (service завершён).**
+  Domain `Verification.repositories` сохраняет root, before/after и relative
+  side_effects внешних репозиториев; historical single-repository JSON неизменён.
+  `run_round_verification_persisted_with_repositories` fingerprint-ит main и
+  canonical sorted/deduplicated external roots до единственного запуска checks,
+  затем после него; caller доказывает trusted roots и удерживает worker fences.
+  External before failure предотвращает запуск всех команд; after failure
+  сохраняет main fingerprints и уже собранные external entries с error outcome,
+  без ложного clean side_effects. Общие side_effects квалифицированы external
+  root, persisted reuse не теряет repositories и не повторяет команды.
+  Checks: real temporary Git repositories, identical path names, ordering,
+  storage roundtrip/reuse, before/after failure, unsafe/empty no-probe;
+  domain/storage/verifier suites и workspace Clippy прошли. Worker consumer
+  aggregation/checkpoint wiring остаются следующим этапом 7.11c.
+
 - **7.11a. Final candidate publication (single-repository service завершён).**
   `RoundObserver::publish_final` принимает только candidate того же observer,
   проверяет binding/close до verifier, после него и перед atomic finish.

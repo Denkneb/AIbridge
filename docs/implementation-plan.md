@@ -2851,6 +2851,27 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   Once deduplication, failed reply и close во время GET. Workspace Clippy прошёл.
   Remote session identity, sleep loop, cooperative cleanup и CLI остаются consumers.
 
+- **7.9c. Identity-checked observation loop (service завершён).**
+  `poll_verified` проверяет unscoped GET /path и saved GET /session до messages.
+  Workspace probe errors -> failed/workspace_mismatch как в reference; session
+  404 -> failed/session_not_found. Transient/malformed session failures повторяются
+  до strict `> deadline`, затем needs_user/transient_error без delivery_unknown.
+  Повторный session GET не повторяет успешный workspace probe; HTTP и retries
+  расходуют единый monotonic budget. Session id/directory должны присутствовать
+  и совпадать: fail-closed отличие от Python, допускавшего absent directory.
+  Diagnostics фиксированные, remote body/path/credentials не публикуются.
+  `observe_to_completion` объединяет verified polling, stale grace и saved
+  verifier/collection/publication, удерживая borrowed worker fences. Sleep
+  разбит на <=100ms с повторным close/current guard. Terminal identity failure
+  переводит sent -> observing перед guarded finish без prompt POST.
+  34 observer tests прошли, включая wrong/missing remote roots/session ids,
+  404, transient retry/deadline/recovery, close во время обоих identity GET и
+  running -> final -> verifier -> awaiting_review loop, close during long sleep
+  и zero cadence refusal; workspace Clippy прошёл.
+  Итоговый regression: `cargo test --workspace --all-targets --offline` —
+  1235 passed; all-target Clippy и fmt check прошли. CLI startup/dispatch/
+  worker-start settings и cooperative cleanup остаются открыты.
+
 ### 7.10. Continuation recovery
 
 - **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock
@@ -2900,7 +2921,8 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   включая four open round states и no-resend, invalid identifiers/close/terminal;
   real runtime fixture after checkout commit доказывает unchanged process record,
   baseline и saved port, rejects rebound endpoint. Workspace Clippy прошёл.
-  Remote identity/session probes и полный loop остаются следующими consumers.
+  Remote identity/session probes и observation loop подключены в 7.9c;
+  CLI startup/dispatch и cooperative cleanup остаются следующими consumers.
 
 ### 7.11. Verification integration
 
@@ -2951,8 +2973,8 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   Worktree mode сохраняет запрет external scopes. Checks: 21 observation/publication
   HTTP/Git/SQLite/subprocess tests (включая 8 invalid preparation cases), все 10
   frozen aggregation fixtures, actual check effects, three-repository checkpoint,
-  snapshot/scope tamper и root/scope symlink rebindings. Full FSM, terminal error
-  change aggregation и live provider smoke остаются открыты.
+  snapshot/scope tamper и root/scope symlink rebindings. Terminal error change
+  aggregation подключена в 7.9b; Full FSM и live provider smoke остаются открыты.
 
 ### 7.12. Cooperative close
 

@@ -31,6 +31,10 @@ struct Fixture {
     permissions: Arc<Mutex<(u16, Value)>>,
     questions: Arc<Mutex<(u16, Value)>>,
     replies_status: Arc<Mutex<u16>>,
+    identity: Arc<Mutex<(u16, Value)>>,
+    session: Arc<Mutex<(u16, Value)>>,
+    identity_hook: RequestHook,
+    session_hook: RequestHook,
     calls: Arc<Mutex<Vec<String>>>,
     permission_hook: RequestHook,
     hook: RequestHook,
@@ -83,6 +87,13 @@ impl Fixture {
         let permissions = Arc::new(Mutex::new((200, json!([]))));
         let questions = Arc::new(Mutex::new((200, json!([]))));
         let replies_status = Arc::new(Mutex::new(200));
+        let identity = Arc::new(Mutex::new((200, json!({"directory":workspace}))));
+        let session = Arc::new(Mutex::new((
+            200,
+            json!({"id":"session","directory":workspace}),
+        )));
+        let identity_hook: RequestHook = Arc::new(Mutex::new(None));
+        let session_hook: RequestHook = Arc::new(Mutex::new(None));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let permission_hook: RequestHook = Arc::new(Mutex::new(None));
         let hook: RequestHook = Arc::new(Mutex::new(None));
@@ -95,6 +106,12 @@ impl Fixture {
             replies_status.clone(),
             calls.clone(),
             permission_hook.clone(),
+        );
+        let (identity_body, session_body, ih, sh) = (
+            identity.clone(),
+            session.clone(),
+            identity_hook.clone(),
+            session_hook.clone(),
         );
         let server = thread::spawn(move || {
             while !s.load(Ordering::Relaxed) {
@@ -143,6 +160,20 @@ impl Fixture {
                                 p.lock().unwrap().clone()
                             }
                             ("GET", "/question") => q.lock().unwrap().clone(),
+                            ("GET", "/path") => {
+                                assert_eq!(target, "/path");
+                                if let Some(action) = ih.lock().unwrap().take() {
+                                    action();
+                                }
+                                identity_body.lock().unwrap().clone()
+                            }
+                            ("GET", "/session/session") => {
+                                assert!(target.contains("directory="));
+                                if let Some(action) = sh.lock().unwrap().take() {
+                                    action();
+                                }
+                                session_body.lock().unwrap().clone()
+                            }
                             ("POST", path)
                                 if path.starts_with("/permission/") && path.ends_with("/reply") =>
                             {
@@ -217,6 +248,10 @@ impl Fixture {
             permissions,
             questions,
             replies_status,
+            identity,
+            session,
+            identity_hook,
+            session_hook,
             calls,
             permission_hook,
             hook,
@@ -1366,4 +1401,269 @@ fn failed_permission_reply_is_a_blocker_and_close_during_get_prevents_reply() {
             .iter()
             .any(|c| c.starts_with("POST"))
     );
+}
+
+#[test]
+fn verified_poll_refuses_remote_workspace_and_session_identity_before_messages() {
+    for (path, status, body, code) in [
+        (
+            true,
+            200,
+            json!({"directory":"/wrong-root"}),
+            "workspace_mismatch",
+        ),
+        (true, 200, json!({}), "workspace_mismatch"),
+        (false, 404, json!({"error":"secret"}), "session_not_found"),
+        (
+            false,
+            200,
+            json!({"id":"session","directory":"/wrong-root"}),
+            "session_directory_mismatch",
+        ),
+        (
+            false,
+            200,
+            json!({"id":"foreign"}),
+            "session_directory_mismatch",
+        ),
+        (
+            false,
+            200,
+            json!({"id":"session"}),
+            "session_directory_mismatch",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.history(final_history());
+        if path {
+            *f.identity.lock().unwrap() = (status, body);
+        } else {
+            *f.session.lock().unwrap() = (status, body);
+        }
+        let project = project(&f, false);
+        assert!(matches!(
+            f.observer()
+                .poll_verified(&project, || seconds(1), seconds(15))
+                .unwrap(),
+            Observation::Finished(_)
+        ));
+        assert_eq!(f.task_status(), TaskStatus::Failed);
+        let saved_code: String = f
+            .layout
+            .open()
+            .unwrap()
+            .connection()
+            .query_row("SELECT error_code FROM rounds", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(saved_code, code);
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+        assert!(!f.result().to_string().contains("secret"));
+        assert!(
+            !f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("POST"))
+        );
+    }
+}
+
+#[test]
+fn transient_session_probe_has_strict_deadline_without_delivery_unknown() {
+    let f = Fixture::new();
+    *f.session.lock().unwrap() = (503, json!({"error":"secret"}));
+    let project = project(&f, false);
+    let mut o = f.observer();
+    for tick in [5, 10] {
+        assert!(matches!(
+            o.poll_verified(&project, || seconds(tick), seconds(15))
+                .unwrap(),
+            Observation::Pending
+        ));
+    }
+    assert!(matches!(
+        o.poll_verified(&project, || seconds(11), seconds(15))
+            .unwrap(),
+        Observation::Finished(_)
+    ));
+    assert_eq!(f.task_status(), TaskStatus::NeedsUser);
+    assert_eq!(f.result()["blockers"][0]["type"], "transient_error");
+    assert!(!f.result().to_string().contains("secret"));
+    assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with("GET /path "))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn transient_session_recovers_into_same_outbound_without_resend() {
+    let f = Fixture::new();
+    *f.session.lock().unwrap() = (503, json!({}));
+    f.history(final_history());
+    let project = project(&f, false);
+    let mut o = f.observer();
+    assert!(matches!(
+        o.poll_verified(&project, || seconds(6), seconds(15))
+            .unwrap(),
+        Observation::Pending
+    ));
+    *f.session.lock().unwrap() = (
+        200,
+        json!({"id":"session","directory":f.root.join("workspace")}),
+    );
+    assert!(matches!(
+        o.poll_verified(&project, || seconds(7), seconds(15))
+            .unwrap(),
+        Observation::Final(_)
+    ));
+    assert_eq!(f.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with("GET /path "))
+            .count(),
+        1
+    );
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
+}
+
+#[test]
+fn close_during_workspace_or_session_probe_prevents_observation_and_finish() {
+    for workspace_probe in [true, false] {
+        let f = Fixture::new();
+        f.history(final_history());
+        let project = project(&f, false);
+        let layout = f.layout.clone();
+        let task: TaskId = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
+        let callback = Box::new(move || {
+            layout
+                .open()
+                .unwrap()
+                .request_task_close(task, "close")
+                .unwrap();
+        });
+        if workspace_probe {
+            *f.identity_hook.lock().unwrap() = Some(callback);
+        } else {
+            *f.session_hook.lock().unwrap() = Some(callback);
+        }
+        assert!(
+            f.observer()
+                .poll_verified(&project, || seconds(1), seconds(15))
+                .is_err()
+        );
+        assert_eq!(f.requests.load(Ordering::Relaxed), 0);
+        assert_eq!(f.task_status(), TaskStatus::Implementing);
+        assert!(
+            !f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("POST"))
+        );
+    }
+}
+
+#[test]
+fn observation_loop_polls_then_verifies_and_publishes_without_prompt() {
+    use bridge_worker::observation_loop::ObservationSettings;
+    let f = Fixture::new();
+    f.history(running_history());
+    let body = f.body.clone();
+    *f.permission_hook.lock().unwrap() = Some(Box::new(move || {
+        *body.lock().unwrap() = (200, final_history());
+    }));
+    let project = project(&f, false);
+    let mut o = f.observer();
+    o.observe_to_completion(
+        &project,
+        ObservationSettings {
+            poll_interval: Duration::from_millis(1),
+            ..ObservationSettings::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(f.task_status(), TaskStatus::AwaitingReview);
+    assert_eq!(f.requests.load(Ordering::Relaxed), 2);
+    assert!(f.result().get("verification").is_some());
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("POST"))
+    );
+}
+
+#[test]
+fn observation_loop_detects_close_during_long_poll_sleep_and_rejects_zero_cadence() {
+    use bridge_worker::observation_loop::ObservationSettings;
+    use std::time::Instant;
+    let f = Fixture::new();
+    f.history(running_history());
+    let project = project(&f, false);
+    let mut o = f.observer();
+    assert!(
+        o.observe_to_completion(
+            &project,
+            ObservationSettings {
+                poll_interval: Duration::ZERO,
+                ..ObservationSettings::default()
+            }
+        )
+        .is_err()
+    );
+    assert!(f.calls.lock().unwrap().is_empty());
+    let calls = f.calls.clone();
+    let layout = f.layout.clone();
+    let closer = thread::spawn(move || {
+        let start = Instant::now();
+        while !calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("GET /question"))
+        {
+            assert!(start.elapsed() < seconds(5));
+            thread::sleep(Duration::from_millis(1));
+        }
+        thread::sleep(Duration::from_millis(20));
+        layout
+            .open()
+            .unwrap()
+            .request_task_close(
+                "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+                "close",
+            )
+            .unwrap();
+    });
+    let start = Instant::now();
+    assert!(
+        o.observe_to_completion(
+            &project,
+            ObservationSettings {
+                poll_interval: seconds(5),
+                ..ObservationSettings::default()
+            }
+        )
+        .is_err()
+    );
+    closer.join().unwrap();
+    assert!(start.elapsed() < seconds(2));
+    assert_eq!(f.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(f.task_status(), TaskStatus::Implementing);
 }

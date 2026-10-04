@@ -21,9 +21,10 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 ## Расхождение версий и ближайший шаг
 
 Recovery context service **7.10c** готов: attempted round подключается к saved
-session/runtime без нового prompt, checkout или baseline. Remote identity/session
-probes и полный worker loop подключаются следующими consumers. Combined blocker
-grace **7.9b** готов: permissions/questions текущей session, Once cache, stale
+session/runtime без нового prompt, checkout или baseline. Identity-checked
+observation loop **7.9c** объединяет remote root/session probes, polling, grace
+и verifier/publication. CLI startup/dispatch и cooperative cleanup ещё впереди.
+Combined blocker grace **7.9b** готов: permissions/questions текущей session, Once cache, stale
 window и change collection для terminal outcomes без verifier.
 
 Message observer service **7.9a** завершён: delivery/assistant error/deadline

@@ -1,6 +1,7 @@
-//! One guarded message poll. The caller owns worker fences, session identity
-//! proof, monotonic start time, sleep cadence and permission/question grace.
-//! This service never sends a prompt, replies to a blocker or activates a task.
+//! Guarded observation and publication while borrowing execution fences.
+//! Basic message polling accepts caller session proof and blocker state; the
+//! verified loop combines identity checks, grace and configured Once replies.
+//! Observation never sends a prompt or activates a task.
 use crate::execution::{ExecutionError, FencedRoundExecution, RoundExecution};
 use bridge_domain::{RoundKind, RoundStatus, TaskStatus};
 use bridge_opencode::Message;
@@ -59,7 +60,9 @@ pub struct RoundObserver<'a> {
     elapsed: Duration,
     delivered: bool,
     last_messages: Vec<Message>,
-    done: bool,
+    pub(crate) done: bool,
+    pub(crate) identity_verified: bool,
+    pub(crate) workspace_verified: bool,
     pub(crate) visible_history: bool,
     pub(crate) pending_blockers: Vec<Value>,
     pub(crate) blockers_since: Option<Duration>,
@@ -97,6 +100,8 @@ impl<'a> RoundObserver<'a> {
             delivered: false,
             last_messages: Vec::new(),
             done: false,
+            identity_verified: false,
+            workspace_verified: false,
             visible_history: false,
             pending_blockers: Vec::new(),
             blockers_since: None,
@@ -271,11 +276,24 @@ impl<'a> RoundObserver<'a> {
             &candidate.messages,
         )
     }
+    pub(crate) fn deadline(&self) -> Duration {
+        self.deadline
+    }
     pub(crate) fn record_time(&mut self, elapsed: Duration) -> Result<(), ExecutionError> {
         if elapsed < self.elapsed {
             return Err(ExecutionError::Round);
         }
         self.elapsed = elapsed;
+        Ok(())
+    }
+    pub(crate) fn promote_observing(&self) -> Result<(), ExecutionError> {
+        if self.guard()?.status == RoundStatus::Sent {
+            let (mut storage, _) = self.execution.task_and_root(self.layout)?;
+            storage
+                .mark_round_observing(self.execution.round().clone())
+                .map_err(|_| ExecutionError::Storage)?;
+        }
+        self.guard()?;
         Ok(())
     }
     pub(crate) fn finish(
@@ -285,7 +303,7 @@ impl<'a> RoundObserver<'a> {
         code: &str,
         result: Value,
     ) -> Result<Observation, ExecutionError> {
-        self.guard()?;
+        self.promote_observing()?;
         let mut result = result;
         if self.execution.baseline_json()?.is_some() {
             let changes = self.execution.collect_repositories(self.layout)?;

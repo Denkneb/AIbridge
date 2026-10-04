@@ -183,6 +183,15 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Constructs a canonical loopback endpoint for a task-scoped runtime.
+    /// # Errors
+    /// Port zero is never a usable persisted server endpoint.
+    pub fn loopback(port: u16) -> Result<Self> {
+        if port == 0 {
+            return Err(DomainError::invalid_input("endpoint port must be positive"));
+        }
+        Ok(Self { port })
+    }
     /// Returns the explicit port.
     #[must_use]
     pub fn port(&self) -> u16 {
@@ -541,6 +550,23 @@ pub struct ProjectEntry {
 }
 
 impl ProjectEntry {
+    /// Returns an execution view with the same credentials and policies, bound
+    /// to an already proven task checkout and loopback runtime. No files change.
+    /// # Errors
+    /// Requires an existing canonical directory; binding proof belongs to caller.
+    pub fn execution_view(&self, workspace: &Path, endpoint: Endpoint) -> Result<Self> {
+        let workspace = std::fs::canonicalize(workspace)
+            .map_err(|_| DomainError::invalid_input("execution workspace unavailable"))?;
+        if !workspace.is_dir() {
+            return Err(DomainError::invalid_input(
+                "execution workspace unavailable",
+            ));
+        }
+        let mut view = self.clone();
+        view.workspace = workspace;
+        view.opencode_endpoint = endpoint;
+        Ok(view)
+    }
     /// Returns the validated project id.
     #[must_use]
     pub fn id(&self) -> &ProjectId {

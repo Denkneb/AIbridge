@@ -2857,7 +2857,7 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
   - **Проверено:** 72 Git tests, включая 7 real-repository checkout scenarios;
     Clippy, fmt и diff check.
   - **Зависит от:** 0A.5, 2.10, 3.12e. **Открывает:** 7.16b.
-- **7.16b. Task-scoped OpenCode runtime и identity guard.**
+- **7.16b. Task-scoped OpenCode runtime и identity guard (завершено).**
   - **Цель:** task-scoped endpoint/token/process logs вне checkout; identity
     guard.
   - **Source evidence:** `worktree_runtime.py:45-484`; `worker.py:660`;
@@ -2868,7 +2868,15 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
     (`3 * READY_TIMEOUT`, READY_TIMEOUT=20s); lock timeout происходит до
     spawn/reservation/record. Runtime files/identity checks остаются под lock.
     Source: `worktree_runtime.start_worktree_server:450-485` (v17).
-  - **Targeted checks:** worktree_runtime concurrency/timeout/cleanup tests.
+  - **Результат:** `bridge-runtime` запускает/reuses `opencode serve` только
+    после storage/Git binding proof; loopback ports 43000..43999, reservation
+    до readiness, health + unscoped /path + OpenAPI, frozen model requirement.
+    Private runtime/log/atomic record вне checkout; pidfd + start ticks + boot id
+    защищают stop от PID reuse; failed spawn/readiness killed/reaped/unreserved.
+    CLI adapter остаётся отдельным потоком 9; runtime library исполнима.
+  - **Проверено:** 10 local-process runtime scenarios и 173 config tests;
+    concurrency/reuse/default lock/timeout/partial locks, foreign/stale/corrupt
+    records, root/doc refusal, cleanup, pinned model и port reservations.
   - **Зависит от:** 7.16a, 6.1, 9.7a. **Открывает:** 7.16c, 15.2.
 - **7.16c. Revision reuse и verifier/change collection cwd.**
   - **Цель:** revision reuse checkout + verifier/change collection cwd.
@@ -3135,12 +3143,15 @@ Delta v17: вывод execution/delivery modes из validated config
 
 ### 9.7. `start` одного проекта
 
-- **9.7a. Optional bounded manager-lock wait (не завершено).** Canonical sorted
+- **9.7a. Optional bounded manager-lock wait (завершено).** Canonical sorted
   roots, all-or-nothing nonblocking acquisition, monotonic deadline и poll
   backoff 20ms..200ms; все fd закрываются при timeout/error/interrupt.
   Обычные start/status/stop сохраняют wait=0; только worktree startup задаёт
   timeout. Source: `runtime._try_acquire_locks`, `_manager_lock:292-332`
   (v17). Checks: `tests/test_runtime.py` wait/acquire/timeout/default tests.
+  Реализовано в `bridge-runtime::lock::ManagerLock`; safe worktree process
+  ownership/pidfd prerequisite реализован в 7.16b. Direct runtime orchestration
+  9.6 остаётся отдельной задачей.
   Depends on 0B.5, 9.6. Opens 7.16b.
 
 ### 9.8. Multi-project start и rollback

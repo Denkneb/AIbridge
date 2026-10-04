@@ -1,0 +1,112 @@
+{
+  "openapi": "3.1.0",
+  "paths": {
+    "/global/health": {
+      "get": {}
+    },
+    "/path": {
+      "get": {}
+    },
+    "/session": {
+      "get": {},
+      "post": {}
+    },
+    "/session/status": {
+      "get": {}
+    },
+    "/session/{sessionID}": {
+      "get": {}
+    },
+    "/session/{sessionID}/message": {
+      "get": {}
+    },
+    "/session/{sessionID}/prompt_async": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "messageID": {},
+                  "parts": {},
+                  "model": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/permission": {
+      "get": {}
+    },
+    "/permission/{requestID}/reply": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reply": {
+                    "type": "string",
+                    "enum": [
+                      "once",
+                      "always",
+                      "reject"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/question": {
+      "get": {}
+    }
+  },
+  "components": {
+    "schemas": {
+      "Path": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          }
+        }
+      },
+      "AssistantMessage": {
+        "type": "object",
+        "properties": {
+          "parentID": {
+            "type": "string"
+          },
+          "finish": {
+            "type": "string"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {},
+              "completed": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}

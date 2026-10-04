@@ -3,8 +3,8 @@
 Rust-переписывание `agent-bridge`: Cargo workspace с доменной моделью
 (`bridge-domain`), загрузчиком конфигурации (`bridge-config`), read-only
 инспекцией SQLite (`bridge-storage`), primitives политики команд
-(`bridge-command-policy`), лексической политики путей (`bridge-path-policy`) и
-CLI (`agent-bridge-cli`). Цель —
+(`bridge-command-policy`), лексической политики путей (`bridge-path-policy`),
+MCP stdio/HTTP (`bridge-mcp`) и CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, предоставить headless Rust CLI и
 десктопное приложение на **Tauri 2 + React + TypeScript**, со сборкой frontend
 через **Vite**. Встроенный терминал — **xterm.js**, PTY и процессы — в Rust.
@@ -24,8 +24,8 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP read-only foundation (project_info/stdio) готов; delegated handlers,
-HTTP transport, остальные CLI commands и полный worker FSM ещё впереди.
+3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP read-only foundation (project_info/stdio/HTTP) готов; delegated handlers,
+остальные CLI commands и полный worker FSM ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
 CLI consumer 9.13b готов; local controller delegation 9.13c ждёт 9.5c.
@@ -61,6 +61,19 @@ Stdout этой команды занят JSON-RPC; banner/logs в него не
 `tools/list` только `project_info`; остальные пять tools и startup recovery
 остаются в потоке 8/worker FSM.
 
+`serve-mcp` запускает тот же read-only MCP по configured HTTP endpoint:
+
+```bash
+cargo run --offline -p agent-bridge-cli -- serve-mcp \
+  --project PROJECT_ID --config /absolute/path/projects.toml \
+  --state-root /absolute/path/agent-bridge-rs
+```
+
+Нужны `mcp_url` и private `mcp_token_file` (0600). Сервер слушает только
+127.0.0.1 и перечитывает Bearer token при каждом запросе; token rotation/отзыв
+не требуют restart. HTTP/stdio делят один lock проекта и одновременно не
+запускаются. Транспорт — sessionless JSON HTTP/1.1; GET/SSE отключён. В обоих
+транспортах пока доступен только `project_info`, задачи не запускаются.
 
 
 

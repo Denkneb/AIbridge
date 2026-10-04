@@ -143,3 +143,108 @@ fn malformed_input_is_redacted_and_foreign_state_does_not_produce_protocol_stdou
         before
     );
 }
+
+#[test]
+fn serve_mcp_cli_accepts_authenticated_json_rpc_and_shares_lock_with_stdio() {
+    use std::{
+        io::Read,
+        net::{TcpListener, TcpStream},
+        os::unix::fs::PermissionsExt,
+        time::Instant,
+    };
+    let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+    let f = Fixture::new();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(f.root.join("projects.toml"))
+        .unwrap()
+        .write_all(
+            format!("mcp_url=\"http://127.0.0.1:{port}/mcp\"\nmcp_token_file=\"mcp.token\"\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    fs::write(f.root.join("mcp.token"), "cli-fixture-token").unwrap();
+    fs::set_permissions(f.root.join("mcp.token"), fs::Permissions::from_mode(0o600)).unwrap();
+    let mut first = Running(
+        Command::new(env!("CARGO_BIN_EXE_agent-bridge"))
+            .args(["serve-mcp", "--project", "proj", "--config"])
+            .arg(f.root.join("projects.toml"))
+            .arg("--state-root")
+            .arg(f.root.join("state"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => break stream,
+            Err(_) => {
+                assert!(first.0.try_wait().unwrap().is_none());
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body =
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"project_info"}})
+            .to_string();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer cli-fixture-token\r\nAccept: application/json,text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    let message: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(message["result"]["structuredContent"]["project_id"], "proj");
+    let output = f.run("");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stderr, b"agent-bridge: mcp_already_running\n");
+    first.0.kill().unwrap();
+    first.0.wait().unwrap();
+    let mut stdout = String::new();
+    first
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert!(stdout.is_empty());
+    let mut stderr = String::new();
+    first
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty());
+    assert!(f.run("").status.success());
+}
+#[test]
+fn serve_mcp_requires_http_config_without_creating_state() {
+    let f = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge"))
+        .args(["serve-mcp", "--project", "proj", "--config"])
+        .arg(f.root.join("projects.toml"))
+        .arg("--state-root")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stderr,
+        b"agent-bridge: mcp_http_endpoint_unavailable\n"
+    );
+    assert!(!f.root.join("state").exists());
+}

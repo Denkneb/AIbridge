@@ -59,7 +59,7 @@ impl Protocol {
             }
             return None;
         };
-        if !params.is_object() {
+        if !params.is_object() || params.get("_meta").is_some_and(|meta| !meta.is_object()) {
             return Some(error(id, -32602, "Invalid params"));
         }
         let result = match method {
@@ -93,7 +93,10 @@ impl Protocol {
                 return Some(error(id, -32000, "Server not initialized"));
             }
             "tools/list" => {
-                if !params.as_object().is_some_and(|p| p.is_empty()) {
+                if !params
+                    .as_object()
+                    .is_some_and(|p| p.keys().all(|key| key == "_meta"))
+                {
                     return Some(error(id, -32602, "Invalid params"));
                 }
                 json!({"tools":[{"name":"project_info","description":"Return the immutable project binding and active task state.",

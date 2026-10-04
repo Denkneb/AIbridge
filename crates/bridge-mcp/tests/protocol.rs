@@ -108,7 +108,7 @@ fn stdio_handshake_lists_only_working_tools_and_emits_no_notifications_or_banner
     let messages = [
         initialize(),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":"list","method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":"list","method":"tools/list","params":{"_meta":{"progressToken":"list-progress"}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project_info","arguments":{}}}),
         json!({"jsonrpc":"2.0","method":"notifications/unknown","params":{"private":"not-echoed"}}),
     ];
@@ -194,6 +194,15 @@ fn malformed_requests_initialization_and_unavailable_mutations_are_redacted_and_
     assert_eq!(
         protocol.handle(&server, initialize()).unwrap()["error"]["code"],
         -32600
+    );
+    assert_eq!(
+        protocol
+            .handle(
+                &server,
+                json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{"_meta":[]}})
+            )
+            .unwrap()["error"]["code"],
+        -32602
     );
     for name in [
         "submit_task",

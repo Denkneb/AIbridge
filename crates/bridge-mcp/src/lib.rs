@@ -1,5 +1,6 @@
 //! MCP transport foundation. Only implemented tools are advertised.
 //! No worker activation, recovery, model calls or Python runtime fallback.
+pub mod http;
 pub mod protocol;
 pub mod stdio;
 use bridge_config::{DEFAULT_PROFILE_ID, ProjectEntry};

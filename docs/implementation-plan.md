@@ -3212,7 +3212,25 @@ Stdout содержит только JSON-RPC; notifications не получаю
 Протокол проверен по [MCP transport spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
 и [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle).
 
-### 8.10. Authenticated HTTP transport
+### 8.10. Authenticated HTTP transport (read-only foundation завершён)
+
+`bridge-mcp::http` реализует sessionless Streamable HTTP JSON responses:
+POST /mcp, notifications/responses → empty 202, GET/SSE → 405. Protocol
+2025-03-26/2025-06-18 headers проверяются, initialize negotiates supported
+version. Только 127.0.0.1; каждый request перечитывает private configured MCP
+bearer token (rotation/revocation без restart), digest compare без раннего
+выхода. Exact local Host/Origin allowlist, auth before dispatch, без OAuth
+issuer/access logs/raw token diagnostics. CLI preflight credentials/atomic
+port bind до state initialization; occupied port не затрагивается.
+HTTP/1.1 Content-Length и chunked bodies поддержаны; duplicate headers,
+TE+CL ambiguity, chunk trailers и Expect отклоняются. Limit: 1 MiB body,
+32 KiB headers/chunk overhead, 8 KiB line, 16 connections, total request-read
+deadline 10s. Overload → 503; JSON-RPC malformed input → fixed errors, no echo.
+Это bounded HTTP profile без SSE/session resumption/HTTP2; tool surface пока
+только project_info. Проверки: 9 real loopback cases (auth/rotation/Origin/Host/
+framing/parallel/overload/deadline/lock), HTTP CLI process + startup preflight.
+Source: `mcp_http.py` v17 и
+[MCP transport specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
 
 ### 8.11. Startup recovery
 
@@ -3338,8 +3356,8 @@ Stdout содержит только JSON-RPC; notifications не получаю
 
 ### 9.1. CLI parser и общие flags
 
-Узкий parser для `launch-opencode` реализован в 9.13b: explicit project/config/
-state-root, help/version, separated и inline flag values, safe errors.
+Parser для `launch-opencode` (9.13b), `mcp`/`serve-mcp` (9.5a/b): explicit
+project/config/state-root, help/version, separated/inline values, safe errors.
 Остальные commands, defaults и общая унификация parser остаются открытыми.
 
 ### 9.2. `setup`
@@ -3362,8 +3380,17 @@ Delta v17: вывод execution/delivery modes из validated config
   Проверки: 6 MCP integration tests (включая 5 frozen project_info cases),
   3 реальные CLI process tests (handshake/lock/foreign state), 8 controller CLI
   regression tests; targeted all-target clippy clean.
-- **9.5b. Authenticated HTTP CLI (открыт).** Loopback endpoint, Bearer auth,
-  Origin/Host checks, bounded HTTP parsing и тот же MCP lock/tool surface.
+- **9.5b. Authenticated HTTP CLI (read-only foundation завершён).**
+  `serve-mcp --project ID --config PATH --state-root ABSOLUTE_PATH` запускает
+  foreground JSON HTTP server из 8.10 с configured mcp_url/mcp_token_file.
+  HTTP/stdio используют один MCP lock; no stdout banner/HTTP access logs.
+  Guarded Rust state и tool surface project_info совпадают со stdio.
+  Проверены 9 HTTP cases, 5 CLI MCP process cases и 8 controller CLI regressions;
+  Full workspace run: 1195 tests passed; all-target clippy clean.
+  После финальной совместимости common request _meta и обновления help
+  повторно пройдены protocol/help targeted checks и workspace clippy.
+  Full task handlers/startup recovery остаются
+  в 9.5c; process records/managed start/stop — в 9.6–9.10.
 - **9.5c. Full handlers/startup recovery (открыт).** Depends on 8.2–8.8,
   8.11 и полный worker FSM. Без них MCP является read-only foundation,
   а local controller delegation 9.13c остаётся закрытой.

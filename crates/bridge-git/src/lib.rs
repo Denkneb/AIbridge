@@ -16,11 +16,12 @@
 //! Worker/MCP result aggregation and verifier integration remain out of scope
 //! for later tasks.
 //!
-//! Every Git command is read-only and runs through a bounded runner: a fixed
+//! Snapshot commands are read-only; the explicit `checkout` module additionally
+//! creates/removes detached task worktrees. All use a bounded runner: a fixed
 //! `git` executable, closed standard input, discarded standard error, raw
 //! standard-output bytes, and a wall-clock timeout after which the child is
 //! killed and reaped. There is no shell, no string interpolation and no Git
-//! write command anywhere in the production code.
+//! writes in the snapshot/comparison APIs.
 //!
 //! Fail-closed policy:
 //!
@@ -45,6 +46,7 @@
 //! [`GitError`] carries no payload, so `Display`/`Debug` can never leak the
 //! workspace, argv, stdout/stderr, Git configuration, OS error text or secrets.
 
+pub mod checkout;
 pub mod checkpoint;
 mod comparison;
 mod multi_repo;

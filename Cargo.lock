@@ -69,6 +69,7 @@ dependencies = [
 name = "bridge-git"
 version = "0.1.0"
 dependencies = [
+ "bridge-domain",
  "bridge-path-policy",
  "serde_json",
 ]

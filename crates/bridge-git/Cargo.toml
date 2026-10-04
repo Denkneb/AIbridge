@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bridge-domain.workspace = true
 bridge-path-policy = { workspace = true }
 serde_json.workspace = true
 

@@ -2842,14 +2842,20 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача меняет один
 компонент.
 
-- **7.16a. Git checkout/binding и base HEAD.**
+- **7.16a. Git checkout/binding и base HEAD (завершено).**
   - **Цель:** dedicated checkout + submit-time base HEAD, task execution root vs
     project workspace.
   - **Source evidence:** `git_worktree.py:41-769`; `worker.py:344-490,660`.
   - **Критерии приёмки:** direct default не меняется; checkout вне project
     workspace; external repos/submodules/LFS/sparse/nested/environment setup —
     deferred (см. ограничения).
-  - **Targeted checks:** git_worktree tests.
+  - **Результат:** `bridge-git::checkout` создаёт detached checkout по exact
+    submit-time OID, доказывает canonical slot/root/common-dir и admin backref.
+    Symlink/foreign/missing registered paths fail closed; explicit remove без
+    global prune. Unsupported LFS/submodule/sparse и state внутри workspace
+    отклоняются до add. Worker/storage binding интегрируется в 7.16c.
+  - **Проверено:** 72 Git tests, включая 7 real-repository checkout scenarios;
+    Clippy, fmt и diff check.
   - **Зависит от:** 0A.5, 2.10, 3.12e. **Открывает:** 7.16b.
 - **7.16b. Task-scoped OpenCode runtime и identity guard.**
   - **Цель:** task-scoped endpoint/token/process logs вне checkout; identity

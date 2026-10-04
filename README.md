@@ -60,8 +60,10 @@ Storage foundations 3.12 завершены для frozen v15.
 **Шаг 7.13 завершён:** strict structured findings validation, scope normalization,
 Python-compatible hash, atomic revision persistence/replay и проверка persisted
 данных перед отправкой prompt; corruption останавливает unsent revision.
-MCP handler и GUI wiring остаются в 8.12/12.13. Ближайший шаг —
-**7.14: Soft budgets usage aggregation**; delta fixtures 0B завершены.
+MCP handler и GUI wiring остаются в 8.12/12.13.
+**7.14 завершён:** saved usage aggregation, budget state/decision и atomic worker
+accounting. Public MCP budget handler остаётся в 8.13. Ближайший шаг —
+**7.15: Per-round checkpoints**; delta fixtures 0B завершены.
 **0B.1 завершён:** manifest v17 и `python3 docs/verify_contract_manifest.py`
 проверяют source pin, CLI/MCP/config/DDL/automation через AST и SQLite в памяти.
 **0B.2 завершён:** 87/87 config/permission source-parity cases, no skips;
@@ -1366,7 +1368,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   **0B.4 завершён** (47 MCP source-parity scenarios);
   **0B.5 завершён** (77 runtime/automation cases);
   **7.13 завершён** (findings validation/persistence/dispatch);
-  ближайшая задача — **7.14**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
+  ближайшая задача — **7.15**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
   следующий незавершённый исторический шаг — **7.7** (Question blocker), а
   возможности v7–v17 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,

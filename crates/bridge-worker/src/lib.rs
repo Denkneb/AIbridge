@@ -94,6 +94,7 @@ pub mod permission;
 pub mod prompt;
 pub mod session;
 pub mod startup;
+pub mod usage;
 
 pub use dispatch::{
     DispatchError, DispatchErrorKind, DispatchedRound, dispatch_initial_round,

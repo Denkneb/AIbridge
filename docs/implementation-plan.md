@@ -79,7 +79,7 @@ Targeted checks:
   **0B.4 завершён** (47 MCP/claim source-parity scenarios, без skips).
   **0B.5 завершён** (77 runtime/automation cases, без skips).
   **Delta fixtures 0B завершены.** **7.13 завершён** (structured findings validation/persistence/dispatch).
-  Ближайший шаг — **7.14 (Soft budgets usage aggregation)**; новые v16/v17 задачи идут по зависимостям.
+  Ближайший шаг — **7.15 (Per-round checkpoints)**; новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
 
@@ -97,7 +97,7 @@ Targeted checks:
 Delta реализация остаётся открытой; **0B.1–0B.5 завершены**: manifest v17,
 AST/source verification, config/permission, SQLite, MCP и runtime/automation delta corpora.
 Fixtures 0A и Rust implementation сохраняют v15 baseline. Contract delta
-refresh завершён; 7.13 завершён; реализация потребителей продолжается с 7.14.
+refresh завершён; 7.13 завершён; 7.14 завершён; реализация потребителей продолжается с 7.15.
 
 ## Поток 0. Контрактная база
 
@@ -413,7 +413,7 @@ worktrees, configs и subprocess doubles создаются в synthetic Rust fi
   сначала запретил socket port probes для 3 worktree scenarios; разрешённый
   запуск вне sandbox прошёл все cases без подмены allocation/skip.
   Подробнее: `docs/runtime-fixtures.md`. Rust-код/target v15 не меняются.
-  **0B завершён; 7.13 также завершён. Ближайшая задача — 7.14.**
+  **0B завершён; 7.13 также завершён. Ближайшая задача — 7.15.**
 
 ## Поток 1. Rust foundation
 
@@ -1050,7 +1050,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12e завершён** (worktrees/quarantine lifecycle);
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
-  **7.13 завершён**; ближайшая задача — **7.14**;
+  **7.13 завершён**; ближайшая задача — **7.15**;
   следующий незавершённый исторический шаг — **7.7** (Question blocker);
   новые возможности v7–v17 в Rust не завершены.
 
@@ -2774,7 +2774,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   secret/budget gates, worker observation/recovery и live models не входят.
 - **Зависит от:** 0A.3, 1.7, 3.12a. **Открывает:** 12.13.
 
-### 7.14. Soft budgets usage aggregation (v8, не завершено)
+### 7.14. Soft budgets usage aggregation (v8, завершено)
 
 - **Цель:** сохранять/агрегировать observed usage и поддерживать gate между
   раундами.
@@ -2787,6 +2787,19 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 - **Критерии приёмки:** не realtime kill/billing guarantee; exhausted →
   `budget_exhausted`; corrupt budget fail closed; override только gate.
 - **Targeted checks:** usage tests; budget MCP cases.
+- **Результат:** `bridge-storage::usage` нормализует и агрегирует saved usage,
+  вычисляет deterministic budget state и decision `budget_exhausted`/`budget_corrupt`.
+  Read-only storage service читает budget/results в одном snapshot, без task writes
+  и reservation; explicit override меняет только decision. Worker accounting
+  пересчитывает dedicated-round history, включая TUI continuations, сохраняет
+  latest valid model и usage через atomic finish, без суммирования повторных polls.
+  Budget gate применяется будущим MCP handler 8.13 под его lifecycle fence;
+  полный observation loop остаётся в 7.9–7.11. Corrupt budget override не отменяет
+  отдельные строгие storage guards. Floating overflow насыщается fail-closed,
+  а не превращается в нулевое spending.
+- **Проверки:** 18 frozen-v15 Python goldens, 413 worker/storage tests,
+  history/continuation/model/rollback/project fence и override integration;
+  workspace all-targets clippy, format и diff check.
 - **Зависит от:** 0A.3, 1.7, 3.12f. **Открывает:** 12.14.
 
 ### 7.15. Per-round checkpoints (v12, не завершено)
@@ -3686,8 +3699,8 @@ improvement**. Limitation не выдаётся за реализованное 
    **0B.3 завершён** (4 SQLite delta fixtures и migration parity).
    **0B.4 завершён** (47 MCP delivery/recovery/claim scenarios).
    **0B.5 завершён** (77 runtime/automation cases).
-   **7.13 завершён**; **ближайшая задача — 7.14**; delta fixtures refresh завершён.
-2. После завершённых delta fixtures и 7.13 продолжить 7.14 и потребителей existing v15
+   **7.13 завершён**; **ближайшая задача — 7.15**; delta fixtures refresh завершён.
+2. После завершённых delta fixtures и 7.13 продолжить 7.15 и потребителей existing v15
    (7.14–7.18, 8.12–8.18, 9.15–9.20, 12.13–12.15). Новые delivery/config/
    schema17 foundations 1.8, 2.13–2.14, 3.13–3.15 выполняются по dependencies;
    recovery corrections 7.10/8.20 и startup wait 9.7a включены в свои потоки.

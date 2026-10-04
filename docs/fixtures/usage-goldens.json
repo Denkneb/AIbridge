@@ -1,0 +1,443 @@
+{
+  "source_head": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+  "cases": [
+    {
+      "kind": "normalize",
+      "input": null,
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": [],
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": true,
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": {},
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": {
+        "input": 10,
+        "output": 3.5,
+        "cost": 0.25
+      },
+      "expect": {
+        "input": 10,
+        "output": 3.5,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0.25
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": {
+        "input": -1,
+        "output": true,
+        "reasoning": "4",
+        "cache_read": 2
+      },
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 2,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "normalize",
+      "input": {
+        "input": 18446744073709551615
+      },
+      "expect": {
+        "input": 18446744073709551615,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {},
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 0,
+          "cost": 0,
+          "output": 0
+        },
+        "ratios": {
+          "input": 0.0,
+          "cost": 0.0,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": false,
+        "exhausted": false,
+        "exhausted_fields": [],
+        "gate": "none",
+        "gate_reason": null
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "input": 79
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 79,
+          "cost": 0,
+          "output": 0
+        },
+        "ratios": {
+          "input": 0.79,
+          "cost": 0.0,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": false,
+        "exhausted": false,
+        "exhausted_fields": [],
+        "gate": "none",
+        "gate_reason": null
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "input": 80
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 80,
+          "cost": 0,
+          "output": 0
+        },
+        "ratios": {
+          "input": 0.8,
+          "cost": 0.0,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": true,
+        "exhausted": false,
+        "exhausted_fields": [],
+        "gate": "warning",
+        "gate_reason": "budget reached warning threshold 0.8"
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "input": 100
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 100,
+          "cost": 0,
+          "output": 0
+        },
+        "ratios": {
+          "input": 1.0,
+          "cost": 0.0,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": true,
+        "exhausted": true,
+        "exhausted_fields": [
+          "input"
+        ],
+        "gate": "exhausted",
+        "gate_reason": "budget limit(s) already reached: input"
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "input": 100,
+        "cost": 3
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 100,
+          "cost": 3,
+          "output": 0
+        },
+        "ratios": {
+          "input": 1.0,
+          "cost": 1.5,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": true,
+        "exhausted": true,
+        "exhausted_fields": [
+          "input",
+          "cost"
+        ],
+        "gate": "exhausted",
+        "gate_reason": "budget limit(s) already reached: input, cost"
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "output": true,
+        "input": "100"
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 0,
+          "cost": 0,
+          "output": 0
+        },
+        "ratios": {
+          "input": 0.0,
+          "cost": 0.0,
+          "output": 0.0
+        },
+        "warning_threshold": 0.8,
+        "warning": false,
+        "exhausted": false,
+        "exhausted_fields": [],
+        "gate": "none",
+        "gate_reason": null
+      }
+    },
+    {
+      "kind": "state",
+      "budget": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "warning_threshold": 0.8
+      },
+      "used": {
+        "input": 125,
+        "output": 10,
+        "cost": 2
+      },
+      "expect": {
+        "limits": {
+          "input": 100,
+          "cost": 2,
+          "output": 5
+        },
+        "used": {
+          "input": 125,
+          "cost": 2,
+          "output": 10
+        },
+        "ratios": {
+          "input": 1.25,
+          "cost": 1.0,
+          "output": 2.0
+        },
+        "warning_threshold": 0.8,
+        "warning": true,
+        "exhausted": true,
+        "exhausted_fields": [
+          "input",
+          "output",
+          "cost"
+        ],
+        "gate": "exhausted",
+        "gate_reason": "budget limit(s) already reached: input, output, cost"
+      }
+    },
+    {
+      "kind": "total",
+      "input": [],
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "total",
+      "input": [
+        null,
+        "bad",
+        [],
+        {}
+      ],
+      "expect": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    },
+    {
+      "kind": "total",
+      "input": [
+        {
+          "usage": {
+            "input": 12
+          }
+        },
+        "{\"usage\":{\"input\":3,\"cost\":0.5}}"
+      ],
+      "expect": {
+        "input": 15,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0.5
+      }
+    },
+    {
+      "kind": "total",
+      "input": [
+        {
+          "usage": {
+            "output": true,
+            "input": -1
+          }
+        },
+        {
+          "usage": {
+            "input": 1,
+            "output": 2
+          }
+        }
+      ],
+      "expect": {
+        "input": 1,
+        "output": 2,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0
+      }
+    }
+  ]
+}

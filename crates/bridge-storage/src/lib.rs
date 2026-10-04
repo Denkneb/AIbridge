@@ -188,6 +188,7 @@ pub const SCHEMA_VERSION: i64 = 6;
 pub const RUST_SCHEMA_VERSION: i64 = 15;
 
 mod budgets;
+pub mod usage;
 pub use budgets::{
     BUDGET_USAGE_FIELDS, BudgetReadError, BudgetValidationError, DEFAULT_BUDGET_WARNING_THRESHOLD,
     TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,

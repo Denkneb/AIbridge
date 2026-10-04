@@ -3121,3 +3121,115 @@ fn pre_send_invariant_failure_is_fenced_and_preserves_close_priority() {
     assert!(storage.fail_revision_findings(current).is_err());
     assert_eq!(round_state(&storage, task, 2).status, "sent");
 }
+
+#[test]
+fn accounting_history_persistence_and_budget_snapshot() {
+    let dir = TempDir::new("usage-history");
+    let (workspace, _layout, mut storage, task, project) = seed_structured_revision(&dir);
+    let round = round_ref(task, &project, 2);
+    storage
+        .prepare_round(round.clone(), "msg_out".to_owned())
+        .unwrap();
+    storage.mark_round_sent(round.clone()).unwrap();
+    storage.mark_round_observing(round.clone()).unwrap();
+    let messages = serde_json::json!([
+        {"info":{"role":"user","id":"old"},"parts":[]},
+        {"info":{"role":"assistant","parentID":"old","tokens":{"input":1000}},"parts":[]},
+        {"info":{"role":"user","id":"msg_out"},"parts":[]},
+        {"info":{"role":"assistant","parentID":"msg_out","providerID":"provider","modelID":"model","tokens":{"input":10,"output":2},"cost":0.25},"parts":[]},
+        {"info":{"role":"user","id":"continued"},"parts":[]},
+        {"info":{"role":"assistant","parentID":"continued","tokens":{"input":5,"cache":{"read":3}},"cost":0.5},"parts":[]}
+    ]);
+    let (port, _server) = spawn_server(move |_, _| ok_json(&messages));
+    let messages = build_client(port, &workspace)
+        .list_messages("session")
+        .unwrap();
+    let observed = bridge_worker::usage::observed_accounting(&messages, "msg_out");
+    assert_eq!(
+        observed["usage"],
+        serde_json::json!({"input":15.0,"output":2.0,"reasoning":0.0,"cache_read":3.0,"cache_write":0.0,"cost":0.75})
+    );
+    assert_eq!(
+        observed,
+        bridge_worker::usage::observed_accounting(&messages, "msg_out")
+    );
+    assert_eq!(
+        observed["model"],
+        serde_json::json!({"provider_id":"provider","model_id":"model"})
+    );
+    let input = FinishRoundInput {
+        round: round.clone(),
+        round_status: RoundStatus::Complete,
+        task_status: TaskStatus::AwaitingReview,
+        response_message_id: None,
+        response: None,
+        error_code: None,
+        result_json: Some(serde_json::json!({"tool_errors":[]})),
+    };
+    install_trigger(
+        &storage,
+        "CREATE TRIGGER reject_usage BEFORE INSERT ON events WHEN NEW.kind='complete' BEGIN SELECT RAISE(ABORT,'test'); END;",
+    );
+    assert!(
+        bridge_worker::usage::finish_round_with_accounting(&mut storage, input.clone(), &messages)
+            .is_err()
+    );
+    assert_eq!(round_state(&storage, task, 2).status, "observing");
+    storage
+        .connection()
+        .execute_batch("DROP TRIGGER reject_usage")
+        .unwrap();
+    let outcome =
+        bridge_worker::usage::finish_round_with_accounting(&mut storage, input, &messages).unwrap();
+    assert_eq!(
+        outcome.round.result_json.as_ref().unwrap()["usage"],
+        observed["usage"]
+    );
+    assert_eq!(
+        outcome.round.result_json.unwrap()["tool_errors"],
+        serde_json::json!([])
+    );
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET budget_json=?1 WHERE task_id=?2",
+            rusqlite::params![r#"{"limits":{"input":15,"cost":1}}"#, task.to_string()],
+        )
+        .unwrap();
+    let decision = storage
+        .revision_budget_decision(task, &project, false)
+        .unwrap();
+    assert_eq!(decision.error, Some("budget_exhausted"));
+    assert!(
+        storage
+            .revision_budget_decision(task, &project, true)
+            .unwrap()
+            .overridden
+    );
+    assert!(
+        storage
+            .revision_budget_decision(task, &crate::project("foreign"), false)
+            .is_err()
+    );
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET budget_json='{}' WHERE task_id=?1",
+            [task.to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        storage
+            .revision_budget_decision(task, &project, false)
+            .unwrap()
+            .error,
+        Some("budget_corrupt")
+    );
+    assert!(
+        storage
+            .revision_budget_decision(task, &project, true)
+            .unwrap()
+            .overridden
+    );
+    assert_eq!(round_state(&storage, task, 2).status, "complete");
+}

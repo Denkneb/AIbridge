@@ -121,7 +121,7 @@
 //! `state.sqlite`, lock, PID/ownership, log, token and endpoint paths of a
 //! project exclusively from an explicitly passed Rust state root, so Rust
 //! runtime artifacts can never overlap a Python state root.
-//! [`RustStateLayout::initialize`] creates the Rust-owned empty schema v15
+//! [`RustStateLayout::initialize`] creates the Rust-owned empty schema v16
 //! database in that root, and there is deliberately no API that reads, copies
 //! or imports a Python SQLite database or history.
 //!
@@ -185,7 +185,7 @@ use rusqlite::{
 pub const SCHEMA_VERSION: i64 = 6;
 
 /// Schema created and upgraded by the guarded Rust state initializer.
-pub const RUST_SCHEMA_VERSION: i64 = 15;
+pub const RUST_SCHEMA_VERSION: i64 = 16;
 
 mod budgets;
 pub mod usage;
@@ -386,7 +386,7 @@ pub enum InspectError {
     NotReadable,
     /// The file is not a SQLite database.
     NotADatabase,
-    /// `PRAGMA user_version` is not v6, v11, v14 or [`RUST_SCHEMA_VERSION`].
+    /// `PRAGMA user_version` is not v6, v11, v14, v15 or [`RUST_SCHEMA_VERSION`].
     UnsupportedUserVersion { found: i64 },
     /// The `meta` table or the `schema_version` key is missing.
     MissingSchemaVersion,
@@ -432,7 +432,7 @@ impl Error for InspectError {
     }
 }
 
-/// Opens `path` strictly read-only and validates it against schema v6, v11, v14 or v15.
+/// Opens `path` strictly read-only and validates it against schema v6, v11, v14, v15 or v16.
 ///
 /// The database is opened with the SQLite URI `mode=ro&immutable=1`, so a
 /// missing file is never created and no `-wal`/`-shm` sidecars are produced.
@@ -453,7 +453,7 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Inspection, InspectError> {
     validate_database(&connection)
 }
 
-/// Validates an open connection against its frozen v6/v11/v14/v15 contract.
+/// Validates an open connection against its frozen v6/v11/v14/v15/v16 contract.
 ///
 /// This is the shared core of [`inspect`] and [`initialize`]: it reads the
 /// version markers, the user tables, the named indexes and the foreign keys and
@@ -462,7 +462,10 @@ fn validate_database(connection: &Connection) -> Result<Inspection, InspectError
     let user_version = read_user_version(connection)?;
     let tables = read_tables(connection)?;
 
-    if !matches!(user_version, SCHEMA_VERSION | 11 | 14 | RUST_SCHEMA_VERSION) {
+    if !matches!(
+        user_version,
+        SCHEMA_VERSION | 11 | 14 | 15 | RUST_SCHEMA_VERSION
+    ) {
         return Err(InspectError::UnsupportedUserVersion {
             found: user_version,
         });
@@ -1456,8 +1459,10 @@ impl StorageConnection {
             return Ok(CreateTaskOutcome::Replayed(task));
         }
 
-        let v15 = query_user_version(&transaction).map_err(CreateTaskError::Database)?
-            == RUST_SCHEMA_VERSION;
+        let v15 = matches!(
+            query_user_version(&transaction).map_err(CreateTaskError::Database)?,
+            15 | 16
+        );
         if !v15
             && (*settings != AdmissionSettings::default()
                 || initial_status != TaskStatus::Implementing
@@ -2630,7 +2635,7 @@ impl Error for RustStateError {
 /// The layout is purely declarative: it creates no files and never opens a
 /// database. It has no API that accepts, copies or imports a Python SQLite
 /// database or history. [`RustStateLayout::initialize`] creates the Rust-owned
-/// empty schema v15 database at [`RustStateLayout::database`].
+/// empty schema v16 database at [`RustStateLayout::database`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustStateLayout {
     root: PathBuf,
@@ -2759,12 +2764,12 @@ impl RustStateLayout {
         self.project_dir().join(Self::MARKER_FILE)
     }
 
-    /// Creates Rust-owned schema v15 or atomically upgrades owned legacy v6/v11/v14.
+    /// Creates Rust-owned schema v16 or atomically upgrades owned legacy v6/v11/v14/v15.
     ///
     /// A new, isolated Rust state is initialized in a crash-safe order: the
     /// sidecar marker is written first (crash-durably, through a private
     /// temporary file, a no-clobber link and a directory sync) and only then
-    /// the schema v15 database with the additive `meta.runtime_owner='rust'`
+    /// the schema v16 database with the additive `meta.runtime_owner='rust'`
     /// row. An interrupted initialization is therefore always detectable: the
     /// marker without a database is completed on the next call, while a
     /// database without a marker is never adopted. A concurrent initializer
@@ -2772,7 +2777,7 @@ impl RustStateLayout {
     /// overwritten.
     ///
     /// Initialization is idempotent. An existing Rust-owned state (a valid
-    /// marker *and* a schema v15 database with `meta.runtime_owner='rust'`) is
+    /// marker *and* a schema v16 database with `meta.runtime_owner='rust'`) is
     /// validated and left unchanged. Owned legacy v6/v11/v14 state is validated before
     /// any writable connection, then rechecked and upgraded inside one
     /// transaction, preserving every existing row. A missing or truly empty
@@ -2827,7 +2832,7 @@ impl RustStateLayout {
     /// * the marker's project namespace equals this layout's project;
     /// * the marker's normalized `state_root` equals this layout's state root,
     ///   so a state copied or moved under another root is rejected;
-    /// * the database exists and matches the frozen v6/v11/v14/v15 contract;
+    /// * the database exists and matches the frozen v6/v11/v14/v15/v16 contract;
     /// * `meta.runtime_owner` is present and exactly `rust`.
     ///
     /// Any missing, malformed, unsupported, foreign or contradictory state
@@ -3150,7 +3155,7 @@ fn require_adoptable_database(path: &Path) -> Result<(), RustStateError> {
 /// Initializes or validates a state whose sidecar marker is already owned.
 ///
 /// A populated database is validated read-only before a writable connection.
-/// v15 is left unchanged; owned v6/v11/v14 is upgraded transactionally. Missing or
+/// v16 is left unchanged; owned v6/v11/v14/v15 is upgraded transactionally. Missing or
 /// truly empty state is created through [`initialize_rust_database`].
 fn initialize_owned_state(path: &Path) -> Result<(), RustStateError> {
     if path.exists() && !is_truly_empty_database(path)? {
@@ -3222,9 +3227,9 @@ fn require_runtime_owner(connection: &Connection) -> Result<(), RustStateError> 
     }
 }
 
-/// Creates Rust-owned v15 or upgrades validated Rust-owned v6/v11/v14.
+/// Creates Rust-owned v16 or upgrades validated Rust-owned v6/v11/v14/v15.
 ///
-/// An already compatible owned v15 database is accepted unchanged; foreign or
+/// An already compatible owned v16 database is accepted unchanged; foreign or
 /// incompatible state fails closed. Creation and additive upgrade both run
 /// inside one `BEGIN IMMEDIATE` transaction, so a partial schema or a database
 /// without `meta.runtime_owner` is never committed.
@@ -3251,6 +3256,10 @@ fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
             writers::reconcile_legacy(&transaction).map_err(RustStateError::Writer)?;
             validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
         }
+        15 => {
+            validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+            require_runtime_owner(&transaction)?;
+        }
         11 | 14 => {
             validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
             require_runtime_owner(&transaction)?;
@@ -3274,6 +3283,11 @@ fn initialize_rust_database(path: &Path) -> Result<(), RustStateError> {
         found => return Err(RustStateError::UnsupportedSchemaVersion { found }),
     }
 
+    if query_user_version(&transaction).map_err(RustStateError::Database)? == 15 {
+        transaction.execute_batch("ALTER TABLE tasks ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'manual'; PRAGMA user_version=16; UPDATE meta SET value='16' WHERE key='schema_version';")
+            .map_err(RustStateError::Database)?;
+        validate_database(&transaction).map_err(RustStateError::IncompatibleSchema)?;
+    }
     transaction.commit().map_err(RustStateError::Database)?;
     Ok(())
 }
@@ -3834,6 +3848,7 @@ mod tests {
     mod budgets;
     mod dependencies;
     mod recovery;
+    mod schema16;
     mod worktrees;
     mod writer_indexes;
     mod writers;
@@ -10215,7 +10230,7 @@ mod tests {
         layout.initialize().expect("rust initialize must succeed");
 
         assert!(rust_db.exists(), "rust initialize must create its database");
-        assert_compatible_empty_v15(&rust_db);
+        assert_compatible_empty_current(&rust_db);
 
         assert_eq!(
             std::fs::read(&python_state).expect("read python state bytes"),
@@ -10432,7 +10447,7 @@ mod tests {
         assert_eq!(user_version, super::RUST_SCHEMA_VERSION);
         drop(storage);
 
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
     }
 
     #[test]
@@ -11007,7 +11022,7 @@ mod tests {
         assert_eq!(runtime_owner(&storage).as_deref(), Some(RUNTIME_OWNER));
         assert_eq!(count_rows(&storage, "tasks"), 0);
         drop(storage);
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
     }
 
     fn expected_v15() -> Value {
@@ -11017,9 +11032,44 @@ mod tests {
         .expect("v15 manifest")
     }
 
+    fn assert_compatible_empty_current(path: &Path) {
+        let observed = inspect(path).expect("inspect current");
+        assert_eq!(observed.user_version(), super::RUST_SCHEMA_VERSION);
+        assert_eq!(observed.meta_schema_version(), "16");
+        let mut expected = expected_contract(&expected_v15());
+        expected
+            .tables
+            .iter_mut()
+            .find(|table| table.name == "tasks")
+            .unwrap()
+            .columns
+            .push(super::column("delivery_mode", "TEXT", true, 0));
+        assert_eq!(
+            normalize(Contract {
+                tables: observed.tables().to_vec(),
+                indexes: observed.indexes().to_vec(),
+                foreign_keys: observed.foreign_keys().to_vec(),
+            }),
+            normalize(expected)
+        );
+        let connection = Connection::open(path).unwrap();
+        for table in observed
+            .tables()
+            .iter()
+            .filter(|table| table.name != "meta")
+        {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {}", table.name), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+    }
+
     fn assert_compatible_empty_v15(path: &Path) {
         let observed = inspect(path).expect("inspect v15");
-        assert_eq!(observed.user_version(), super::RUST_SCHEMA_VERSION);
+        assert_eq!(observed.user_version(), 15);
         assert_eq!(observed.meta_schema_version(), "15");
         assert_eq!(
             normalize(Contract {
@@ -11125,7 +11175,7 @@ mod tests {
             let storage = layout.open().expect("upgraded state");
             assert_eq!(
                 query_user_version(storage.connection()).expect("version"),
-                15
+                super::RUST_SCHEMA_VERSION
             );
             for (table, columns, rows) in original {
                 assert_eq!(snapshot(storage.connection(), table, &columns), rows);
@@ -11224,7 +11274,7 @@ mod tests {
         assert_eq!(file_bytes(&layout.marker()), marker);
         execute(&layout.database(), "DROP TRIGGER block_upgrade");
         layout.initialize().expect("retry succeeds");
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
     }
 
     #[test]
@@ -11247,7 +11297,7 @@ mod tests {
                 handle.join().expect("thread").expect("concurrent upgrade");
             }
         });
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
         assert_eq!(file_bytes(&layout.marker()), marker);
         assert_eq!(
             runtime_owner(&layout.open().expect("open")).as_deref(),

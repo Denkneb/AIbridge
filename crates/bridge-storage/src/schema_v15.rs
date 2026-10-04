@@ -97,6 +97,16 @@ pub(super) fn upgrade_intermediate(connection: &Connection, version: i64) -> rus
 
 fn contract_for(version: i64) -> Contract {
     let mut contract = contract();
+    if version == 16 {
+        contract
+            .tables
+            .iter_mut()
+            .find(|table| table.name == "tasks")
+            .expect("tasks contract")
+            .columns
+            .push(column("delivery_mode", "TEXT", true, 0));
+        return contract;
+    }
     if version == 15 {
         return contract;
     }
@@ -278,6 +288,7 @@ pub(super) fn validate(
                 .map_err(super::classify_error)?;
             let expected = match (table.name.as_str(), column.name.as_str()) {
                 ("tasks", "execution_mode") => Some("'direct'"),
+                ("tasks", "delivery_mode") => Some("'manual'"),
                 ("tasks", "revision_count")
                 | ("rounds", "attempted")
                 | ("active_writers", "parallel") => Some("0"),

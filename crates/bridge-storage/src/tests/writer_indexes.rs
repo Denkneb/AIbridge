@@ -158,7 +158,7 @@ fn intermediate_upgrades_preserve_every_column_and_v14_reservations() {
         assert_eq!(flags, vec![0]);
         assert_eq!(
             query_user_version(storage.connection()).expect("version"),
-            15
+            crate::RUST_SCHEMA_VERSION
         );
         let inspection = inspect(layout.database()).expect("v15 inspect");
         assert!(!inspection.indexes().iter().any(|entry| matches!(
@@ -262,7 +262,7 @@ fn intermediate_upgrade_failure_rolls_back_indexes_columns_and_versions() {
         assert_eq!(before, after);
         execute(&layout.database(), "DROP TRIGGER block_upgrade");
         layout.initialize().expect("retry");
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
     }
 }
 
@@ -281,7 +281,7 @@ fn intermediate_concurrent_upgrade_has_one_complete_target() {
                 handle.join().expect("thread").expect("upgrade");
             }
         });
-        assert_compatible_empty_v15(&layout.database());
+        assert_compatible_empty_current(&layout.database());
     }
 }
 

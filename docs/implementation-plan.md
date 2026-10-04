@@ -48,9 +48,9 @@ Targeted checks:
   MCP и runtime/automation delta 0B.4/0B.5 также завершены. Завершённые результаты 0A/1.6–1.7/2.10–2.12/3.12 относятся
   именно к этому baseline; новые source line references ниже помечены v17,
   старые line references читаются на frozen v15 commit.
-- Rust создаёт и открывает собственный **v15** state. Обновление плана само
-  по себе не расширяет schema guard: v16/v17 остаются неподдерживаемыми до
-  задач 3.13. Python migrations (0..16) не становятся Rust allowlist; upgrades
+- Rust создаёт собственный **v16** state после 3.13a; поддержанные Rust-owned
+  v6/v11/v14/v15 обновляются транзакционно. Read-only v15 не мигрируется.
+  v17 остаётся неподдерживаемой до 3.13c. Python migrations (0..16) не становятся Rust allowlist; upgrades
   допускаются только для явно поддержанных Rust-owned contracts.
 - Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) опирается на **старый
   контракт schema v6**: исторический manifest до refresh,
@@ -87,7 +87,7 @@ Targeted checks:
   **7.17c service завершён**.
   Delivery gate 7.17d ждёт 9.18a.
   **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
-  schema target всё ещё v15, schema16/17 extension 3.13 открыт.; полный worker FSM,
+  schema target v16 после 3.13a; policy persistence 3.13b и schema17 3.13c открыты; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -1089,11 +1089,17 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
 namespace, meta/runtime_owner и Rust/Python isolation guards; поддержка новых
 версий появляется только с проверенным полным schema contract.
 
-- **3.13a. Additive schema16.** `tasks.delivery_mode TEXT NOT NULL DEFAULT
+- **3.13a. Additive schema16 (завершено).** `tasks.delivery_mode TEXT NOT NULL DEFAULT
   'manual'`; fresh target16 и Rust-owned v15→16, historical supported upgrades
   доводятся до нового target без потери строк. Read-only v15 не мигрируется.
   Source: `Storage._migrate` (v17). Checks: defaults/row preservation,
   exact contract, ownership и transactional failure. Depends on 0B.3.
+  Реализованы fresh16 и additive Rust-owned v6/v11/v14/v15→16 в одном
+  BEGIN IMMEDIATE с guards и финальной проверкой схемы. Старые строки
+  получают manual; read-only inspection v15 не пишет и не мигрирует.
+  274 storage tests: независимый delta schema/default contract, сохранение
+  всех таблиц v15, idempotent initialize, foreign owner/default refusal и
+  rollback DDL/user_version/meta при trigger failure.
 - **3.13b. Frozen delivery policy persistence.** Mapping/create/replay/read-only
   читают эффективный task mode; existing rows manual, new rows получают
   submit-time config. Live config не влияет на repeat accept. Source:
@@ -3891,7 +3897,7 @@ improvement**. Limitation не выдаётся за реализованное 
    автономный поток16 — от worktree/lifecycle/verifier/MCP/delivery. Не
    подменять эти prerequisites одним большим automation PR.
 4. **Modern v7–v17 parity не завершён.** Rust runtime/storage target остаётся
-   v15 до 3.13; завершённые задачи не переименовываются в v17-реализацию.
+   v16 после 3.13a; завершённые задачи не переименовываются в v17-реализацию.
    Question blocker service 7.7 завершён; следующий historical шаг — 7.8;
    для затронутых новым source контрактов сначала соответствующие 0B fixtures.
 

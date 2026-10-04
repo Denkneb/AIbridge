@@ -22,7 +22,7 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
-1.8, config 2.13/2.14, storage 3.15 и recovery services 7.10a/b. Schema target
+1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 сохраняется v15 до 3.13. Public MCP/CLI и полный worker FSM ещё впереди.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
@@ -1382,7 +1382,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   **0B.5 завершён** (77 runtime/automation cases);
   **7.13 завершён** (findings validation/persistence/dispatch);
   согласованный блок 7.14/7.15/8.18/7.18 завершён; 7.16 завершён на уровне application services; следующий блок — **7.17**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
-  следующий незавершённый исторический шаг — **7.7** (Question blocker), а
+  question blocker service **7.7 завершён**; следующий исторический шаг — **7.8** (Auto-approval integration), а
   возможности v7–v17 (structured findings, budgets, workflow/dependencies,
   checkpoints, worktree execution, profiles, parallel writers, quarantine,
   delivery, diagnostics/hook, config migration, on_accept и automatic plan

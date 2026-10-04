@@ -228,7 +228,7 @@ pub struct PermissionBlockerError {
 
 impl PermissionBlockerError {
     /// Creates an error of the given `kind` without a source.
-    fn new(kind: PermissionBlockerErrorKind) -> Self {
+    pub(crate) fn new(kind: PermissionBlockerErrorKind) -> Self {
         Self { kind, source: None }
     }
 
@@ -318,7 +318,7 @@ pub struct UserAction {
 
 impl UserAction {
     /// Builds the session-aware user action for `session_id`/`session_title`.
-    fn for_session(session_id: String, session_title: String) -> Self {
+    pub(crate) fn for_session(session_id: String, session_title: String) -> Self {
         Self {
             kind: UserActionKind::OpenProjectConsole,
             message: USER_ACTION_MESSAGE,
@@ -705,11 +705,11 @@ pub fn handle_permission_blocker(
 }
 
 /// The persisted task/round/session state validated around the HTTP round trip.
-struct InspectedRound {
-    task: Task,
-    row: RoundRow,
-    already_blocked: bool,
-    session_id: String,
+pub(crate) struct InspectedRound {
+    pub(crate) task: Task,
+    pub(crate) row: RoundRow,
+    pub(crate) already_blocked: bool,
+    pub(crate) session_id: String,
 }
 
 /// Validates and reads the current task/round state fail closed.
@@ -722,7 +722,7 @@ struct InspectedRound {
 /// HTTP request (so ownership/state errors and a pending close fail without any
 /// network access) and again after it (so any outcome reflects the state that
 /// survived the round trip).
-fn inspect_round_state(
+pub(crate) fn inspect_round_state(
     storage: &StorageConnection,
     round: &RoundRef,
     workspace: &Path,
@@ -793,7 +793,9 @@ fn inspect_round_state(
 }
 
 /// Opens the layout through the production ownership guard.
-fn open_state(layout: &RustStateLayout) -> Result<StorageConnection, PermissionBlockerError> {
+pub(crate) fn open_state(
+    layout: &RustStateLayout,
+) -> Result<StorageConnection, PermissionBlockerError> {
     layout.open().map_err(|error| {
         PermissionBlockerError::with_source(PermissionBlockerErrorKind::StateOwnership, error)
     })

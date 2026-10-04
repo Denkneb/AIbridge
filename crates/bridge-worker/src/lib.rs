@@ -94,6 +94,7 @@ pub mod findings;
 pub mod lock;
 pub mod permission;
 pub mod prompt;
+pub mod question;
 pub mod recovery;
 pub mod recovery_startup;
 pub mod session;

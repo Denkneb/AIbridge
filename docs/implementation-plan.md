@@ -86,7 +86,7 @@ Targeted checks:
   **7.17b services завершены**, live-model smoke остаётся в 15.3.
   **7.17c service завершён**.
   Delivery gate 7.17d ждёт 9.18a.
-  **1.8, 2.13, 2.14, 3.15 и recovery services 7.10a/b завершены**;
+  **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
   schema target всё ещё v15, schema16/17 extension 3.13 открыт.; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
@@ -1080,7 +1080,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   **3.12f завершён** (budget persistence/parse);
   **0B.1–0B.5 завершены** (v17 manifest и delta corpora);
   **7.13 завершён**; согласованный блок 7.14/7.15/8.18/7.18 завершён;
-  следующий незавершённый исторический шаг — **7.7** (Question blocker);
+  следующий незавершённый исторический шаг — **7.8** (Auto-approval integration);
   новые возможности v7–v17 в Rust не завершены.
 
 ### 3.13. Schema v16/v17 extension (не завершено)
@@ -2727,12 +2727,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   входят. `Cargo.toml`/`Cargo.lock`, bridge-opencode/transport,
   bridge-storage/schema/fixtures не менялись.
 
-### 7.7. Question blocker
+### 7.7. Question blocker (service завершён)
 
 - **Минимальные prerequisites:** только согласованный refresh **0A** (manifest
   и fixtures). 7.7 не требует B2/runtime/worktree: это исторический шаг
   foundation v6, продолжающий 7.1–7.6, и он не блокируется новыми v7–v15
   задачами.
+- **Результат:** `bridge-worker::question::handle_question_blocker` использует
+  общие ownership/current-round/session/close guards с permission service,
+  фильтрует точную session, сохраняет typed question blockers (первые 300 Unicode
+  characters) и user action через atomic finish. Empty/foreign-only — no-op;
+  повтор needs_user не пишет events/updated_at; malformed HTTP/storage failure
+  fail closed. Close during GET/replay и committed close вместо blocker учтены.
+  Ни reply, ни automatic answer, ни новый prompt/session не вызываются.
+  6 loopback tests и clippy; это historical direct-workspace blocker service,
+  worktree observer/FSM и CLI/MCP adapters остаются следующими consumers.
 
 ### 7.8. Auto-approval integration
 
@@ -3883,7 +3892,7 @@ improvement**. Limitation не выдаётся за реализованное 
    подменять эти prerequisites одним большим automation PR.
 4. **Modern v7–v17 parity не завершён.** Rust runtime/storage target остаётся
    v15 до 3.13; завершённые задачи не переименовываются в v17-реализацию.
-   Исторический 7.7 остаётся следующим незавершённым foundation v6 шагом;
+   Question blocker service 7.7 завершён; следующий historical шаг — 7.8;
    для затронутых новым source контрактов сначала соответствующие 0B fixtures.
 
 ## Экономия контекста

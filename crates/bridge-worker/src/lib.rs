@@ -1,6 +1,6 @@
 //! Typed worker argv construction, detached spawn, project lock, startup grace,
 //! round session resolution, the initial/revision prompt happy paths and the
-//! current-round permission blocker (tasks 7.1–7.6).
+//! current-round blockers, guarded observation and review publication services.
 //!
 //! This crate is the narrow, reusable foundation for running one observed
 //! implementation round in a separate worker process. It builds the exact
@@ -22,11 +22,11 @@
 //! Dispatch reuses the session resolver, renders the exact reference prompt,
 //! persists the outbound message id and the delivery attempt through the
 //! existing atomic storage APIs *before* the single `prompt_async` request and
-//! records the successful `observing` transition. It deliberately stops before
-//! completion observation, question blockers, auto-approval, permission replies,
-//! failed/delivery-unknown handling, continuation recovery, verification
-//! integration, the worker state machine, MCP/runtime wiring and the production
-//! CLI `worker` subcommand.
+//! records the successful `observing` transition. Separate services provide
+//! question/permission blockers, auto-approval, recovery, message observation,
+//! failed/delivery-unknown/deadline handling and single-repository publication
+//! after saved verification. The full worker state machine, multi-repository
+//! publication, delegated MCP wiring and production CLI `worker` remain open.
 //!
 //! # Argv contract
 //!
@@ -102,6 +102,7 @@ pub mod session;
 pub mod startup;
 pub mod usage;
 
+mod completion;
 pub mod execution;
 pub mod lifecycle;
 pub mod observation;

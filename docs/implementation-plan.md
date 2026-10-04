@@ -2874,6 +2874,24 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.11. Verification integration
 
+- **7.11a. Final candidate publication (single-repository service завершён).**
+  `RoundObserver::publish_final` принимает только candidate того же observer,
+  проверяет binding/close до verifier, после него и перед atomic finish.
+  Observer теперь заимствует `FencedRoundExecution`: task/project fences
+  удерживаются на всём пути observation/verifier/collection/publication.
+  Только saved test_commands и persist-once verifier; failed/unsafe/timed_out
+  outcomes и tool_errors сохраняются для review, без automatic acceptance.
+  Изменения собираются после verifier, result включает repository-relative
+  changed/committed/scope/policy/head, repositories и task_changed_paths,
+  response/message id, verification, usage/model; checkpoint/status/event
+  публикуются atomic finish. Collection failure допускает retry с уже сохранённым
+  verifier; non-UTF8 paths fail closed. External snapshots/absolute scope
+  отклоняются до запуска verifier, а не пропускаются в review result.
+  Checks: 16 HTTP/Git/SQLite/subprocess scenarios совместно с 7.9a, включая
+  foreign candidate, close before/during verifier, actual timeout, lock lifetime,
+  failed/unsafe review и persisted verifier reuse после collection failure.
+  Full observer FSM и multi-repository publication остаются открыты.
+
 ### 7.12. Cooperative close
 
 ### 7.13. Structured findings validation (v7, завершено)

@@ -1,7 +1,7 @@
 //! One guarded message poll. The caller owns worker fences, session identity
 //! proof, monotonic start time, sleep cadence and permission/question grace.
 //! This service never sends a prompt, replies to a blocker or activates a task.
-use crate::execution::{ExecutionError, RoundExecution};
+use crate::execution::{ExecutionError, FencedRoundExecution, RoundExecution};
 use bridge_domain::{RoundKind, RoundStatus, TaskStatus};
 use bridge_opencode::Message;
 use bridge_storage::{FinishRoundInput, RoundRow, RoundUpdateOutcome, RustStateLayout};
@@ -10,6 +10,7 @@ use std::{collections::HashSet, fmt, time::Duration};
 
 /// A final assistant is only a candidate until verification and collection.
 pub struct FinalResponse {
+    owner: uuid::Uuid,
     pub(crate) messages: Vec<Message>,
     pub(crate) response: Message,
     pub(crate) result: Value,
@@ -46,8 +47,9 @@ impl fmt::Debug for Observation {
     }
 }
 /// Bound to one immutable execution/client/layout and persisted session/prompt.
-/// Keep the corresponding worker fences alive for the entire observer lifetime.
+/// Borrowing the fenced context keeps its locks alive throughout observation.
 pub struct RoundObserver<'a> {
+    owner: uuid::Uuid,
     pub(crate) execution: &'a RoundExecution,
     pub(crate) layout: &'a RustStateLayout,
     session: String,
@@ -68,16 +70,18 @@ impl<'a> RoundObserver<'a> {
     /// # Errors
     /// Rejects stale, closed, unattempted or unbound rounds before any HTTP.
     pub fn new(
-        execution: &'a RoundExecution,
+        execution: &'a FencedRoundExecution,
         layout: &'a RustStateLayout,
         delivery_grace: Duration,
         deadline: Duration,
     ) -> Result<Self, ExecutionError> {
+        let execution = &execution.execution;
         if deadline.is_zero() {
             return Err(ExecutionError::Round);
         }
         let (_, row) = inspect(execution, layout)?;
         let observer = Self {
+            owner: uuid::Uuid::new_v4(),
             execution,
             layout,
             session: row.session_id.ok_or(ExecutionError::Round)?,
@@ -204,6 +208,7 @@ impl<'a> RoundObserver<'a> {
                 .map(|_| json!("tool execution failed"))
                 .collect();
             let candidate = FinalResponse {
+                owner: self.owner,
                 response: (*last).clone(),
                 messages: self.last_messages.clone(),
                 result: json!({"tool_errors":tool_errors,"blockers":[]}),
@@ -212,6 +217,63 @@ impl<'a> RoundObserver<'a> {
             return Ok(Observation::Final(Box::new(candidate)));
         }
         Ok(Observation::Pending)
+    }
+    /// Publishes a candidate from this observer only after saved verification
+    /// and change collection. Failed/unsafe tests remain visible for review;
+    /// they never imply acceptance. Caller retains the worker fences.
+    /// # Errors
+    /// Rejects foreign candidates, close/rebinding, missing baselines and
+    /// unsupported external scopes before verification. A collection failure
+    /// leaves the persisted verifier reusable for retry without rerunning it.
+    pub fn publish_final(
+        &mut self,
+        candidate: &FinalResponse,
+        timeout: Duration,
+        tail_bytes: usize,
+    ) -> Result<RoundUpdateOutcome, ExecutionError> {
+        if !self.done || candidate.owner != self.owner {
+            return Err(ExecutionError::Round);
+        }
+        self.guard()?;
+        let (_, task) = self.execution.task_and_root(self.layout)?;
+        if task
+            .allowed_paths
+            .iter()
+            .any(|p| std::path::Path::new(p).is_absolute())
+            || task
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.get("external_repositories"))
+                .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            return Err(ExecutionError::Unsupported);
+        }
+        self.execution
+            .baseline_json()?
+            .ok_or(ExecutionError::Baseline)?;
+        let verification = self.execution.verify(self.layout, timeout, tail_bytes)?;
+        self.guard()?;
+        let changes = self.execution.collect_changes(self.layout)?;
+        let mut result = crate::completion::collection_json(&changes)?;
+        for (key, value) in candidate.result.as_object().ok_or(ExecutionError::Round)? {
+            result[key] = value.clone();
+        }
+        result["verification"] = serde_json::to_value(verification.verification())
+            .map_err(|_| ExecutionError::Verifier)?;
+        self.guard()?;
+        self.execution.finish(
+            self.layout,
+            FinishRoundInput {
+                round: self.execution.round().clone(),
+                round_status: RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: candidate.response.info().id().map(str::to_owned),
+                response: Some(candidate.response.text()),
+                error_code: None,
+                result_json: Some(result),
+            },
+            &candidate.messages,
+        )
     }
     fn finish(
         &mut self,

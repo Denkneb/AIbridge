@@ -21,9 +21,11 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 ## Расхождение версий и ближайший шаг
 
 Message observer service **7.9a** завершён: delivery/assistant error/deadline
-и final candidate с guards до/после HTTP, без resend. Full worker FSM и
-пять delegated MCP handlers **9.5c** остаются открыты; verifier publication
-подключается следующим этапом **7.11**.
+и final candidate с guards до/после HTTP, без resend. Publication service
+**7.11a** готов для одного репозитория: saved verifier, change collection,
+checkpoint и awaiting_review, с удержанием worker fences. Full worker FSM,
+external-repository publication и пять delegated MCP handlers **9.5c**
+остаются открыты.
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain

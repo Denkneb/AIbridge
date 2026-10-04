@@ -541,3 +541,35 @@ fn explicit_worktree_activation_preserves_base_and_ignores_main_dirty_state() {
     assert_eq!(saved.snapshot, Some(snapshot));
     drop(guard);
 }
+
+#[test]
+fn worker_probe_is_config_independent_and_serializes_concurrent_idle_probes() {
+    use bridge_worker::recovery_startup::task_worker_running;
+    let f = Fixture::new();
+    let a = f.parallel_task("allowed.txt");
+    let b = f.parallel_task("other.txt");
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            threads.push(scope.spawn(|| {
+                barrier.wait();
+                for _ in 0..25 {
+                    assert!(!task_worker_running(&f.layout, a).unwrap());
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    });
+    let lock = WorkerLock::try_acquire_task(&f.layout, a).unwrap();
+    assert!(task_worker_running(&f.layout, a).unwrap());
+    assert!(!task_worker_running(&f.layout, b).unwrap());
+    drop(lock);
+    let lock = WorkerLock::try_acquire(&f.layout).unwrap();
+    assert!(task_worker_running(&f.layout, a).unwrap());
+    assert!(task_worker_running(&f.layout, b).unwrap());
+    drop(lock);
+    assert!(!task_worker_running(&f.layout, a).unwrap());
+}

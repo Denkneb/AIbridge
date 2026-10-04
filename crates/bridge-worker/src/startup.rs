@@ -152,6 +152,19 @@ impl StartupGrace {
         }
     }
 
+    /// Probes both worker fences, independently of current config mode.
+    /// # Errors
+    /// Ownership and OS failures propagate instead of reporting a free worker.
+    pub fn observe_task_lock(
+        &mut self,
+        layout: &RustStateLayout,
+        task: bridge_domain::TaskId,
+        now: Instant,
+    ) -> Result<StartupObservation, WorkerLockError> {
+        let held = crate::recovery_startup::task_worker_running(layout, task)?;
+        Ok(self.observe(held, now))
+    }
+
     /// Probes the Rust-owned project lock and folds it into the tracker.
     ///
     /// This is the reusable bridge to the future `task_status` loop: it samples

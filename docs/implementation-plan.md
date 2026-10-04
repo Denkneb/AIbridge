@@ -2750,12 +2750,22 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.10. Continuation recovery
 
-- **7.10a. Recovery spawn lease/probes (не завершено).** Task+project lock
+- **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock
   probes сериализуются внутри процесса, исключая ложный busy от двух probe;
   startup grace закрывает spawn-before-worker-lock window, expired lease
   допускает crash recovery. Source: `mcp_server._task_worker_running`,
   `_spawn_lease_pending`, `_maybe_spawn` (v17). Checks: concurrent probes,
   lease expiry и mark_worker_started overwrite. Depends on 3.15, 7.2.
+  Реализованы `task_worker_running` и общая process-local probe serialization
+  (включая historical project probes); обе worker fences проверяются независимо
+  от config. `spawn_lease_pending` читает ISO UTC/naive/offset timestamp,
+  использует строгий `< grace`, bounded expiry и malformed/missing no-lease.
+  `StartupGrace::observe_task_lock` связывает старый monotonic tracker с B2.
+  Проверки: 200 concurrent idle probes, real task/project holders, timestamp
+  goldens/leap/offset/fraction/expiry, cross-process lock suite; 3.15 отдельно
+  доказывает worker-start overwrite и stale claim release. Spawn/session/MCP
+  orchestration остаётся в 7.10b/8.20.
+
 - **7.10b. Resume existing session (не завершено).** Explicit needs_user
   recovery проверяет endpoint identity, claim/spawn/release; observation
   delivered round без повторного prompt. Background/review actions сохраняют

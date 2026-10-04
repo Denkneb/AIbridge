@@ -54,6 +54,8 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
+pub(crate) static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use bridge_domain::TaskId;
 use bridge_storage::{RuntimeLock, RustStateLayout};
 
@@ -255,6 +257,9 @@ impl WorkerLock {
     ///
     /// Returns the same typed categories as [`WorkerLock::try_acquire`].
     pub fn is_held(layout: &RustStateLayout) -> Result<bool, WorkerLockError> {
+        let _probe = PROBE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match Self::try_acquire(layout)? {
             WorkerLockOutcome::Acquired(guard) => {
                 drop(guard);

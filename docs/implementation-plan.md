@@ -87,7 +87,7 @@ Targeted checks:
   **7.17c service завершён**.
   Delivery gate 7.17d ждёт 9.18a.
   **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
-  schema target v17; 3.13a–c завершены; полный worker FSM,
+  schema target v17; 3.13a–c и automation run storage 3.14 завершены; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -1128,7 +1128,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   DDL/index/version markers, terminal/paused/blocked slot и corrupt index/default
   refusal проверены тестами; историческая read-only v16 поддержка сохранена.
 
-### 3.14. Automation run storage (v17, не завершено)
+### 3.14. Automation run storage (v17, завершено)
 
 - **Цель:** create/load/latest/save/control, typed run identity/status/control
   и persisted document, один unfinished run на project DB. Run statuses:
@@ -1139,6 +1139,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   отвергаются; repeated/concurrent create не обходят unique fence.
 - **Проверки:** storage CRUD/readonly/rollback/race fixtures.
 - **Зависит от:** 3.13c, 0B.5. Открывает поток 16.
+- **Результат:** `AutomationRunStore` привязан к явному Rust-owned layout;
+  create валидирует canonical UUID/document до initialization и сохраняет
+  running/run в BEGIN IMMEDIATE. Load по id/latest использует read-only
+  transaction с sidecar/namespace/owner/full schema17 guards, missing state
+  не создаётся. Save атомарно сохраняет document/status и текущий control;
+  control проверяет terminal status под той же write transaction. Завершённый
+  run нельзя вернуть в незавершённый status; новая работа требует нового run id.
+  Typed UUID/status/control и redacted outcomes/errors не раскрывают document.
+  Семь тестов покрывают CRUD/latest, persisted identity и corrupt state,
+  read-only/foreign/old-schema guards, terminal fence, rollback, concurrent
+  create/control/save и WAL conversion contention. Дополнительно 30 повторов
+  fresh concurrent-create: один winner, второй UnfinishedRun. Для первого
+  переключения WAL добавлен bounded 30s retry исключительно SQLITE_BUSY/LOCKED;
+  обычный busy_timeout=30000 восстанавливается после операции.
+  Coordinator FSM, plan validation и Codex calls остаются в потоке 16.
 
 ### 3.15. Atomic needs_user recovery claim/release (завершено)
 

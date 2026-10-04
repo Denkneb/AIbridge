@@ -23,7 +23,8 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
-теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot). Public MCP/CLI и полный worker FSM ещё впереди.
+теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
+3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. Public MCP/CLI и полный worker FSM ещё впереди.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
 

@@ -194,6 +194,7 @@ pub use budgets::{
     TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,
 };
 pub mod active_set;
+pub mod automation;
 mod dependencies;
 pub mod profiles;
 pub mod recovery;
@@ -2255,10 +2256,37 @@ fn classify_configure_error(error: rusqlite::Error) -> ConnectError {
     ConnectError::Configure
 }
 
+// SQLite may return SQLITE_BUSY immediately for a journal-mode conversion even
+// with busy_timeout installed. Retry only that contention, within the same bound.
+fn configure_journal_mode(connection: &Connection) -> rusqlite::Result<String> {
+    // One wall-clock bound rather than a fresh busy_timeout on each attempt.
+    connection.busy_timeout(std::time::Duration::ZERO)?;
+    let timeout = std::time::Duration::from_millis(BUSY_TIMEOUT_MS as u64);
+    let deadline = std::time::Instant::now() + timeout;
+    let result = loop {
+        let result = connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0));
+        match &result {
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => break result,
+        }
+    };
+    connection.busy_timeout(timeout)?;
+    result
+}
+
 fn configure(connection: &Connection) -> Result<(), ConnectError> {
-    let journal_mode: String = connection
-        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+    // The journal-mode switch can contend during first initialization too.
+    connection
+        .execute_batch("PRAGMA busy_timeout=30000;")
         .map_err(classify_configure_error)?;
+    let journal_mode = configure_journal_mode(connection).map_err(classify_configure_error)?;
     if !journal_mode.eq_ignore_ascii_case(JOURNAL_MODE) {
         return Err(ConnectError::JournalMode {
             found: journal_mode,
@@ -3875,6 +3903,7 @@ fn check_verifier_consistency(
 
 #[cfg(test)]
 mod tests {
+    mod automation;
     mod budgets;
     mod delivery_policy;
     mod dependencies;

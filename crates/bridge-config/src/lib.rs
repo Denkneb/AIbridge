@@ -98,7 +98,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use bridge_domain::{DomainError, ExecutionMode, ProjectId, Result};
+use bridge_domain::{DeliveryMode, DomainError, ExecutionMode, ProjectId, Result};
+mod delivery;
 use url::Url;
 
 mod profile_secrets;
@@ -536,6 +537,7 @@ pub struct ProjectEntry {
     mcp_endpoint: Option<McpEndpoint>,
     max_rounds: u64,
     execution_mode: ExecutionMode,
+    delivery_mode: DeliveryMode,
     max_active_tasks: u64,
     allow_parallel_writers: bool,
     default_profile: Option<String>,
@@ -566,6 +568,11 @@ impl ProjectEntry {
         view.workspace = workspace;
         view.opencode_endpoint = endpoint;
         Ok(view)
+    }
+    /// Policy used for new submissions; saved task policy remains immutable.
+    #[must_use]
+    pub fn delivery_mode(&self) -> DeliveryMode {
+        self.delivery_mode
     }
     /// Returns the validated project id.
     #[must_use]
@@ -979,6 +986,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
 
         let max_rounds = validate_max_rounds(&values)?;
         let execution_mode = validate_execution_mode(&values)?;
+        let delivery_mode = delivery::parse(&values, execution_mode)?;
         let max_active_tasks = validate_max_active_tasks(&values)?;
         let allow_parallel_writers = validate_allow_parallel_writers(&values, execution_mode)?;
         let opencode_model = validate_opencode_model(&values)?;
@@ -1005,6 +1013,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 mcp_endpoint,
                 max_rounds,
                 execution_mode,
+                delivery_mode,
                 max_active_tasks,
                 allow_parallel_writers,
                 default_profile,

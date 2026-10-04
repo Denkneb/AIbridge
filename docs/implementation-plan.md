@@ -661,13 +661,18 @@ Data model и serde compatibility без runtime logic.
   меняются. Здесь только config validation; worker/controller — 7.8a/b.
 - **Проверки:** config fixtures. Зависит от 0B.2. Открывает 7.8a/b.
 
-### 2.14. delivery_mode config (v16, не завершено)
+### 2.14. delivery_mode config (v16, завершено)
 
 - **Цель:** manual default; on_accept разрешён только с execution_mode=worktree.
 - **Source:** `config._parse_delivery_mode`, `load_all_projects` (v17).
 - **Приёмка:** strict type/enum/whitespace и cross-field checks; config не
   меняет policy уже созданной задачи.
 - **Проверки:** delivery-mode config fixtures. Зависит от 1.8, 0B.2.
+- **Результат:** validated `ProjectEntry::delivery_mode`, default Manual,
+  strict string/enum/whitespace parsing и worktree-only OnAccept gate.
+  19 delivery cases из frozen v17 delta corpus; полный config suite (175)
+  и all-targets clippy. Task policy persistence остаётся в 3.13b.
+
 
 ## Поток 3. SQLite storage
 

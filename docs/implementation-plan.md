@@ -48,9 +48,9 @@ Targeted checks:
   MCP и runtime/automation delta 0B.4/0B.5 также завершены. Завершённые результаты 0A/1.6–1.7/2.10–2.12/3.12 относятся
   именно к этому baseline; новые source line references ниже помечены v17,
   старые line references читаются на frozen v15 commit.
-- Rust создаёт собственный **v16** state после 3.13a; поддержанные Rust-owned
-  v6/v11/v14/v15 обновляются транзакционно. Read-only v15 не мигрируется.
-  v17 остаётся неподдерживаемой до 3.13c. Python migrations (0..16) не становятся Rust allowlist; upgrades
+- Rust создаёт собственный **v17** state после 3.13c; поддержанные Rust-owned
+  v6/v11/v14/v15/v16 обновляются транзакционно. Read-only v15 не мигрируется.
+  Schema guards v16/v17 реализованы в 3.13a/c. Python migrations (0..16) не становятся Rust allowlist; upgrades
   допускаются только для явно поддержанных Rust-owned contracts.
 - Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) опирается на **старый
   контракт schema v6**: исторический manifest до refresh,
@@ -87,7 +87,7 @@ Targeted checks:
   **7.17c service завершён**.
   Delivery gate 7.17d ждёт 9.18a.
   **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
-  schema target v16; 3.13a/b завершены, schema17 3.13c открыт; полный worker FSM,
+  schema target v17; 3.13a–c завершены; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -1083,7 +1083,7 @@ list и parsing), шаг **6.6** (Async prompt delivery), шаг **6.7**
   следующий незавершённый исторический шаг — **7.8** (Auto-approval integration);
   новые возможности v7–v17 в Rust не завершены.
 
-### 3.13. Schema v16/v17 extension (не завершено)
+### 3.13. Schema v16/v17 extension (завершено)
 
 Завершённый 3.12 остаётся foundation v15. Каждый шаг здесь сохраняет sidecar,
 namespace, meta/runtime_owner и Rust/Python isolation guards; поддержка новых
@@ -1115,12 +1115,18 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   смена config не конфликтует с повтором запроса. Проверены оба направления
   config switch, readonly mapping, corrupt/legacy fallback и rollback;
   автоматическая доставка при accept остаётся consumer 8.19a.
-- **3.13c. Additive schema17.** `automation_runs(run_id,status,control,document,
+- **3.13c. Additive schema17 (завершено).** `automation_runs(run_id,status,control,document,
   created_at,updated_at)`, control default run; unique expression index
   `ux_automation_unfinished ON automation_runs((1)) WHERE status NOT IN
   ('completed','ready','stopped')`. Fresh17 и Rust-owned16→17; paused/blocked
   удерживают unfinished slot. Checks: exact DDL/default/predicate, guard,
   migration rollback, preserved task/delivery rows. Depends on 3.13a, 0B.3.
+  Fresh target17 и upgrades всех явно поддержанных Rust-owned versions
+  выполняются в одной transaction. Schema guard проверяет полный contract,
+  default control=run, expression (1) и точный unfinished predicate.
+  Независимый frozen17 manifest, сохранение v16 строк/delivery policy, rollback
+  DDL/index/version markers, terminal/paused/blocked slot и corrupt index/default
+  refusal проверены тестами; историческая read-only v16 поддержка сохранена.
 
 ### 3.14. Automation run storage (v17, не завершено)
 
@@ -3906,7 +3912,7 @@ improvement**. Limitation не выдаётся за реализованное 
    автономный поток16 — от worktree/lifecycle/verifier/MCP/delivery. Не
    подменять эти prerequisites одним большим automation PR.
 4. **Modern v7–v17 parity не завершён.** Rust runtime/storage target остаётся
-   v16 после 3.13a; завершённые задачи не переименовываются в v17-реализацию.
+   v17 после 3.13c; завершённые задачи не переименовываются в v17-реализацию.
    Question blocker service 7.7 завершён; следующий historical шаг — 7.8;
    для затронутых новым source контрактов сначала соответствующие 0B fixtures.
 

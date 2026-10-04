@@ -23,7 +23,7 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
-теперь v16: 3.13a/b завершены (schema + frozen delivery policy), schema17 3.13c впереди. Public MCP/CLI и полный worker FSM ещё впереди.
+теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot). Public MCP/CLI и полный worker FSM ещё впереди.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
 
@@ -31,7 +31,7 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 на проверенном HEAD `e52a46158cbeb4f3ae35063d395c05ea0ce144bc` (schema **v17**).
 Manifest обновлён до v17 в 0B.1; fixtures 0A сохраняют frozen v15 HEAD
 `86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a`. Config/permission delta 0B.2
-и SQLite/MCP/runtime/automation delta 0B.3–0B.5 проверены отдельно; refresh 0B завершён. Текущий Rust storage target — v16.
+и SQLite/MCP/runtime/automation delta 0B.3–0B.5 проверены отдельно; refresh 0B завершён. Текущий Rust storage target — v17.
 Завершённый Rust foundation (этапы 0–6 и 7.1–7.6) построен
 на старом контракте **schema v6** (исторические
 `docs/fixtures/sqlite/*-v6.sqlite`; текущий manifest описывает v17) и не

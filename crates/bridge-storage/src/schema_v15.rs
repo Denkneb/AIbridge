@@ -97,7 +97,7 @@ pub(super) fn upgrade_intermediate(connection: &Connection, version: i64) -> rus
 
 fn contract_for(version: i64) -> Contract {
     let mut contract = contract();
-    if version == 16 {
+    if matches!(version, 16 | 17) {
         contract
             .tables
             .iter_mut()
@@ -105,6 +105,26 @@ fn contract_for(version: i64) -> Contract {
             .expect("tasks contract")
             .columns
             .push(column("delivery_mode", "TEXT", true, 0));
+        if version == 17 {
+            contract.tables.push(Table {
+                name: "automation_runs".into(),
+                columns: vec![
+                    column("run_id", "TEXT", false, 1),
+                    column("status", "TEXT", true, 0),
+                    column("control", "TEXT", true, 0),
+                    column("document", "TEXT", true, 0),
+                    column("created_at", "TEXT", true, 0),
+                    column("updated_at", "TEXT", true, 0),
+                ],
+            });
+            contract.indexes.push(index(
+                "ux_automation_unfinished",
+                "automation_runs",
+                &[""],
+                true,
+                true,
+            ));
+        }
         return contract;
     }
     if version == 15 {
@@ -289,6 +309,7 @@ pub(super) fn validate(
             let expected = match (table.name.as_str(), column.name.as_str()) {
                 ("tasks", "execution_mode") => Some("'direct'"),
                 ("tasks", "delivery_mode") => Some("'manual'"),
+                ("automation_runs", "control") => Some("'run'"),
                 ("tasks", "revision_count")
                 | ("rounds", "attempted")
                 | ("active_writers", "parallel") => Some("0"),
@@ -331,6 +352,29 @@ pub(super) fn validate(
         return Err(InspectError::IncompatibleSchema(
             SchemaMismatch::IndexDefinition { index: name.into() },
         ));
+    }
+    if version == 17 {
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='ux_automation_unfinished'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(super::classify_error)?;
+        let normalized: String = sql
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect();
+        if normalized
+            != "createuniqueindexux_automation_unfinishedonautomation_runs((1))wherestatusnotin('completed','ready','stopped')"
+        {
+            return Err(InspectError::IncompatibleSchema(
+                SchemaMismatch::IndexDefinition {
+                    index: "ux_automation_unfinished".into(),
+                },
+            ));
+        }
     }
     Ok(())
 }

@@ -454,7 +454,7 @@ fn table(c: &Connection, name: &str) -> Result<bool, WorktreeStorageError> {
 }
 fn registry_schema(c: &Connection) -> Result<(), WorktreeStorageError> {
     let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !matches!(version, 6 | 11 | 14 | 15 | 16) || !table(c, "tasks")? {
+    if !matches!(version, 6 | 11 | 14 | 15 | 16 | 17) || !table(c, "tasks")? {
         return Err(WorktreeStorageError::IncompatibleSchema);
     }
     let meta: Option<String> = c

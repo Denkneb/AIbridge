@@ -21,7 +21,17 @@ fn owned_v15(root: &TempDir) -> RustStateLayout {
 fn schema16_contract_defaults_match_independent_delta_manifest() {
     let root = TempDir::new("schema16-contract");
     let layout = demo_layout(&root.path);
-    layout.initialize().unwrap();
+    ensure_project_dir(&layout);
+    std::fs::copy(
+        fixture_dir().join("delta/owned-v16.sqlite"),
+        layout.database(),
+    )
+    .unwrap();
+    execute(
+        &layout.database(),
+        "UPDATE meta SET value='rust' WHERE key='runtime_owner'",
+    );
+    write_marker_fields(&layout, "rust", 1, "demo");
     let storage = layout.open().unwrap();
     let expected: Value = serde_json::from_str(include_str!(
         "../../../../docs/fixtures/sqlite/delta/expected.json"
@@ -110,7 +120,10 @@ fn readonly_v15_is_unchanged_then_upgrade_preserves_every_row() {
     drop(old);
     layout.initialize().unwrap();
     let storage = layout.open().unwrap();
-    assert_eq!(query_user_version(storage.connection()).unwrap(), 16);
+    assert_eq!(
+        query_user_version(storage.connection()).unwrap(),
+        crate::RUST_SCHEMA_VERSION
+    );
     for (table, columns, rows) in original {
         assert_eq!(snapshot(storage.connection(), &table, &columns), rows);
     }

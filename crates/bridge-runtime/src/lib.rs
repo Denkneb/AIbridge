@@ -1,7 +1,9 @@
 //! Task-scoped OpenCode runtime with pidfd ownership and bounded manager locking.
 //! Production uses `opencode serve`; fixtures may inject a trusted executable.
-//! All service artifacts live outside the proven checkout. No MCP/CLI startup
-//! is performed by this library; callers hold the task lifecycle/worker fence.
+//! All service artifacts live outside the proven checkout. The controller
+//! launcher uses existing HTTP MCP endpoints; it does not start bridge servers.
+//! Worktree callers hold the task lifecycle/worker fence.
+pub mod controller;
 pub mod controller_permissions;
 pub mod lock;
 mod process;

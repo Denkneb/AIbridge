@@ -23,3 +23,7 @@ bridge-worker.workspace = true
 name = "worktree_server_fixture"
 path = "tests/fixtures/server.rs"
 test = false
+[[bin]]
+name = "controller_fixture"
+path = "tests/fixtures/controller.rs"
+test = false

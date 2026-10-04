@@ -26,8 +26,9 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
 3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. Public MCP/CLI и полный worker FSM ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
-сессии. Permission generator 7.8b готов; его launch wiring остаётся в 9.13,
-worktree observer/полный FSM — отдельные consumers.
+сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
+CLI consumer и local stdio MCP transport остаются в 9.13b/c.
+Worktree observer/полный FSM — отдельные consumers.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
 

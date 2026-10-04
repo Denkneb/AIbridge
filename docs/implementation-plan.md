@@ -2816,7 +2816,8 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   сохранён отдельным security constant для launch consumer. Шесть frozen
   controller cases и дополнительные default/normalization/no-creation cases
   пройдены; workspace all-targets clippy без предупреждений. Полный generated
-  config и применение этих правил при реальном launch остаются в 9.13.
+  config и foreground HTTP launch реализованы service 9.13a; CLI consumer
+  и stdio transport описаны в 9.13.
 
 ### 7.9. Failed/delivery_unknown
 
@@ -3358,6 +3359,34 @@ Delta v17: вывод execution/delivery modes из validated config
 ### 9.12. `launch-codex`
 
 ### 9.13. `launch-opencode`
+
+- **9.13a. Controller launch service (завершён для HTTP MCP).**
+  `bridge-runtime::controller` генерирует primary/linked MCP entries с
+  `{env:VAR}` bearer placeholders, timeout 330000ms, frozen mandatory prompt,
+  primary controller agent, subagent_depth=0 и permissions из 7.8b.
+  Workspace opencode.json/jsonc проверяются до чтения tokens/записи state:
+  JSONC comments/trailing commas поддержаны; malformed/unreadable config,
+  reserved mcp names/default_agent/subagent_depth/agent.bridge-controller
+  и env collision linked ids fail closed. Wrong-shaped mcp/agent отклоняются
+  даже при пустых/false значениях (строже Python truthiness).
+  Tokens передаются только child env; executor username/password удаляются;
+  inherited provider env сохраняется, NO_PROXY/no_proxy дополнены loopback.
+  Atomic same-dir config write/fsync, directory 0700/file 0600; отдельный
+  controller.lock удерживается до выхода TUI. Guarded Rust-owned state,
+  symlink ancestors/namespace/database/marker и workspace-overlapping root
+  отклоняются до initialize. Child стартует без аргументов в workspace с
+  inherited stdio; exit status возвращается caller, process env не меняется.
+  Source: `opencode_launcher.py` (v17); checks: 10 offline controller tests,
+  включая реальный fixture child, failure/lock/foreign-state/symlink cases;
+  runtime all-targets clippy без предупреждений.
+- **9.13b. CLI consumer (открыт).** Подключить launch service к binary,
+  проверить flags, inherited env и exit propagation через CLI process.
+- **9.13c. Local stdio MCP transport (открыт; depends on 9.5).**
+  Generator уже строит explicit absolute Rust `mcp --project --config
+  --state-root` argv. Пока Rust mcp command не реализована, фактический launch
+  любого primary/linked stdio проекта отклоняется до state writes/spawn.
+  HTTP endpoints должны быть запущены заранее: launch не запускает servers.
+  Live OpenCode/provider smoke остаётся отдельной проверкой 15.x.
 
 ### 9.14. Linked-project routing
 

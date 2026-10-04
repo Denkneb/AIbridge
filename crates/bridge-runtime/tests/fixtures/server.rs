@@ -37,7 +37,26 @@ fn main() {
             }
             raw.extend_from_slice(&buf[..n]);
         }
+        let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let length = String::from_utf8_lossy(&raw[..header_end])
+            .lines()
+            .find_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        while raw.len() < header_end + length {
+            let n = stream.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+        }
+        let data: serde_json::Value =
+            serde_json::from_slice(&raw[header_end..]).unwrap_or_default();
         let request = String::from_utf8_lossy(&raw);
+        let method = request.split_whitespace().next().unwrap_or("");
         let path = request
             .split_whitespace()
             .nth(1)
@@ -54,6 +73,7 @@ fn main() {
    "/global/health"=>serde_json::json!({"healthy":mode!="unhealthy","version":"fixture"}),
    "/path"=>serde_json::json!({"directory":if mode=="bad-path"{root.parent().unwrap().to_str().unwrap()}else{root.to_str().unwrap()}}),
    "/doc"=>if mode=="bad-doc"{serde_json::json!({})}else{doc},
+   "/session" if method=="POST"=>serde_json::json!({"id":format!("ses_fixture_{}",data["title"].as_str().unwrap_or("").split_whitespace().last().unwrap_or("1")),"title":data["title"],"directory":root}),
    "/session"=>serde_json::json!([]),
    _=>serde_json::json!({}),
   }.to_string();
@@ -62,6 +82,15 @@ fn main() {
             body.len(),
             body
         );
+        if path.ends_with("/prompt_async") {
+            use std::fs::OpenOptions;
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(runtime.join("fixture-prompts.jsonl"))
+                .unwrap();
+            writeln!(file, "{data}").unwrap();
+        }
         let _ = stream.write_all(response.as_bytes());
     }
 }

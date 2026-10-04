@@ -14,6 +14,8 @@ bridge-git.workspace = true
 bridge-path-policy.workspace = true
 bridge-opencode.workspace = true
 bridge-storage.workspace = true
+bridge-runtime.workspace = true
+bridge-verifier = { path = "../bridge-verifier" }
 process-wrap.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true

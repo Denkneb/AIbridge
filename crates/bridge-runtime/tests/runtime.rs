@@ -406,3 +406,202 @@ fn pinned_model_requires_openapi_model_even_after_config_removes_its_model() {
     assert!(f.start("serve").is_ok());
     f.stop().unwrap();
 }
+
+fn pending_execution_fixture() -> Fixture {
+    let f = Fixture::new();
+    bridge_git::checkout::remove_checkout(
+        f.project.workspace(),
+        &f.layout.project_dir(),
+        f.task,
+        &f.checkout,
+    )
+    .unwrap();
+    let snapshot = bridge_git::take_snapshot(f.project.workspace())
+        .unwrap()
+        .to_json()
+        .unwrap();
+    f.layout.open().unwrap().connection().execute_batch("UPDATE worktrees SET status='pending'; UPDATE tasks SET test_commands='[\"grep -q executor file\"]';").unwrap();
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET snapshot=?1", [snapshot.to_string()])
+        .unwrap();
+    f
+}
+fn prepare_fixture(
+    f: &Fixture,
+    number: u32,
+) -> Result<bridge_worker::execution::RoundExecution, bridge_worker::execution::ExecutionError> {
+    let command = ServerCommand::executable(
+        Path::new(env!("CARGO_BIN_EXE_worktree_server_fixture")),
+        vec!["serve".into()],
+    )
+    .unwrap();
+    bridge_worker::execution::prepare_round_execution(
+        &f.layout,
+        &f.project,
+        bridge_storage::RoundRef {
+            task_id: f.task,
+            project_id: f.project.id().clone(),
+            round_number: number,
+        },
+        &[],
+        &[],
+        &command,
+        RuntimeOptions {
+            lock_wait: Duration::from_secs(1),
+            ready_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_millis(100),
+        },
+    )
+}
+#[test]
+fn worker_revision_verifier_collection_and_checkpoint_use_the_same_checkout() {
+    let _network = network_fence();
+    let f = pending_execution_fixture();
+    let main = bridge_git::take_snapshot(f.project.workspace()).unwrap();
+    let first = prepare_fixture(&f, 1).unwrap();
+    let baseline = first.baseline_json().unwrap();
+    let port = first.server_port;
+    let dispatched = first.dispatch(&f.layout).unwrap();
+    std::fs::write(f.checkout.join("file"), "executor change\n").unwrap();
+    let changes = first.collect_changes(&f.layout).unwrap();
+    assert_eq!(changes.changed_paths(), [std::ffi::OsString::from("file")]);
+    assert!(changes.scope_violations().is_empty());
+    let verification = first
+        .verify(&f.layout, Duration::from_secs(2), 1024)
+        .unwrap();
+    assert_eq!(
+        verification.verification().status,
+        bridge_domain::VerificationStatus::Passed
+    );
+    assert!(
+        serde_json::to_string(verification.verification())
+            .unwrap()
+            .contains("grep -q executor file")
+    );
+    first
+        .finish(
+            &f.layout,
+            bridge_storage::FinishRoundInput {
+                round: bridge_storage::RoundRef {
+                    task_id: f.task,
+                    project_id: f.project.id().clone(),
+                    round_number: 1,
+                },
+                round_status: bridge_domain::RoundStatus::Complete,
+                task_status: TaskStatus::AwaitingReview,
+                response_message_id: None,
+                response: Some("done".into()),
+                error_code: None,
+                result_json: Some(serde_json::json!({})),
+            },
+            &[],
+        )
+        .unwrap();
+    let mut storage = f.layout.open().unwrap();
+    let checkpoint = storage
+        .get_round_checkpoint(&bridge_storage::RoundRef {
+            task_id: f.task,
+            project_id: f.project.id().clone(),
+            round_number: 1,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(checkpoint).unwrap()["repositories"][0]["diff_stat"]["counts"]["modified"],
+        1
+    );
+    storage
+        .create_revision_round(bridge_storage::CreateRevisionRoundInput {
+            task_id: f.task,
+            project_id: f.project.id().clone(),
+            round_number: 2,
+            request_id: "revision".into(),
+            payload_hash: "revision-hash".into(),
+            findings: Some("fix".into()),
+        })
+        .unwrap();
+    let revised = prepare_fixture(&f, 2).unwrap();
+    assert_eq!(revised.root, first.root);
+    assert_eq!(revised.server_port, port);
+    assert_eq!(revised.baseline_json().unwrap(), baseline);
+    assert_eq!(
+        std::fs::read_to_string(f.checkout.join("file")).unwrap(),
+        "executor change\n"
+    );
+    let revision = revised.dispatch(&f.layout).unwrap();
+    assert_ne!(dispatched.session().id(), revision.session().id());
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        main
+    );
+    let prompts = std::fs::read_to_string(f.runtime.join("fixture-prompts.jsonl")).unwrap();
+    assert_eq!(prompts.lines().count(), 2);
+    for line in prompts.lines() {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            value["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(f.checkout.to_str().unwrap())
+        );
+    }
+    assert_eq!(
+        storage.get_task(f.task).unwrap().unwrap().workspace,
+        f.project.workspace().to_str().unwrap()
+    );
+    f.stop().unwrap();
+}
+#[test]
+fn created_checkout_is_never_recreated_and_corrupt_baseline_is_not_refreshed() {
+    let _network = network_fence();
+    let f = pending_execution_fixture();
+    prepare_fixture(&f, 1).unwrap();
+    f.stop().unwrap();
+    let storage = f.layout.open().unwrap();
+    let raw = storage
+        .get_worktree(f.task, f.project.id())
+        .unwrap()
+        .unwrap()
+        .baseline_json
+        .unwrap();
+    storage
+        .connection()
+        .execute_batch("UPDATE worktrees SET baseline_json='{}'")
+        .unwrap();
+    assert_eq!(
+        prepare_fixture(&f, 1).unwrap_err(),
+        bridge_worker::execution::ExecutionError::Baseline
+    );
+    storage
+        .connection()
+        .execute("UPDATE worktrees SET baseline_json=?1", [raw])
+        .unwrap();
+    std::fs::remove_dir_all(&f.checkout).unwrap();
+    assert_eq!(
+        prepare_fixture(&f, 1).unwrap_err(),
+        bridge_worker::execution::ExecutionError::MissingCheckout
+    );
+    assert!(!f.checkout.exists());
+}
+#[test]
+fn creating_crash_recovers_only_a_proven_partial_checkout_and_keeps_frozen_base() {
+    let _network = network_fence();
+    let f = Fixture::new();
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute_batch("UPDATE worktrees SET status='creating'")
+        .unwrap();
+    std::fs::write(f.checkout.join("partial"), "partial creation").unwrap();
+    let execution = prepare_fixture(&f, 1).unwrap();
+    assert!(!f.checkout.join("partial").exists());
+    assert_eq!(
+        std::fs::read_to_string(execution.root.join("file")).unwrap(),
+        "base\n"
+    );
+    f.stop().unwrap();
+}

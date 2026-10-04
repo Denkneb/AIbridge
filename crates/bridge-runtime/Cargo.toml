@@ -16,6 +16,9 @@ process-wrap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustix = { version = "1", features = ["process"] }
+
+[dev-dependencies]
+bridge-worker.workspace = true
 [[bin]]
 name = "worktree_server_fixture"
 path = "tests/fixtures/server.rs"

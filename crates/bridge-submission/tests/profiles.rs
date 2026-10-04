@@ -346,3 +346,99 @@ fn budget_and_permissions_share_the_creation_transaction() {
         123
     );
 }
+
+fn worktree_project(f: &Fixture) -> ProjectEntry {
+    let workspace = f.root.join("workspace");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    };
+    run(&["init", "-q"]);
+    std::fs::write(workspace.join("README"), "base").unwrap();
+    run(&["add", "README"]);
+    run(&["commit", "-qm", "fixture"]);
+    f.project("execution_mode=\"worktree\"\n")
+}
+#[test]
+fn worktree_submit_pins_head_and_pending_row_atomically_and_replays_unchanged() {
+    let f = Fixture::new();
+    let project = worktree_project(&f);
+    let mut storage = f.layout.open().unwrap();
+    let task = submit_task_with_profile(&mut storage, &project, f.input(None))
+        .unwrap()
+        .task()
+        .task_id;
+    let record = storage.get_worktree(task, project.id()).unwrap().unwrap();
+    assert_eq!(record.status, bridge_storage::WorktreeStatus::Pending);
+    assert_eq!(
+        record.base_head,
+        storage.get_task(task).unwrap().unwrap().base_head
+    );
+    assert_eq!(
+        record.base_head.as_deref(),
+        bridge_git::head(project.workspace())
+            .unwrap()
+            .as_ref()
+            .map(bridge_git::CommitId::as_str)
+    );
+    assert!(!std::path::Path::new(&record.path).exists());
+    assert!(
+        !submit_task_with_profile(&mut storage, &project, f.input(None))
+            .unwrap()
+            .is_created()
+    );
+    assert_eq!(
+        storage.get_worktree(task, project.id()).unwrap().unwrap(),
+        record
+    );
+}
+#[test]
+fn worktree_registration_failure_rolls_back_profile_round_task_and_reservation() {
+    let f = Fixture::new();
+    let project = worktree_project(&f);
+    let mut storage = f.layout.open().unwrap();
+    storage.connection().execute_batch("CREATE TRIGGER reject_checkout BEFORE INSERT ON worktrees BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+    assert!(submit_task_with_profile(&mut storage, &project, f.input(None)).is_err());
+    for table in ["tasks", "rounds", "events", "active_writers", "worktrees"] {
+        assert_eq!(count(&storage, table), 0);
+    }
+}
+#[test]
+fn unsupported_worktree_requests_refuse_before_any_database_writes() {
+    let f = Fixture::new();
+    let project = worktree_project(&f);
+    let mut storage = f.layout.open().unwrap();
+    let mut dirty = f.input(None);
+    dirty.allow_dirty = true;
+    assert!(matches!(
+        submit_task_with_profile(&mut storage, &project, dirty),
+        Err(SubmissionError::WorktreeUnsupported)
+    ));
+    let mut external = f.input(None);
+    external.task.allowed_paths = vec![f.root.to_str().unwrap().into()];
+    assert!(matches!(
+        submit_task_with_profile(&mut storage, &project, external),
+        Err(SubmissionError::WorktreeUnsupported)
+    ));
+    let mut changed_base = f.input(None);
+    changed_base.task.base_head = Some("f".repeat(40));
+    assert!(submit_task_with_profile(&mut storage, &project, changed_base).is_err());
+    std::fs::write(project.workspace().join("README"), "user dirty").unwrap();
+    assert!(matches!(
+        submit_task_with_profile(&mut storage, &project, f.input(None)),
+        Err(SubmissionError::WorktreeUnsupported)
+    ));
+    assert_eq!(count(&storage, "tasks"), 0);
+}

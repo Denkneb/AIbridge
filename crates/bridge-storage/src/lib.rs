@@ -1355,7 +1355,7 @@ impl StorageConnection {
         initial_status: TaskStatus,
         budget: Option<&TaskBudget>,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
-        self.create_task_with_profile_inner(input, settings, initial_status, budget, None)
+        self.create_task_with_profile_inner(input, settings, initial_status, budget, None, None)
     }
 
     /// Pins every new task's effective profile, including the historical built-in
@@ -1373,7 +1373,47 @@ impl StorageConnection {
         profile
             .validate()
             .map_err(|_| CreateTaskError::InvalidInput)?;
-        self.create_task_with_profile_inner(input, settings, initial_status, budget, Some(profile))
+        self.create_task_with_profile_inner(
+            input,
+            settings,
+            initial_status,
+            budget,
+            Some(profile),
+            None,
+        )
+    }
+
+    /// Creates the task/profile and its deterministic pending checkout row in
+    /// one transaction. Git creation is a later worker operation.
+    /// # Errors
+    /// Requires frozen worktree mode and a checkout bound to input.base_head.
+    pub fn create_task_with_profile_and_checkout(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+        budget: Option<&TaskBudget>,
+        profile: &bridge_domain::ProfileSnapshot,
+        checkout: &PendingCheckout,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        profile
+            .validate()
+            .map_err(|_| CreateTaskError::InvalidInput)?;
+        if settings.execution_mode() != bridge_domain::ExecutionMode::Worktree
+            || input.base_head.as_deref() != Some(checkout.base_head.as_str())
+            || !Path::new(&checkout.path).is_absolute()
+            || !Path::new(&checkout.runtime_dir).is_absolute()
+        {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        self.create_task_with_profile_inner(
+            input,
+            settings,
+            initial_status,
+            budget,
+            Some(profile),
+            Some(checkout),
+        )
     }
 
     fn create_task_with_profile_inner(
@@ -1383,6 +1423,7 @@ impl StorageConnection {
         initial_status: TaskStatus,
         budget: Option<&TaskBudget>,
         profile: Option<&bridge_domain::ProfileSnapshot>,
+        checkout: Option<&PendingCheckout>,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
         let profile_json = profile
             .map(|p| {
@@ -1487,6 +1528,9 @@ impl StorageConnection {
                 .map_err(CreateTaskError::Database)?;
             if let Some(profile) = profile {
                 transaction.execute("UPDATE tasks SET profile=?1,profile_json=?2,profile_hash=?3,profile_source=?4 WHERE task_id=?5", params![profile.id,profile_json,profile_hash,profile.origin.as_str(),prepared.task_id.to_string()]).map_err(CreateTaskError::Database)?;
+            }
+            if let Some(checkout) = checkout {
+                transaction.execute("INSERT INTO worktrees(task_id,path,runtime_dir,base_head,status,delivery_state,created_at,updated_at) VALUES (?1,?2,?3,?4,'pending','none',?5,?5)",params![prepared.task_id.to_string(),checkout.path,checkout.runtime_dir,checkout.base_head,now]).map_err(CreateTaskError::Database)?;
             }
         }
 
@@ -1608,6 +1652,14 @@ impl CreateTaskOutcome {
     pub fn is_replayed(&self) -> bool {
         matches!(self, Self::Replayed(_))
     }
+}
+
+/// Deterministic pending checkout metadata; storage never acts on these paths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingCheckout {
+    pub path: String,
+    pub runtime_dir: String,
+    pub base_head: String,
 }
 
 /// Input for [`StorageConnection::create_task`].

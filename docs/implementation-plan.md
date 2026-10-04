@@ -2878,12 +2878,22 @@ lifecycle — 3.12e, security policy — 0A.5. Каждая подзадача �
     concurrency/reuse/default lock/timeout/partial locks, foreign/stale/corrupt
     records, root/doc refusal, cleanup, pinned model и port reservations.
   - **Зависит от:** 7.16a, 6.1, 9.7a. **Открывает:** 7.16c, 15.2.
-- **7.16c. Revision reuse и verifier/change collection cwd.**
+- **7.16c. Revision reuse и verifier/change collection cwd (завершено).**
   - **Цель:** revision reuse checkout + verifier/change collection cwd.
   - **Source evidence:** `worker.py:344-490,1366-1529`; `git_worktree.py`.
   - **Критерии приёмки:** revision не пересоздаёт checkout; verifier/change
     collection видит worktree.
   - **Targeted checks:** worktree revision/verifier integration tests.
+  - **Результат:** submit атомарно сохраняет pending checkout и точный clean
+    base HEAD; worker service создаёт checkout, сохраняет baseline и связывает
+    session/dispatch/verifier/change collection/checkpoint с execution root.
+    Task.workspace остаётся main workspace; revision сохраняет checkout и runtime.
+    Created checkout и baseline никогда не пересоздаются/не обновляются молча.
+    Direct execution и исторический submit hash сохранены; full FSM/CLI/MCP
+    wiring остаются отдельными пунктами плана.
+  - **Проверено:** 519 tests Git/storage/submission/worker/runtime, включая
+    реальные Git checkout, два раунда с fixture server и verifier cwd;
+    workspace all-target clippy без warnings.
   - **Зависит от:** 7.16b, 5.4. **Открывает:** 7.16d.
 - **7.16d. Close/recovery/retention и orphan logical quarantine.**
   - **Цель:** close/recovery/retention и logical orphan quarantine.

@@ -96,6 +96,21 @@ pub struct WorktreeManifest {
 }
 
 impl WorktreeManifest {
+    pub(crate) fn from_json(value: &serde_json::Value) -> Result<Self, crate::GitError> {
+        let object = value.as_object().ok_or(crate::GitError::MalformedOutput)?;
+        let mut entries = Vec::new();
+        for (path, digest) in object {
+            bridge_domain::CheckpointPath::try_from(path.clone())
+                .map_err(|_| crate::GitError::MalformedOutput)?;
+            let digest = super::parse_digest(digest)?;
+            entries.push(ManifestEntry {
+                path: path.into(),
+                digest,
+            });
+        }
+        entries.sort_by_key(|e| surrogateescape_key(&e.path));
+        Ok(Self { entries })
+    }
     /// Returns the entries in deterministic reference (Python `sorted`) order.
     #[must_use]
     pub fn entries(&self) -> &[ManifestEntry] {

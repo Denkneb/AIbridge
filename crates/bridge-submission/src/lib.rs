@@ -28,6 +28,7 @@ pub enum SubmissionError {
     UnknownProfile,
     ProjectMismatch,
     InvalidSettings,
+    WorktreeUnsupported,
     Storage(CreateTaskError),
 }
 impl fmt::Display for SubmissionError {
@@ -37,6 +38,7 @@ impl fmt::Display for SubmissionError {
             Self::UnknownProfile => "unknown_profile",
             Self::ProjectMismatch => "project_mismatch",
             Self::InvalidSettings => "invalid_admission_settings",
+            Self::WorktreeUnsupported => "worktree_submission_unsupported",
             Self::Storage(_) => "submission_storage_error",
         })
     }
@@ -98,6 +100,100 @@ pub fn submit_task_with_profile(
         project.execution_mode(),
     )
     .map_err(|_| SubmissionError::InvalidSettings)?;
+    if project.execution_mode() == bridge_domain::ExecutionMode::Worktree {
+        let reject = SubmissionError::WorktreeUnsupported;
+        if input.allow_dirty
+            || input
+                .task
+                .allowed_paths
+                .iter()
+                .any(|p| std::path::Path::new(p).is_absolute())
+            || input
+                .task
+                .snapshot
+                .as_ref()
+                .and_then(|v| v.get("external_repositories"))
+                .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            return Err(reject);
+        }
+        bridge_git::checkout::main_common_dir(project.workspace())
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        let base = bridge_git::head(project.workspace())
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?
+            .ok_or(SubmissionError::WorktreeUnsupported)?
+            .as_str()
+            .to_owned();
+        bridge_git::checkout::check_supported(project.workspace(), &base)
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        let collected = bridge_git::take_snapshot(project.workspace())
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        if !collected.dirty_paths().is_empty() {
+            return Err(SubmissionError::WorktreeUnsupported);
+        }
+        let actual = collected
+            .to_json()
+            .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        let object = input
+            .task
+            .snapshot
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or(SubmissionError::InvalidSettings)?;
+        for (key, value) in actual.as_object().ok_or(SubmissionError::InvalidSettings)? {
+            object.insert(key.clone(), value.clone());
+        }
+        if input
+            .task
+            .base_head
+            .as_ref()
+            .is_some_and(|head| head != &base)
+        {
+            return Err(SubmissionError::WorktreeUnsupported);
+        }
+        input.task.base_head = Some(base.clone());
+        let db = storage
+            .connection()
+            .path()
+            .ok_or(SubmissionError::InvalidSettings)?;
+        let project_dir = std::path::Path::new(db)
+            .parent()
+            .ok_or(SubmissionError::InvalidSettings)?;
+        let root = project_dir
+            .parent()
+            .ok_or(SubmissionError::InvalidSettings)?;
+        let layout = bridge_storage::RustStateLayout::new(root, project.id().clone())
+            .map_err(|_| SubmissionError::InvalidSettings)?;
+        layout
+            .open()
+            .map_err(|_| SubmissionError::InvalidSettings)?;
+        let paths =
+            bridge_git::checkout::CheckoutPaths::new(&layout.project_dir(), input.task.task_id)
+                .map_err(|_| SubmissionError::WorktreeUnsupported)?;
+        let checkout = bridge_storage::PendingCheckout {
+            path: paths
+                .checkout
+                .to_str()
+                .ok_or(SubmissionError::WorktreeUnsupported)?
+                .into(),
+            runtime_dir: paths
+                .runtime_dir
+                .to_str()
+                .ok_or(SubmissionError::WorktreeUnsupported)?
+                .into(),
+            base_head: base,
+        };
+        return storage
+            .create_task_with_profile_and_checkout(
+                input.task,
+                &settings,
+                input.initial_status,
+                input.budget.as_ref(),
+                &profile,
+                &checkout,
+            )
+            .map_err(SubmissionError::Storage);
+    }
     storage
         .create_task_with_profile(
             input.task,

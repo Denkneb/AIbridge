@@ -208,6 +208,68 @@ pub struct RepositorySnapshot {
 }
 
 impl RepositorySnapshot {
+    /// Content-free JSON matching Python take_snapshot. Non-UTF8 paths refuse
+    /// rather than being silently changed when persisted.
+    /// # Errors
+    /// Rejects non-UTF8 status or path names that JSON cannot represent exactly.
+    pub fn to_json(&self) -> Result<serde_json::Value, GitError> {
+        let manifest = self
+            .manifest
+            .entries()
+            .iter()
+            .map(|e| {
+                Ok((
+                    e.path().to_str().ok_or(GitError::MalformedOutput)?.into(),
+                    serde_json::json!(e.digest_hex()),
+                ))
+            })
+            .collect::<Result<serde_json::Map<String, serde_json::Value>, GitError>>()?;
+        let dirty = self
+            .dirty_paths
+            .iter()
+            .map(|p| p.to_str().ok_or(GitError::MalformedOutput))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(
+            serde_json::json!({"head":self.head.as_ref().map(CommitId::as_str),"status":std::str::from_utf8(&self.status).map_err(|_|GitError::MalformedOutput)?,"dirty_paths":dirty,"index_fingerprint":self.index_fingerprint.to_hex(),"manifest":manifest}),
+        )
+    }
+    /// Strict reconstruction of a saved baseline; no current FS data is used.
+    /// Policy fields may coexist in submit snapshots and remain caller-owned.
+    /// # Errors
+    /// Rejects malformed/absent identity, status, path and digest fields.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, GitError> {
+        let head = match value.get("head") {
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(s)) => Some(parse_commit_id(s.as_bytes())?),
+            _ => return Err(GitError::MalformedOutput),
+        };
+        let status = value["status"]
+            .as_str()
+            .ok_or(GitError::MalformedOutput)?
+            .as_bytes()
+            .to_vec();
+        let dirty_paths = value["dirty_paths"]
+            .as_array()
+            .ok_or(GitError::MalformedOutput)?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(OsString::from)
+                    .ok_or(GitError::MalformedOutput)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let index_fingerprint = IndexFingerprint(parse_digest(&value["index_fingerprint"])?);
+        let manifest = WorktreeManifest::from_json(&value["manifest"])?;
+        let worktree_fingerprint = worktree::fingerprint_from(&manifest, &status);
+        Ok(Self {
+            head,
+            status,
+            dirty_paths,
+            index_fingerprint,
+            manifest,
+            worktree_fingerprint,
+        })
+    }
     /// Returns the HEAD commit, or `None` for a repository without commits.
     #[must_use]
     pub fn head(&self) -> Option<&CommitId> {
@@ -243,6 +305,23 @@ impl RepositorySnapshot {
     pub fn worktree_fingerprint(&self) -> &WorktreeFingerprint {
         &self.worktree_fingerprint
     }
+}
+
+fn parse_digest(value: &serde_json::Value) -> Result<[u8; 32], GitError> {
+    let raw = value
+        .as_str()
+        .filter(|s| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+        .ok_or(GitError::MalformedOutput)?;
+    let mut result = [0; 32];
+    for (index, byte) in result.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&raw[index * 2..index * 2 + 2], 16)
+            .map_err(|_| GitError::MalformedOutput)?;
+    }
+    Ok(result)
 }
 
 /// Runs one read-only Git command with the production timeout.

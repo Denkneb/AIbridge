@@ -133,9 +133,7 @@ use rusqlite::params;
 
 use crate::findings::validate_revision_findings;
 use crate::prompt::{initial_prompt_with_profile, revision_prompt_with_profile};
-use crate::session::{
-    ResolvedSession, SessionResolutionSource, directory_matches_workspace, resolve_round_session,
-};
+use crate::session::{ResolvedSession, SessionResolutionSource, resolve_round_session};
 use bridge_storage::profiles::ProfileReadError;
 
 /// Generates the reference outbound message id `"msg_" + uuid.uuid4().hex`.
@@ -568,7 +566,7 @@ fn dispatch_round_with_roots(
     }
 
     let mut preflight = open_state(layout)?;
-    let (task, row) = validate_task_and_round(client, &preflight, &round, mode)?;
+    let (task, row) = validate_task_and_round(client, layout, &preflight, &round, mode)?;
     mode.render_prompt(
         &mut preflight,
         &round,
@@ -586,7 +584,7 @@ fn dispatch_round_with_roots(
     // and a binding write, so a concurrent close request or round mutation must
     // not slip past the pre-flight check and reach prepare/mark/send.
     let mut storage = open_state(layout)?;
-    let (task, row) = validate_task_and_round(client, &storage, &round, mode)?;
+    let (task, row) = validate_task_and_round(client, layout, &storage, &round, mode)?;
 
     let (text, profile) = mode.render_prompt(
         &mut storage,
@@ -696,6 +694,7 @@ fn fail_findings<T>(storage: &mut StorageConnection, round: &RoundRef) -> Result
 /// further side effect.
 fn validate_task_and_round(
     client: &OpenCodeClient,
+    layout: &RustStateLayout,
     storage: &StorageConnection,
     round: &RoundRef,
     mode: RoundDispatchMode,
@@ -712,7 +711,11 @@ fn validate_task_and_round(
     if current_round_number(storage, round.task_id)? != round.round_number {
         return Err(DispatchError::new(DispatchErrorKind::StaleRound));
     }
-    if !directory_matches_workspace(&task.workspace, client.workspace()) {
+    if crate::execution::execution_root(storage, layout, &task, true)
+        .ok()
+        .as_deref()
+        != Some(client.workspace())
+    {
         return Err(DispatchError::new(DispatchErrorKind::WorkspaceMismatch));
     }
     if row.kind != mode.expected_kind() {

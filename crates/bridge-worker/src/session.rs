@@ -381,7 +381,11 @@ pub fn resolve_round_session(
             SessionResolutionErrorKind::StaleRound,
         ));
     }
-    if !directory_matches_workspace(&task.workspace, client.workspace()) {
+    if crate::execution::execution_root(&storage, layout, &task, true)
+        .ok()
+        .as_deref()
+        != Some(client.workspace())
+    {
         return Err(SessionResolutionError::new(
             SessionResolutionErrorKind::WorkspaceMismatch,
         ));

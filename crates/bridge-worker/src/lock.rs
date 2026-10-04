@@ -52,7 +52,9 @@
 use std::error::Error;
 use std::fmt;
 use std::fs::{File, OpenOptions};
+use std::path::Path;
 
+use bridge_domain::TaskId;
 use bridge_storage::{RuntimeLock, RustStateLayout};
 
 #[cfg(unix)]
@@ -192,6 +194,58 @@ impl WorkerLock {
         acquire(layout)
     }
 
+    /// Acquires the short project admission fence. Drop before HTTP or spawn.
+    /// # Errors
+    /// Ownership, unsafe artifacts and OS failures use the ordinary lock errors.
+    pub fn try_acquire_admission(
+        layout: &RustStateLayout,
+    ) -> Result<WorkerLockOutcome, WorkerLockError> {
+        verify_ownership(layout)?;
+        acquire_path(&layout.project_dir().join("admission.lock"))
+    }
+
+    /// Acquires the task fence, independent of project worker lock/config.
+    /// # Errors
+    /// Rejects foreign state and symlinked workers directories or lock files.
+    pub fn try_acquire_task(
+        layout: &RustStateLayout,
+        task: TaskId,
+    ) -> Result<WorkerLockOutcome, WorkerLockError> {
+        verify_ownership(layout)?;
+        let directory = layout.project_dir().join("workers");
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|e| {
+                            WorkerLockError::with_source(WorkerLockErrorKind::LockFile, e)
+                        })?;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if !std::fs::symlink_metadata(&directory)
+                    .map_err(|e| WorkerLockError::with_source(WorkerLockErrorKind::LockFile, e))?
+                    .file_type()
+                    .is_dir()
+                {
+                    return Err(WorkerLockError::with_source(
+                        WorkerLockErrorKind::LockFile,
+                        std::io::Error::from(std::io::ErrorKind::InvalidInput),
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(WorkerLockError::with_source(
+                    WorkerLockErrorKind::LockFile,
+                    e,
+                ));
+            }
+        }
+        acquire_path(&directory.join(format!("{task}.lock")))
+    }
+
     /// Reports whether the project worker lock is currently held.
     ///
     /// This is a probe: it never leaves the lock held. A leftover `worker.lock`
@@ -239,7 +293,7 @@ fn verify_ownership(layout: &RustStateLayout) -> Result<(), WorkerLockError> {
 
 /// Opens the Rust-owned project worker lock file with mode `0o600` on Unix.
 #[cfg(unix)]
-fn open_lock_file(layout: &RustStateLayout) -> Result<File, WorkerLockError> {
+fn open_lock_file(path: &Path) -> Result<File, WorkerLockError> {
     use std::os::unix::fs::OpenOptionsExt;
 
     OpenOptions::new()
@@ -248,14 +302,30 @@ fn open_lock_file(layout: &RustStateLayout) -> Result<File, WorkerLockError> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(layout.lock(RuntimeLock::Worker))
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
         .map_err(|error| WorkerLockError::with_source(WorkerLockErrorKind::LockFile, error))
 }
 
 /// Takes the exclusive non-blocking lock on the Rust-owned worker lock file.
 #[cfg(unix)]
 fn acquire(layout: &RustStateLayout) -> Result<WorkerLockOutcome, WorkerLockError> {
-    let file = open_lock_file(layout)?;
+    acquire_path(&layout.lock(RuntimeLock::Worker))
+}
+
+#[cfg(unix)]
+fn acquire_path(path: &Path) -> Result<WorkerLockOutcome, WorkerLockError> {
+    let file = open_lock_file(path)?;
+    if !file
+        .metadata()
+        .map_err(|e| WorkerLockError::with_source(WorkerLockErrorKind::LockFile, e))?
+        .is_file()
+    {
+        return Err(WorkerLockError::with_source(
+            WorkerLockErrorKind::LockFile,
+            std::io::Error::from(std::io::ErrorKind::InvalidInput),
+        ));
+    }
     match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
         Ok(()) => Ok(WorkerLockOutcome::Acquired(WorkerLock { _file: file })),
         Err(Errno::EWOULDBLOCK) => Ok(WorkerLockOutcome::Busy),
@@ -472,4 +542,9 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+#[cfg(not(unix))]
+fn acquire_path(_path: &Path) -> Result<WorkerLockOutcome, WorkerLockError> {
+    Err(WorkerLockError::new(WorkerLockErrorKind::Unsupported))
 }

@@ -82,7 +82,8 @@ Targeted checks:
   Согласованный блок 7.14 → 7.15 → 8.18 → 7.18 завершён.
   **7.16 завершён** как исполнимый блок application services (checkout, task runtime,
   revision/cwd, close/recovery/quarantine); manager lock **9.7a завершён**.
-  Следующий блок backend — **7.17 (writer admission/locks)**; полный worker FSM,
+  **7.17a завершён** (B1 admission/activation services).
+  Следующий блок backend — **7.17b (parallel writer fences)**; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -2930,7 +2931,7 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
 Не завершено. B1 (direct) и B2 (parallel worktree) — независимые подзадачи;
 каждая даёт один основной результат/критерий/targeted check.
 
-- **7.17a. B1 direct sequential same-project chains.**
+- **7.17a. B1 direct sequential same-project chains (завершено).**
   - **Цель:** direct-mode `max_active_tasks=1`, sequential same-project
     `depends_on` chains, explicit activation/rebaseline.
   - **Source evidence:** `config.py:44-56,90-101,418-466`;
@@ -2945,6 +2946,18 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
     ограничение не финальный контракт).
   - **Targeted checks:** storage admission + worker lock tests.
   - **Зависит от:** 1.6, 2.11, 3.12c, 3.12d. **Открывает:** 7.17b, 8.14.
+  - **Результат:** `bridge-worker::admission` связывает project admission,
+    project worker и per-task locks; открытие state/worker admission не
+    активирует waiting tasks. Явная direct activation проверяет strict persisted
+    dependency objects, same-project accepted/workflow gate, close fence,
+    пересобирает main/external baseline с собственными dirty/commit policies.
+    Storage refresh/activation отвергают pending close атомарно. Guard drop
+    освобождает и частично взятые locks; lock symlinks/nonregular files отвергаются.
+    Linked-project gate и workflow submit persistence остаются в 8.14;
+    worker FSM/CLI/MCP adapters не считаются завершёнными.
+    Проверки: worker admission (8 cases), cross-process lock tests (8),
+    storage dependencies (10), targeted clippy; old request hash не меняется.
+
 - **7.17b. B2 parallel worktree writers.**
   - **Цель:** `allow_parallel_writers=true` (только worktree), parallel
     admission без ослабления defaults.

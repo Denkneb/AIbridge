@@ -87,6 +87,7 @@
 //! appear in an error; the underlying I/O error is reachable only through
 //! [`std::error::Error::source`].
 
+pub mod admission;
 pub mod checkpoint;
 pub mod dispatch;
 pub mod findings;

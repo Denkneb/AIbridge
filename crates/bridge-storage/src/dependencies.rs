@@ -84,7 +84,7 @@ impl StorageConnection {
         let changed = transaction
             .execute(
                 "UPDATE tasks SET snapshot=?1, base_head=?2, updated_at=?3 \
-             WHERE task_id=?4 AND project_id=?5 AND status='waiting_dependencies'",
+             WHERE task_id=?4 AND project_id=?5 AND status='waiting_dependencies' AND close_requested_at IS NULL",
                 params![
                     snapshot,
                     base_head,
@@ -145,7 +145,7 @@ impl StorageConnection {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(DependencyUpdateError::Database)?;
         let waiting = transaction.query_row(
-            "SELECT * FROM tasks WHERE task_id=?1 AND project_id=?2 AND status='waiting_dependencies'",
+            "SELECT * FROM tasks WHERE task_id=?1 AND project_id=?2 AND status='waiting_dependencies' AND close_requested_at IS NULL",
             params![task_id.to_string(), project_id.as_str()],
             |row| Ok(Task::from_row(row)),
         ).optional().map_err(DependencyUpdateError::Database)?;
@@ -190,7 +190,7 @@ impl StorageConnection {
             };
         }
         let changed = transaction.execute(
-            "UPDATE tasks SET status=?1, updated_at=?2 WHERE task_id=?3 AND project_id=?4 AND status='waiting_dependencies'",
+            "UPDATE tasks SET status=?1, updated_at=?2 WHERE task_id=?3 AND project_id=?4 AND status='waiting_dependencies' AND close_requested_at IS NULL",
             params![status.as_str(), now, task_id.to_string(), project_id.as_str()],
         ).map_err(DependencyUpdateError::Database)?;
         if changed != 1 {

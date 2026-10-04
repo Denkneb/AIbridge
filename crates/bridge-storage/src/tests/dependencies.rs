@@ -430,3 +430,28 @@ fn invalid_snapshots_and_corrupt_waiting_rows_fail_without_writes() {
     );
     assert_eq!(all_rows(&storage), before);
 }
+
+#[test]
+fn close_requested_waiting_task_cannot_refresh_or_activate() {
+    let (_root, layout, task, project) = waiting_state("dependency-close-fence");
+    let mut storage = layout.open().unwrap();
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET close_requested_at='requested' WHERE task_id=?1",
+            [task.to_string()],
+        )
+        .unwrap();
+    let before = all_rows(&storage);
+    assert!(
+        !storage
+            .refresh_task_baseline(task, &project, &serde_json::json!({"head":"fresh"}), None)
+            .unwrap()
+    );
+    assert!(
+        !storage
+            .activate_waiting_dependencies(task, &project)
+            .unwrap()
+    );
+    assert_eq!(all_rows(&storage), before);
+}

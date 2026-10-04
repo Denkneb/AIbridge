@@ -651,7 +651,7 @@ Data model и serde compatibility без runtime logic.
 новые persisted-настройки (execution_mode, admission defaults, profiles) имеют
 собственные узкие задачи до потребителей.
 
-### 2.13. State-directory approval opt-in (не завершено)
+### 2.13. State-directory approval opt-in (завершено)
 
 - **Цель:** boolean `auto_approve_state_directory`, default false.
 - **Source:** `config._parse_auto_approve_state_directory`,
@@ -660,6 +660,15 @@ Data model и serde compatibility без runtime logic.
   запрещает `/` и wildcard characters `*|?`; trusted external Git roots не
   меняются. Здесь только config validation; worker/controller — 7.8a/b.
 - **Проверки:** config fixtures. Зависит от 0B.2. Открывает 7.8a/b.
+- **Результат:** real-bool `ProjectEntry::auto_approve_state_directory`, false
+  default; `load_config_with_state_root` проверяет явный Rust namespace без
+  чтения/создания state. Opt-in через обычный `load_config` без root запрещён:
+  Rust не угадывает Python/default state directory. Pattern builder отвергает
+  relative/root/wildcard/non-UTF8 roots; lexical parent normalization не даёт
+  замаскировать `/`. Trusted external Git roots не расширяются.
+  35 config delta cases проходят (включая delivery), targeted root checks,
+  полный config suite (177) и clippy; permission consumers — 7.8a/b.
+
 
 ### 2.14. delivery_mode config (v16, завершено)
 

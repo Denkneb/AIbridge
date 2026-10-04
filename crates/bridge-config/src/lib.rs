@@ -100,6 +100,8 @@ use std::path::{Component, Path, PathBuf};
 
 use bridge_domain::{DeliveryMode, DomainError, ExecutionMode, ProjectId, Result};
 mod delivery;
+mod state_approval;
+pub use state_approval::state_directory_permission_pattern;
 use url::Url;
 
 mod profile_secrets;
@@ -546,6 +548,7 @@ pub struct ProjectEntry {
     opencode_env_file: Option<ProjectEnvFile>,
     password_file: Option<CredentialPath>,
     mcp_token_file: Option<CredentialPath>,
+    auto_approve_state_directory: bool,
     auto_approve_permissions: Vec<String>,
     auto_approve_external_directories: Vec<PathBuf>,
     values: toml::Table,
@@ -568,6 +571,11 @@ impl ProjectEntry {
         view.workspace = workspace;
         view.opencode_endpoint = endpoint;
         Ok(view)
+    }
+    /// Opt-in state access is separate from trusted external Git directories.
+    #[must_use]
+    pub fn auto_approve_state_directory(&self) -> bool {
+        self.auto_approve_state_directory
     }
     /// Policy used for new submissions; saved task policy remains immutable.
     #[must_use]
@@ -901,13 +909,35 @@ impl fmt::Debug for Config {
 /// None of these errors renders the file contents, credential values, project
 /// ids, workspace paths, URL inputs or the absolute input path.
 pub fn load_config(path: &Path) -> Result<Config> {
+    load_config_inner(path, None)
+}
+
+/// Loads config with the explicit Rust state namespace for approval validation.
+/// Does not create/read runtime state; opt-in requires a narrowly scoped root.
+/// # Errors
+/// Ordinary config errors and unsafe approval roots return redacted errors.
+pub fn load_config_with_state_root(path: &Path, state_root: &Path) -> Result<Config> {
+    load_config_inner(path, Some(state_root))
+}
+fn load_config_inner(path: &Path, state_root: Option<&Path>) -> Result<Config> {
     let bytes = std::fs::read(path).map_err(read_error)?;
     let text = String::from_utf8(bytes).map_err(|source| {
         DomainError::invalid_input("configuration file is not valid UTF-8").with_source(source)
     })?;
     let projects = parse_projects(&text)?;
     let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    validate_projects(projects, config_dir)
+    let config = validate_projects(projects, config_dir)?;
+    if config
+        .projects
+        .values()
+        .any(|p| p.auto_approve_state_directory)
+    {
+        let root = state_root.ok_or_else(|| {
+            DomainError::invalid_input("state directory approval requires explicit Rust state root")
+        })?;
+        state_directory_permission_pattern(root)?;
+    }
+    Ok(config)
 }
 
 /// Structurally parses already-read TOML text into the raw per-project tables.
@@ -993,6 +1023,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         let profile_definitions = profiles::parse_definitions(&values)?;
         let default_profile = profiles::parse_default(&values, &profile_definitions)?;
         let opencode_env_file = validate_opencode_env_file(&values, config_dir)?;
+        let auto_approve_state_directory = state_approval::parse(&values)?;
         let auto_approve_permissions = validate_auto_approve_permissions(&values)?;
         let auto_approve_external_directories =
             validate_auto_approve_external_directories(&values)?;
@@ -1022,6 +1053,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 opencode_env_file: opencode_env_file.map(ProjectEnvFile::new),
                 password_file: password.map(CredentialPath::new),
                 mcp_token_file: token.map(CredentialPath::new),
+                auto_approve_state_directory,
                 auto_approve_permissions,
                 auto_approve_external_directories,
                 values,

@@ -6,7 +6,11 @@ version = 4
 name = "agent-bridge-cli"
 version = "0.1.0"
 dependencies = [
+ "bridge-config",
  "bridge-domain",
+ "bridge-runtime",
+ "bridge-storage",
+ "serde_json",
 ]
 
 [[package]]

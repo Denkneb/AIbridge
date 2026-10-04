@@ -24,12 +24,29 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. Public MCP/CLI и полный worker FSM ещё впереди.
+3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. Public MCP, остальные CLI commands и полный worker FSM ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
-CLI consumer и local stdio MCP transport остаются в 9.13b/c.
+CLI consumer 9.13b готов; local stdio MCP transport 9.13c ждёт 9.5.
 Worktree observer/полный FSM — отдельные consumers.
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
+
+Для `launch-opencode` нужны настроенные и уже работающие HTTP MCP endpoints
+основного и связанных проектов, установленный `opencode` и явный отдельный
+Rust state root. Команда запускает controller TUI в workspace проекта:
+
+```bash
+cargo run --offline -p agent-bridge-cli -- launch-opencode \
+  --project PROJECT_ID --config /absolute/path/projects.toml \
+  --state-root /absolute/path/agent-bridge-rs
+```
+
+Generated config хранится в `<state-root>/<project>/controller-opencode.json`
+с правами 0600; bearer tokens передаются только в окружении TUI. Executor
+credentials удаляются, provider environment сохраняется. Local stdio MCP
+пока отклоняется до записи state: команда Rust `mcp` ещё не реализована.
+Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
+
 
 
 Источник истины — READ-ONLY Python-репозиторий `/home/denis/Python/agent_bridge`
@@ -1032,7 +1049,7 @@ refresh; единого хвостового «когда-нибудь» нет.
   `bridge-worker` строит типизированный argv и запускает отдельный worker
   процесс, останавливаясь до lock/startup grace (7.2), session resolution,
   worker state machine, MCP/runtime wiring и production CLI `worker`
-  subcommand (CLI пока placeholder). `WorkerInvocation` валидирует входы и
+  subcommand (production CLI `worker` пока не реализован). `WorkerInvocation` валидирует входы и
   рендерит reference-порядок ровно как `worker.py::worker_argv`:
   `<absolute-agent-bridge> worker --project ID --config PATH --state-root PATH
   --task TASK_ID --round N`. Executable, config path и state root обязаны быть

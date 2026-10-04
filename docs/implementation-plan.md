@@ -2324,8 +2324,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 - **Завершено.** Новый узкий workspace-crate `bridge-worker` строит
   типизированный argv и запускает отдельный worker-процесс, останавливаясь до
   lock/startup grace (7.2), session resolution, worker state machine,
-  MCP/runtime wiring и production CLI `worker` subcommand (CLI пока
-  placeholder). `WorkerInvocation` валидирует входы и рендерит reference-порядок
+  MCP/runtime wiring и production CLI `worker` subcommand (production CLI `worker` пока не реализован). `WorkerInvocation` валидирует входы и рендерит reference-порядок
   ровно как `worker.py::worker_argv`: `<absolute-agent-bridge> worker --project
   ID --config PATH --state-root PATH --task TASK_ID --round N`. Executable,
   config path и state root обязаны быть абсолютными: production путь
@@ -2803,7 +2802,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   close/session/namespace/endpoint races). Default historical no-reply entry point сохранён.
   Это service для saved direct round; worktree observer/full worker FSM и
   production CLI/MCP wiring остаются отдельными consumers.
-- **7.8b. Controller permissions (permission service завершён; launch wiring открыт).** Generated OpenCode config:
+- **7.8b. Controller permissions (HTTP launch wiring завершён; stdio ждёт 9.5).** Generated OpenCode config:
   external_directory `*→ask`, `<state_root>/*→allow` при opt-in; edit/task deny
   и bash ask сохраняются. Source: `opencode_launcher.controller_agent_permission`
   (v17). Checks: `tests/test_launchers.py`; unsupported pattern fail closed.
@@ -2817,7 +2816,7 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
   controller cases и дополнительные default/normalization/no-creation cases
   пройдены; workspace all-targets clippy без предупреждений. Полный generated
   config и foreground HTTP launch реализованы service 9.13a; CLI consumer
-  и stdio transport описаны в 9.13.
+  подключён в 9.13b; stdio transport остаётся в 9.13c.
 
 ### 7.9. Failed/delivery_unknown
 
@@ -3322,6 +3321,10 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
 
 ### 9.1. CLI parser и общие flags
 
+Узкий parser для `launch-opencode` реализован в 9.13b: explicit project/config/
+state-root, help/version, separated и inline flag values, safe errors.
+Остальные commands, defaults и общая унификация parser остаются открытыми.
+
 ### 9.2. `setup`
 
 ### 9.3. `doctor`
@@ -3379,8 +3382,17 @@ Delta v17: вывод execution/delivery modes из validated config
   Source: `opencode_launcher.py` (v17); checks: 10 offline controller tests,
   включая реальный fixture child, failure/lock/foreign-state/symlink cases;
   runtime all-targets clippy без предупреждений.
-- **9.13b. CLI consumer (открыт).** Подключить launch service к binary,
-  проверить flags, inherited env и exit propagation через CLI process.
+- **9.13b. CLI consumer (завершён для HTTP MCP).** Binary принимает
+  `launch-opencode --project ID --config PATH --state-root ABSOLUTE_PATH`.
+  Все три flags обязательны; config может быть relative к cwd caller;
+  state root всегда explicit Rust namespace. Help/version доступны без state;
+  duplicate/unknown/missing flags отклоняются safe error/exit 2, operational
+  errors дают exit 1. TUI stdio наследуется; child exit code либо 128+signal
+  возвращается shell. Проверены 6 CLI integration cases: argv/relative config,
+  inline flags, help/version, inherited provider env/proxy/token isolation,
+  exit/signal propagation, preflight failure without state и spawn recovery.
+  Workspace all-targets clippy без предупреждений. CLI defaults/остальные
+  commands остаются в 9.1 и соответствующих этапах 9.x.
 - **9.13c. Local stdio MCP transport (открыт; depends on 9.5).**
   Generator уже строит explicit absolute Rust `mcp --project --config
   --state-root` argv. Пока Rust mcp command не реализована, фактический launch

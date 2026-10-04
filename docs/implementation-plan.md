@@ -3388,11 +3388,15 @@ Delta v17: вывод execution/delivery modes из validated config
   state root всегда explicit Rust namespace. Help/version доступны без state;
   duplicate/unknown/missing flags отклоняются safe error/exit 2, operational
   errors дают exit 1. TUI stdio наследуется; child exit code либо 128+signal
-  возвращается shell. Проверены 6 CLI integration cases: argv/relative config,
+  возвращается shell. Проверены 8 CLI integration cases: argv/relative config,
   inline flags, help/version, inherited provider env/proxy/token isolation,
-  exit/signal propagation, preflight failure without state и spawn recovery.
+  exit/signal propagation, preflight failure without state, spawn recovery,
+  NUL token reject before state и точный mode 0600 даже при umask 0777.
   Workspace all-targets clippy без предупреждений. CLI defaults/остальные
   commands остаются в 9.1 и соответствующих этапах 9.x.
+  Full workspace run после CLI wiring: 1173 tests passed. После финального
+  NUL/umask hardening повторно пройдены 20 targeted CLI/controller/permission
+  tests и workspace all-targets clippy.
 - **9.13c. Local stdio MCP transport (открыт; depends on 9.5).**
   Generator уже строит explicit absolute Rust `mcp --project --config
   --state-root` argv. Пока Rust mcp command не реализована, фактический launch

@@ -336,6 +336,9 @@ fn controller_env(
             .read_mcp_token()
             .map_err(|_| ControllerError::Credentials)?
             .ok_or(ControllerError::Credentials)?;
+        if token.expose_secret().contains('\0') {
+            return Err(ControllerError::Credentials);
+        }
         let var = if index == 0 {
             PRIMARY_TOKEN.to_owned()
         } else {
@@ -416,6 +419,8 @@ fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path:
         .open(&temp)
         .map_err(|_| ControllerError::Io)?;
     let result = (|| {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| ControllerError::Io)?;
         serde_json::to_writer_pretty(&mut file, payload).map_err(|_| ControllerError::Io)?;
         file.write_all(b"\n").map_err(|_| ControllerError::Io)?;
         file.sync_all().map_err(|_| ControllerError::Io)?;

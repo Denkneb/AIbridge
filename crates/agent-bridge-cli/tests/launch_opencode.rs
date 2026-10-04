@@ -236,3 +236,57 @@ fn missing_opencode_reports_safe_error_and_releases_controller_lock() {
     f.script("exit 0");
     assert!(f.launch().status.success());
 }
+
+#[test]
+fn nul_bearer_token_is_rejected_before_any_state_write_or_child_spawn() {
+    let f = Fixture::new(true);
+    f.script("printf 'must-not-launch\\n'");
+    fs::write(f.root.join("primary.token"), b"fixture-token\0suffix").unwrap();
+    let output = f.launch();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stderr,
+        b"agent-bridge: controller_credentials_unavailable\n"
+    );
+    assert!(!f.root.join("state").exists());
+}
+
+#[test]
+fn published_controller_config_keeps_owner_read_write_under_restrictive_umask() {
+    let f = Fixture::new(true);
+    f.script("exit 0");
+    assert!(f.launch().status.success()); // initialize owned state with normal permissions
+    let path = f.root.join("state/proj/controller-opencode.json");
+    fs::remove_file(&path).unwrap();
+    f.script("[ -r \"$OPENCODE_CONFIG\" ] || exit 81\nexit 0");
+    let configured = f.command();
+    let mut command = Command::new("/bin/sh");
+    command
+        .current_dir(&f.root)
+        .args(["-c", "umask 0777; exec \"$@\"", "umask-fixture"])
+        .arg(env!("CARGO_BIN_EXE_agent-bridge"))
+        .args([
+            "launch-opencode",
+            "--project",
+            "proj",
+            "--config",
+            "projects.toml",
+            "--state-root",
+        ])
+        .arg(f.root.join("state"));
+    for (key, value) in configured.get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        } else {
+            command.env_remove(key);
+        }
+    }
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}

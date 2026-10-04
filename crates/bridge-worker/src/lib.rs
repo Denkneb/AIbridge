@@ -104,6 +104,7 @@ pub mod usage;
 
 pub mod execution;
 pub mod lifecycle;
+pub mod observation;
 pub use dispatch::{
     DispatchError, DispatchErrorKind, DispatchedRound, dispatch_initial_round,
     dispatch_revision_round, dispatch_revision_round_with_trusted_roots, new_message_id,

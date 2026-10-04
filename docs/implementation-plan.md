@@ -2820,6 +2820,21 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.9. Failed/delivery_unknown
 
+- **7.9a. Guarded message observer (service завершён).** `RoundObserver`
+  привязан к execution context, owned layout, current round/session/outbound;
+  root/current/close guards до и после единственного GET. Наблюдает `sent`
+  после ambiguous POST без resend; delivery evidence проверяется до deadline,
+  grace/deadline используют строгий `>`. Подтверждённая доставка запоминается,
+  последний полный message history сохраняет usage/model при transport failure.
+  Assistant error без later TUI continuation -> failed; неизвестная доставка
+  -> delivery_unknown; deadline -> needs_user с caller-supplied pending blockers.
+  Final predicate учитывает completed/finish/tool lifecycle и возвращает только
+  candidate, без awaiting_review до verifier. Error diagnostics фиксированные,
+  raw HTTP/assistant/tool errors не публикуются. Checks: loopback HTTP/SQLite
+  boundary, TUI continuation, no-resend, close during GET, stale session и
+  decreasing clock. Caller держит worker fences, доказывает session identity
+  и управляет permission/question grace; full FSM остаётся открыт.
+
 ### 7.10. Continuation recovery
 
 - **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock

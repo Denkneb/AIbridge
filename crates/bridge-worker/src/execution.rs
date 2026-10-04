@@ -193,13 +193,16 @@ impl fmt::Debug for RoundExecution {
     }
 }
 impl RoundExecution {
+    pub(crate) fn round(&self) -> &RoundRef {
+        &self.round
+    }
     pub fn baseline_json(&self) -> Result<Option<Value>, ExecutionError> {
         self.baseline
             .as_ref()
             .map(|b| b.to_json().map_err(|_| ExecutionError::Baseline))
             .transpose()
     }
-    fn task_and_root(
+    pub(crate) fn task_and_root(
         &self,
         layout: &RustStateLayout,
     ) -> Result<(StorageConnection, Task), ExecutionError> {

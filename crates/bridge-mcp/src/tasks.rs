@@ -1,0 +1,799 @@
+//! Delegated task adapters. Raw diagnostics never enter protocol errors.
+use crate::{McpServer, check_layout};
+use bridge_domain::{
+    DeliveryMode, ExecutionMode, ProfileDefinitionSource, RoundKind, TaskId, TaskStatus,
+    VerifierState, request_payload_hash,
+};
+use bridge_storage::{
+    CreateTaskError, CreateTaskInput, RoundRef, RoundRow, RustStateLayout, StorageConnection, Task,
+    TaskBudget,
+};
+use bridge_worker::{
+    WorkerLock, WorkerLockOutcome,
+    recovery_startup::{spawn_lease_pending, task_worker_running},
+};
+use rusqlite::OptionalExtension;
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
+type Result<T> = std::result::Result<T, &'static str>;
+const PROBE: Duration = Duration::from_secs(2);
+const SPAWN_GRACE: Duration = Duration::from_secs(5);
+fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("invalid_request")
+}
+fn flag(v: &Value, key: &str) -> Result<bool> {
+    match v.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        _ => Err("invalid_boolean"),
+    }
+}
+fn strings(v: &Value, key: &str) -> Result<Vec<String>> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .ok_or("invalid_request")?
+        .iter()
+        .map(|v| v.as_str().map(str::to_owned).ok_or("invalid_request"))
+        .collect()
+}
+fn id(v: &Value) -> Result<TaskId> {
+    text(v, "task_id")?.parse().map_err(|_| "invalid_task_id")
+}
+fn secret_gate(v: &Value) -> Result<()> {
+    if flag(v, "allow_suspected_secrets")? {
+        return Ok(());
+    }
+    fn visit(v: &Value) -> bool {
+        match v {
+            Value::String(s) => !bridge_config::suspected_secret_categories(s).is_empty(),
+            Value::Array(a) => a.iter().any(visit),
+            Value::Object(o) => o.values().any(visit),
+            _ => false,
+        }
+    }
+    if visit(v) {
+        Err("suspected_secrets")
+    } else {
+        Ok(())
+    }
+}
+fn round(storage: &StorageConnection, id: TaskId) -> Result<RoundRow> {
+    storage
+        .connection()
+        .query_row(
+            "SELECT * FROM rounds WHERE task_id=?1 ORDER BY round_number DESC LIMIT 1",
+            [id.to_string()],
+            |r| Ok(RoundRow::from_row(r)),
+        )
+        .map_err(|_| "state_unavailable")?
+        .map_err(|_| "state_unavailable")
+}
+fn request(
+    storage: &StorageConnection,
+    project: &bridge_domain::ProjectId,
+    request_id: &str,
+) -> Result<Option<RoundRow>> {
+    storage
+        .connection()
+        .query_row(
+            "SELECT * FROM rounds WHERE project_id=?1 AND request_id=?2",
+            rusqlite::params![project.as_str(), request_id],
+            |r| Ok(RoundRow::from_row(r)),
+        )
+        .optional()
+        .map_err(|_| "state_unavailable")?
+        .transpose()
+        .map_err(|_| "state_unavailable")
+}
+fn reference(task: &Task, row: &RoundRow) -> RoundRef {
+    RoundRef {
+        task_id: task.task_id,
+        project_id: task.project_id.clone(),
+        round_number: row.round_number,
+    }
+}
+impl McpServer {
+    pub(crate) fn call_task(&self, name: &str, args: &Value) -> Result<Value> {
+        check_layout(&self.project, &self.layout).map_err(|_| "mcp_state_unavailable")?;
+        match name {
+            "submit_task" => self.submit(args),
+            "task_status" => self.status(args),
+            "request_changes" => self.revise(args),
+            "accept_task" => self.accept(args),
+            "close_task" => self.close(args),
+            _ => Err("unknown_tool"),
+        }
+    }
+    fn storage(&self) -> Result<StorageConnection> {
+        self.layout.open().map_err(|_| "state_unavailable")
+    }
+    fn task(&self, id: TaskId) -> Result<Option<Task>> {
+        let task = self
+            .storage()?
+            .get_task(id)
+            .map_err(|_| "state_unavailable")?;
+        if let Some(t) = &task
+            && (&t.project_id != self.project.id()
+                || Path::new(&t.workspace) != self.project.workspace())
+        {
+            return Err("task_binding_mismatch");
+        }
+        Ok(task)
+    }
+    fn layouts(&self) -> Result<Vec<RustStateLayout>> {
+        self.registry
+            .iter()
+            .map(|p| {
+                RustStateLayout::new(self.layout.state_root(), p.id().clone())
+                    .map_err(|_| "state_unavailable")
+            })
+            .collect()
+    }
+    fn view(&self, task: &Task) -> Result<Option<bridge_config::ProjectEntry>> {
+        bridge_worker::recovery::task_execution_view(&self.layout, &self.project, task.task_id)
+            .map_err(|_| "execution_binding_invalid")
+    }
+    fn turn_idle(&self, task: &Task) -> Result<()> {
+        let Some(view) = self.view(task)? else {
+            return Ok(());
+        };
+        let Some(session) = task.session_id.as_deref() else {
+            return Ok(());
+        };
+        let client = bridge_opencode::OpenCodeClient::from_project(&view, PROBE)
+            .map_err(|_| "server_unavailable")?;
+        client
+            .verify_workspace()
+            .map_err(|_| "server_unavailable")?;
+        let active = client
+            .session_turn_active(session)
+            .map_err(|_| "server_unavailable")?;
+        let latest = self.task(task.task_id)?.ok_or("unknown_task")?;
+        let current_view = self.view(&latest)?.ok_or("execution_binding_invalid")?;
+        if latest.session_id != task.session_id
+            || current_view.workspace() != view.workspace()
+            || current_view.opencode_endpoint() != view.opencode_endpoint()
+        {
+            return Err("execution_binding_invalid");
+        }
+        if active { Err("server_busy") } else { Ok(()) }
+    }
+    fn maybe_spawn(&self, id: TaskId) -> Result<()> {
+        let Some(task) = self.task(id)? else {
+            return Ok(());
+        };
+        if !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising)
+            || task.close_requested_at.is_some()
+        {
+            return Ok(());
+        }
+        let lease = {
+            let _admission = match WorkerLock::try_acquire_admission(&self.layout)
+                .map_err(|_| "state_unavailable")?
+            {
+                WorkerLockOutcome::Busy => return Ok(()),
+                WorkerLockOutcome::Acquired(g) => g,
+            };
+            let task = self.task(id)?.ok_or("unknown_task")?;
+            if !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising)
+                || task.close_requested_at.is_some()
+            {
+                return Ok(());
+            }
+            if task_worker_running(&self.layout, id).map_err(|_| "state_unavailable")? {
+                return Ok(());
+            }
+            let mut storage = self.storage()?;
+            let row = round(&storage, id)?;
+            if !row.status.is_open()
+                || spawn_lease_pending(
+                    row.worker_started_at.as_deref(),
+                    SystemTime::now(),
+                    SPAWN_GRACE,
+                )
+            {
+                return Ok(());
+            }
+            let reference = reference(&task, &row);
+            let lease = storage
+                .mark_worker_started(reference.clone(), 3600.0)
+                .map_err(|_| "state_unavailable")?
+                .round
+                .worker_started_at
+                .ok_or("state_unavailable")?;
+            (reference, lease)
+        };
+        if self.spawner.as_ref().ok_or("worker_unavailable")?(&lease.0).is_err() {
+            self.storage()?
+                .release_worker_spawn(&lease.0, &lease.1)
+                .map_err(|_| "state_unavailable")?;
+            return Err("worker_spawn_failed");
+        }
+        Ok(())
+    }
+    fn submit(&self, args: &Value) -> Result<Value> {
+        let request_id = text(args, "request_id")?;
+        let task_text = text(args, "task")?;
+        let paths = strings(args, "allowed_paths")?;
+        if paths.is_empty() {
+            return Err("invalid_allowed_paths");
+        }
+        let commands = strings(args, "test_commands")?;
+        let allow_dirty = flag(args, "allow_dirty")?;
+        let allow_commit = flag(args, "allow_commit")?;
+        secret_gate(args)?;
+        if args.get("workflow_id").is_some_and(|v| !v.is_null())
+            || args
+                .get("depends_on")
+                .is_some_and(|v| !v.is_null() && v != &json!([]))
+        {
+            return Err("workflow_metadata_unavailable");
+        }
+        let profile_arg = args.get("profile").filter(|v| !v.is_null());
+        let profile_id = profile_arg
+            .map(|v| {
+                v.as_str()
+                    .filter(|s| !s.is_empty() && s.trim() == *s)
+                    .ok_or("invalid_profile")
+            })
+            .transpose()?;
+        let profile = self
+            .project
+            .profile_snapshot(profile_id)
+            .map_err(|_| "unknown_profile")?;
+        let budget = args
+            .get("budget")
+            .filter(|v| !v.is_null())
+            .map(TaskBudget::from_json)
+            .transpose()
+            .map_err(|_| "invalid_budget")?;
+        let command_refs = commands.iter().map(String::as_str).collect::<Vec<_>>();
+        if !bridge_command_policy::validate_test_commands(&command_refs).is_empty() {
+            return Err("invalid_test_commands");
+        }
+        let mut payload = json!({"kind":"implement","task":task_text,"allowed_paths":paths,"test_commands":commands,"allow_dirty":allow_dirty,"allow_commit":allow_commit});
+        if let Some(b) = &budget {
+            payload["budget"] = b.as_json().clone();
+        }
+        if profile.source != ProfileDefinitionSource::Builtin || profile.id != "implementer" {
+            payload["profile"] = json!({"id":profile.id,"definition_hash":profile.definition_hash,"model":profile.model});
+        }
+        let hash = request_payload_hash(&payload);
+        if let Some(existing) = request(&self.storage()?, self.project.id(), request_id)? {
+            if existing.kind != RoundKind::Implement || existing.payload_hash != hash {
+                return Err("request_conflict");
+            }
+            let task = self.task(existing.task_id)?.ok_or("state_unavailable")?;
+            return self.result(&task, false);
+        }
+        if self.project.execution_mode() == ExecutionMode::Worktree
+            && paths.iter().any(|p| Path::new(p).is_absolute())
+        {
+            return Err("external_paths_not_supported_in_worktree_mode");
+        }
+        let trusted = self
+            .project
+            .auto_approve_external_directories()
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
+        let raw = paths.iter().map(String::as_str).collect::<Vec<_>>();
+        let normalized = bridge_path_policy::validate_allowed_paths_with_trusted_roots(
+            self.project.workspace(),
+            &trusted,
+            &raw,
+        )
+        .map_err(|_| "invalid_allowed_paths")?
+        .iter()
+        .map(|p| p.to_scope_string())
+        .collect::<Vec<_>>();
+        let normalized_refs = normalized.iter().map(String::as_str).collect::<Vec<_>>();
+        let groups = bridge_path_policy::group_allowed_paths_by_repo(
+            self.project.workspace(),
+            &normalized_refs,
+        )
+        .map_err(|_| "invalid_allowed_paths")?;
+        let main = bridge_git::take_snapshot(self.project.workspace())
+            .map_err(|_| "git_snapshot_failed")?;
+        let mut snapshot = main.to_json().map_err(|_| "git_snapshot_failed")?;
+        let mut external = Vec::new();
+        for group in &groups {
+            let baseline = if group.root() == self.project.workspace() {
+                main.clone()
+            } else {
+                bridge_git::take_snapshot(group.root()).map_err(|_| "git_snapshot_failed")?
+            };
+            if !allow_dirty && !baseline.dirty_paths().is_empty() {
+                return Err("dirty_workspace");
+            }
+            for path in baseline.dirty_paths() {
+                let qualified = if group.root() == self.project.workspace() {
+                    path.to_str().ok_or("git_snapshot_failed")?.to_owned()
+                } else {
+                    group
+                        .root()
+                        .join(path)
+                        .to_str()
+                        .ok_or("git_snapshot_failed")?
+                        .to_owned()
+                };
+                if !group.entries().iter().any(|scope| {
+                    scope == "**"
+                        || qualified == *scope
+                        || (scope.ends_with('/') && qualified.starts_with(scope))
+                }) {
+                    return Err("dirty_paths_outside_scope");
+                }
+            }
+            if group.root() != self.project.workspace() {
+                let mut ext = baseline.to_json().map_err(|_| "git_snapshot_failed")?;
+                ext["root"] = json!(group.root());
+                external.push(ext);
+            }
+        }
+        snapshot["external_repositories"] = json!(external);
+        if self.project.execution_mode() == ExecutionMode::Direct {
+            let client = bridge_opencode::OpenCodeClient::from_project(&self.project, PROBE)
+                .map_err(|_| "server_unavailable")?;
+            if !client.health().map_err(|_| "server_unavailable")?.healthy() {
+                return Err("server_unhealthy");
+            }
+            client
+                .verify_workspace()
+                .map_err(|_| "server_wrong_directory")?;
+        }
+        let _admission = match WorkerLock::try_acquire_admission(&self.layout)
+            .map_err(|_| "state_unavailable")?
+        {
+            WorkerLockOutcome::Busy => return Err("project_busy"),
+            WorkerLockOutcome::Acquired(g) => g,
+        };
+        // The probe can outlive a repository update. Persist only the baseline
+        // that was actually checked, including relevant external repositories.
+        if bridge_git::take_snapshot(self.project.workspace())
+            .map_err(|_| "git_snapshot_failed")?
+            .to_json()
+            .map_err(|_| "git_snapshot_failed")?
+            != main.to_json().map_err(|_| "git_snapshot_failed")?
+        {
+            return Err("workspace_changed");
+        }
+        for saved in &external {
+            let root = saved["root"].as_str().ok_or("git_snapshot_failed")?;
+            let mut current = bridge_git::take_snapshot(Path::new(root))
+                .map_err(|_| "git_snapshot_failed")?
+                .to_json()
+                .map_err(|_| "git_snapshot_failed")?;
+            current["root"] = json!(root);
+            if &current != saved {
+                return Err("workspace_changed");
+            }
+        }
+        let mut storage = self.storage()?;
+        let outcome = bridge_submission::submit_task_with_profile_raw_paths(
+            &mut storage,
+            &self.project,
+            bridge_submission::ProfileSubmissionInput {
+                task: CreateTaskInput {
+                    task_id: uuid::Uuid::new_v4()
+                        .to_string()
+                        .parse()
+                        .map_err(|_| "state_unavailable")?,
+                    project_id: self.project.id().clone(),
+                    workspace: self
+                        .project
+                        .workspace()
+                        .to_str()
+                        .ok_or("state_unavailable")?
+                        .into(),
+                    task: task_text.into(),
+                    request_id: request_id.into(),
+                    payload_hash: hash,
+                    base_head: main.head().map(|h| h.as_str().into()),
+                    allowed_paths: normalized,
+                    test_commands: commands,
+                    snapshot: Some(snapshot),
+                },
+                profile: profile_arg.cloned(),
+                allow_dirty,
+                allow_commit,
+                budget,
+                initial_status: TaskStatus::Implementing,
+            },
+            &paths,
+        )
+        .map_err(|e| match e {
+            bridge_submission::SubmissionError::Storage(CreateTaskError::ProjectBusy) => {
+                "project_busy"
+            }
+            bridge_submission::SubmissionError::Storage(CreateTaskError::ScopeOverlap) => {
+                "scope_overlap"
+            }
+            bridge_submission::SubmissionError::Storage(CreateTaskError::RequestConflict) => {
+                "request_conflict"
+            }
+            bridge_submission::SubmissionError::WorktreeUnsupported => {
+                "worktree_submission_unsupported"
+            }
+            _ => "submission_failed",
+        })?;
+        let task = outcome.into_task();
+        drop(_admission);
+        self.maybe_spawn(task.task_id)?;
+        self.result(&self.task(task.task_id)?.ok_or("state_unavailable")?, false)
+    }
+    fn result(&self, task: &Task, verbose: bool) -> Result<Value> {
+        let mut storage = self.storage()?;
+        let row = round(&storage, task.task_id)?;
+        let stored = row.result_json.clone().unwrap_or(json!({}));
+        let mut result = json!({"task_id":task.task_id.to_string(),"project_id":task.project_id.as_str(),"status":task.status,"round_number":row.round_number,"revision_count":task.revision_count});
+        if let Some(session) = &task.session_id {
+            result["session_id"] = json!(session);
+        }
+        if matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising) {
+            result["created_at"] = json!(task.created_at);
+            result["updated_at"] = json!(task.updated_at);
+            result["session_id"] = json!(task.session_id);
+            result["close_requested"] = json!(task.close_requested_at.is_some());
+            result["close_requested_at"] = json!(task.close_requested_at);
+            result["phase"] = json!(if row.verifier_state == Some(VerifierState::Running) {
+                "verifying"
+            } else {
+                "agent"
+            });
+            result["worker"] = json!({"running":task_worker_running(&self.layout,task.task_id).map_err(|_|"state_unavailable")?,"started_at":row.worker_started_at,"deadline_at":row.worker_deadline_at});
+        } else if !matches!(task.status, TaskStatus::Accepted | TaskStatus::Closed) {
+            for key in [
+                "changed_paths",
+                "task_changed_paths",
+                "committed_paths",
+                "scope_violations",
+                "git_policy_violations",
+                "blockers",
+                "tool_errors",
+                "verification",
+                "error",
+                "head_before",
+                "head_after",
+                "baseline_dirty_paths",
+                "repositories",
+            ] {
+                if let Some(v) = stored.get(key).filter(|v| !v.is_null() && v != &&json!([])) {
+                    result[key] = v.clone();
+                }
+            }
+            if let Some(code) = &row.error_code {
+                result["error_code"] = json!(code);
+            }
+            if task.status == TaskStatus::AwaitingReview {
+                result["allow_dirty"] = json!(
+                    task.snapshot
+                        .as_ref()
+                        .is_some_and(|s| s["allow_dirty"] == true)
+                );
+                result["allow_commit"] = json!(
+                    task.snapshot
+                        .as_ref()
+                        .is_some_and(|s| s["allow_commit"] == true)
+                );
+            }
+        }
+        if let Some(profile) = storage
+            .get_task_profile(task.task_id, self.project.id())
+            .map_err(|_| "profile_snapshot_corrupt")?
+            && (profile.source != ProfileDefinitionSource::Builtin || profile.id != "implementer")
+        {
+            result["profile"] = json!(profile.id);
+            result["profile_source"] = json!(profile.source);
+        }
+        if task.status == TaskStatus::AwaitingReview {
+            let decision = storage
+                .revision_budget_decision(task.task_id, self.project.id(), false)
+                .map_err(|_| "state_unavailable")?;
+            if let Some(b) = decision.state {
+                result["budget"] = b;
+            }
+        }
+        if self.execution_mode(task.task_id)? == ExecutionMode::Worktree {
+            let record = storage
+                .get_worktree(task.task_id, self.project.id())
+                .map_err(|_| "state_unavailable")?
+                .ok_or("worktree_row_missing")?;
+            result["execution_mode"] = json!("worktree");
+            result["worktree"] = json!({"status":record.status.as_str(),"path":record.path,"server_port":record.server_port.map(|p|p.get()),"server_endpoint":record.server_endpoint});
+        }
+        if verbose && !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising) {
+            result["task"] = json!(task.text);
+            result["allowed_paths"] = json!(task.allowed_paths);
+            result["test_commands"] = json!(task.test_commands);
+            result["result"] = stored;
+            result["response"] = json!(row.response);
+            result["worker_started_at"] = json!(row.worker_started_at);
+            result["worker_deadline_at"] = json!(row.worker_deadline_at);
+            result["created_at"] = json!(task.created_at);
+            result["updated_at"] = json!(task.updated_at);
+            result["checkpoint"] = storage
+                .get_round_checkpoint(&reference(task, &row))
+                .map_err(|_| "state_unavailable")?
+                .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null);
+        }
+        Ok(result)
+    }
+    fn execution_mode(&self, id: TaskId) -> Result<ExecutionMode> {
+        let raw: String = self
+            .storage()?
+            .connection()
+            .query_row(
+                "SELECT execution_mode FROM tasks WHERE task_id=?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(|_| "state_unavailable")?;
+        serde_json::from_value(json!(raw)).map_err(|_| "execution_binding_invalid")
+    }
+    fn status(&self, args: &Value) -> Result<Value> {
+        let wait = args
+            .get("wait_seconds")
+            .map(|v| {
+                v.as_u64()
+                    .filter(|n| *n <= 300)
+                    .ok_or("invalid_wait_seconds")
+            })
+            .transpose()?
+            .unwrap_or(300);
+        let verbose = flag(args, "verbose")?;
+        let explicit = args.get("task_id").is_some_and(|v| !v.is_null());
+        let id = match args.get("task_id").filter(|v| !v.is_null()) {
+            Some(Value::String(s)) => s.parse().map_err(|_| "invalid_task_id")?,
+            Some(_) => return Err("invalid_task_id"),
+            None => {
+                let active = self
+                    .storage()?
+                    .active_set(self.project.id())
+                    .map_err(|_| "state_unavailable")?;
+                match active.tasks.as_slice() {
+                    [] => return Ok(json!({"status":"no_active_task"})),
+                    [task] => task.task_id,
+                    tasks => {
+                        return Ok(
+                            json!({"error":"ambiguous_task","tasks":tasks.iter().map(|t|json!({"task_id":t.task_id.to_string(),"status":t.status})).collect::<Vec<_>>()}),
+                        );
+                    }
+                }
+            }
+        };
+        let Some(task) = self.task(id)? else {
+            return Ok(json!({"status":"unknown_task"}));
+        };
+        let layouts = self.layouts()?;
+        let refs = layouts.iter().collect::<Vec<_>>();
+        if task.close_requested_at.is_some() {
+            self.finish_close(&task)?;
+        } else if task.status == TaskStatus::NeedsUser && explicit {
+            let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
+            let outcome = bridge_worker::recovery::recover_needs_user(
+                &self.layout,
+                &self.project,
+                id,
+                true,
+                &refs,
+                PROBE,
+                |r| spawn(r),
+            )
+            .map_err(|_| "recovery_failed")?;
+            if matches!(
+                outcome,
+                bridge_worker::recovery::RecoverySpawnOutcome::SpawnFailed
+            ) {
+                return Err("worker_spawn_failed");
+            }
+        } else {
+            self.maybe_spawn(id)?;
+        }
+        let start = Instant::now();
+        loop {
+            let task = self.task(id)?.ok_or("state_unavailable")?;
+            let result = self.result(&task, verbose)?;
+            if !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising)
+                || result["phase"] == "verifying"
+                || start.elapsed() >= Duration::from_secs(wait)
+            {
+                return Ok(result);
+            }
+            let row = round(&self.storage()?, id)?;
+            if !task_worker_running(&self.layout, id).map_err(|_| "state_unavailable")?
+                && !spawn_lease_pending(
+                    row.worker_started_at.as_deref(),
+                    SystemTime::now(),
+                    SPAWN_GRACE,
+                )
+            {
+                return Ok(result);
+            }
+            thread::sleep(
+                Duration::from_millis(100)
+                    .min(Duration::from_secs(wait).saturating_sub(start.elapsed())),
+            );
+        }
+    }
+    fn revise(&self, args: &Value) -> Result<Value> {
+        let id = id(args)?;
+        let request_id = text(args, "request_id")?;
+        let findings = text(args, "findings")?;
+        let override_budget = flag(args, "allow_budget_override")?;
+        secret_gate(args)?;
+        let Some(task) = self.task(id)? else {
+            return Ok(json!({"status":"unknown_task"}));
+        };
+        if task
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.get("automation_run_id").is_some())
+        {
+            return Err("automation_managed");
+        }
+        let trusted = self
+            .project
+            .auto_approve_external_directories()
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
+        let validated = bridge_worker::validate_revision_findings(
+            findings,
+            args.get("structured_findings"),
+            self.project.workspace(),
+            &trusted,
+            &task.allowed_paths,
+        )
+        .map_err(|_| "invalid_structured_findings")?;
+        if let Some(existing) = request(&self.storage()?, self.project.id(), request_id)? {
+            if existing.task_id != id
+                || existing.kind != RoundKind::Revise
+                || existing.payload_hash != validated.payload_hash()
+            {
+                return Err("request_conflict");
+            }
+            return self.result(&task, false);
+        }
+        let _fences = bridge_worker::admission::try_review_fences(&self.layout, &self.project, id)
+            .map_err(|_| "state_unavailable")?
+            .ok_or("worker_running")?;
+        let task = self.task(id)?.ok_or("unknown_task")?;
+        if task.status != TaskStatus::AwaitingReview || task.close_requested_at.is_some() {
+            return Err("not_awaiting_review");
+        }
+        if u64::try_from(task.revision_count).map_err(|_| "state_unavailable")?
+            >= self.project.max_rounds()
+        {
+            return Err("revision_limit");
+        }
+        let mut storage = self.storage()?;
+        if let Some(error) = storage
+            .revision_budget_decision(id, self.project.id(), override_budget)
+            .map_err(|_| "state_unavailable")?
+            .error
+        {
+            return Err(error);
+        }
+        self.turn_idle(&task)?;
+        let previous = round(&storage, id)?;
+        let number = previous
+            .round_number
+            .checked_add(1)
+            .ok_or("revision_limit")?;
+        validated
+            .create_round(
+                &mut storage,
+                RoundRef {
+                    task_id: id,
+                    project_id: self.project.id().clone(),
+                    round_number: number,
+                },
+                request_id.into(),
+            )
+            .map_err(|e| {
+                if matches!(e, bridge_storage::RoundUpdateError::RequestConflict) {
+                    "request_conflict"
+                } else {
+                    "revision_failed"
+                }
+            })?;
+        drop(_fences);
+        self.maybe_spawn(id)?;
+        self.result(&self.task(id)?.ok_or("state_unavailable")?, false)
+    }
+    fn accept(&self, args: &Value) -> Result<Value> {
+        let id = id(args)?;
+        let Some(task) = self.task(id)? else {
+            return Ok(json!({"status":"unknown_task"}));
+        };
+        if task.delivery_mode != DeliveryMode::Manual {
+            return Err("on_accept_delivery_unavailable");
+        }
+        if task.status == TaskStatus::Accepted {
+            return Ok(json!({"task_id":id.to_string(),"status":"accepted"}));
+        }
+        let _fences = bridge_worker::admission::try_review_fences(&self.layout, &self.project, id)
+            .map_err(|_| "state_unavailable")?
+            .ok_or("worker_running")?;
+        let task = self.task(id)?.ok_or("unknown_task")?;
+        if task.status != TaskStatus::AwaitingReview || task.close_requested_at.is_some() {
+            return Err("not_awaiting_review");
+        }
+        if task
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.get("automation_run_id").is_some())
+        {
+            return Err("automation_managed");
+        }
+        self.turn_idle(&task)?;
+        if self.execution_mode(id)? == ExecutionMode::Worktree {
+            let layouts = self.layouts()?;
+            bridge_runtime::stop_worktree_server(
+                &self.layout,
+                &self.project,
+                id,
+                &layouts.iter().collect::<Vec<_>>(),
+            )
+            .map_err(|_| "worktree_server_stop_failed")?;
+        }
+        let task = self
+            .storage()?
+            .accept_manual_task(id, self.project.id())
+            .map_err(|_| "accept_failed")?;
+        Ok(json!({"task_id":task.task_id.to_string(),"status":task.status}))
+    }
+    fn finish_close(&self, task: &Task) -> Result<()> {
+        if self.execution_mode(task.task_id)? == ExecutionMode::Worktree {
+            let layouts = self.layouts()?;
+            bridge_worker::lifecycle::recover_worktree_task(
+                &self.layout,
+                &self.project,
+                task.task_id,
+                &layouts.iter().collect::<Vec<_>>(),
+            )
+            .map_err(|_| "cleanup_failed")?;
+        } else if let Some(_fences) =
+            bridge_worker::admission::try_review_fences(&self.layout, &self.project, task.task_id)
+                .map_err(|_| "state_unavailable")?
+        {
+            self.storage()?
+                .complete_requested_close(task.task_id)
+                .map_err(|_| "close_failed")?;
+        }
+        Ok(())
+    }
+    fn close(&self, args: &Value) -> Result<Value> {
+        let id = id(args)?;
+        let reason = text(args, "reason").map_err(|_| "reason_required")?;
+        let Some(task) = self.task(id)? else {
+            return Ok(json!({"status":"unknown_task"}));
+        };
+        if task.status.is_terminal() {
+            return Ok(json!({"task_id":id.to_string(),"status":task.status}));
+        }
+        let fences = bridge_worker::admission::try_review_fences(&self.layout, &self.project, id)
+            .map_err(|_| "state_unavailable")?;
+        if task.close_requested_at.is_none() {
+            self.turn_idle(&task)?;
+        }
+        self.storage()?
+            .request_task_close(id, reason)
+            .map_err(|_| "close_failed")?;
+        drop(fences);
+        self.finish_close(&task)?;
+        let task = self.task(id)?.ok_or("state_unavailable")?;
+        Ok(
+            json!({"task_id":id.to_string(),"status":if task.status==TaskStatus::Closed{"closed"}else{"close_requested"},"close_requested":task.status!=TaskStatus::Closed}),
+        )
+    }
+}

@@ -37,15 +37,18 @@ Message observer service **7.9a** завершён: delivery/assistant error/dea
 доверенных внешних Git-репозиториев: qualified paths/effects, violations и
 checkpoint для каждого repo. Baseline/scope заморожены, подменённые symlink roots
 отклоняются; исчезнувшие repo видны как `external_repo_missing`. Worktree tasks
-сохраняют ограничение на один checkout. Полная source error-policy parity и пять delegated MCP
-handlers **9.5c** остаются открыты; live OpenCode/provider smoke ещё не выполнен.
+сохраняют ограничение на один checkout. Пять delegated MCP handlers подключены
+для standalone задач с manual review (**9.5c1**). Полная source error-policy
+parity, startup recovery, workflow metadata и on_accept delivery остаются
+открыты; live OpenCode/provider smoke ещё не выполнен.
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
 7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP read-only foundation (project_info/stdio/HTTP) готов; delegated handlers,
-остальные CLI commands и полная error-policy parity worker ещё впереди.
+3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP stdio/HTTP и standalone delegated
+handlers готовы; остальные CLI commands и полная error-policy parity worker
+ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
 CLI consumer 9.13b готов; local controller delegation 9.13c ждёт 9.5c.
@@ -76,8 +79,14 @@ cargo run --offline -p agent-bridge-cli -- launch-opencode \
 Generated config хранится в `<state-root>/<project>/controller-opencode.json`
 с правами 0600; bearer tokens передаются только в окружении TUI. Executor
 credentials удаляются, provider environment сохраняется. Local stdio MCP
-пока отклоняется до записи state: Rust `mcp` обслуживает только `project_info`,
-делегирование задач ещё не реализовано.
+пока отклоняется до записи state: controller consumer 9.13c ещё не подключён.
+Rust `mcp` и `serve-mcp` уже обслуживают `project_info`, `submit_task`,
+`task_status`, `request_changes`, `accept_task`, `close_task`. Submit запускает
+Rust worker; request_id сохраняет idempotency, review/close проверяют активность
+сохранённой session. `task_status` поддерживает wait_seconds 0..300 и explicit
+needs_user recovery. Workflow metadata возвращает `workflow_metadata_unavailable`,
+accept с frozen on_accept policy — `on_accept_delivery_unavailable` без смены
+статуса. Автосканирование задач при старте MCP ещё не подключено.
 Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
 
 Read-only MCP stdio доступен через тот же explicit Rust state root:

@@ -12,3 +12,12 @@ bridge-storage.workspace = true
 serde_json.workspace = true
 nix.workspace = true
 sha2 = "0.10"
+bridge-worker.workspace = true
+bridge-submission = { path = "../bridge-submission" }
+bridge-git.workspace = true
+bridge-path-policy.workspace = true
+bridge-command-policy.workspace = true
+bridge-opencode.workspace = true
+bridge-runtime.workspace = true
+rusqlite.workspace = true
+uuid = { workspace = true, features = ["v4"] }

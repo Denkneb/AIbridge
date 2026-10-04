@@ -3337,13 +3337,41 @@ project_info cases проверены (legacy fields + additive v17 surface).
 
 ### 8.2. `submit_task`
 
+- **8.2a. Standalone adapter (завершён).** Required/type/secret/profile/budget/
+  command/scope guards; raw public-path hash и replay до filesystem/HTTP;
+  main/relevant external Git snapshots с recheck под admission fence;
+  direct health/root proof, worktree без static endpoint probe. Atomic
+  submission pins normalized scope/profile/policy, worker spawn lease
+  предотвращает duplicate и откатывается только при failed spawn.
+  Workflow metadata пока возвращает explicit refusal, полный parity открыт.
+
 ### 8.3. Compact `task_status`
+
+- **8.3a. Standalone adapter (завершён).** Explicit ID или coherent active-set
+  selection; ambiguity не активирует задачи. Current round/status, in-flight
+  agent/verifying phase, worker fences/lease и saved actionable diagnostics.
+  Close recovery и orphan active worker spawn подключены; terminal не spawn.
+  Полный frozen response parity остаётся открытым.
 
 ### 8.4. Verbose `task_status`
 
+- **8.4a. Saved diagnostics adapter (завершён).** Для non-inflight добавлены
+  task/scope/tests, result/response, timestamps и saved checkpoint; review
+  показывает budget. Full rounds/delivery/TUI recovery surface ещё открыт.
+
 ### 8.5. Long wait и раннее пробуждение
 
+- **8.5a. Bounded wait (завершён).** wait_seconds 0..300, monotonic deadline,
+  re-read persisted status, early return при terminal/review/verifying или
+  отсутствии worker после lease. No-id needs_user не выполняет recovery.
+
 ### 8.6. `request_changes`
+
+- **8.6a. Standalone adapter (завершён).** Secret/structured scope/idempotency,
+  review fences, saved budget gate/explicit override, automation ownership,
+  idle-session proof и atomic revision перед worker spawn. Max revision
+  guard сейчас сохраняет review и возвращает revision_limit; source needs_user
+  transition/detail parity ещё не завершён.
 
 ### 8.7. `accept_task`
 
@@ -3359,16 +3387,25 @@ project_info cases проверены (legacy fields + additive v17 surface).
   loopback activity matrix прошли, workspace Clippy чист. MCP adapters и
   on_accept delivery остаются отдельными consumers.
 
+- **8.7b. Manual adapter (завершён).** Under review fences proves saved session
+  idle; stops owned worktree server before atomic accept, retains checkout.
+  Repeated accept read-only; frozen on_accept returns explicit unavailable.
+
 ### 8.8. `close_task`
+
+- **8.8a. Cooperative adapter (завершён).** Nonempty reason, current session
+  activity gate до marker; busy worker сохраняет close_requested. Direct
+  completes under fences, worktree becomes closed only after owned cleanup;
+  repeated/status calls finish deferred cleanup without spawn.
 
 ### 8.9. stdio transport (foundation завершён)
 
 `bridge-mcp::protocol` + `stdio`: bounded newline JSON-RPC framing (1 MiB),
 initialize/initialized/ping/tools/list/tools/call, protocol negotiation
 2024-11-05/2025-03-26/2025-06-18, fixed redacted errors, EOF releases MCP lock.
-Stdout содержит только JSON-RPC; notifications не получают reply. Tools list
-пока объявляет только работающий project_info; пять delegated tools ещё не
-подключены и отклоняются без writes. Не считать это полным шеституловым MCP.
+Stdout содержит только JSON-RPC; notifications не получают reply. Без worker launcher Tools list содержит project_info. Production CLI из
+9.5c1 injects launcher и объявляет шесть tools; notifications не вызывают
+handlers. Полный source parity всех delegated modes ещё не завершён.
 Протокол проверен по [MCP transport spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
 и [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle).
 
@@ -3386,8 +3423,8 @@ HTTP/1.1 Content-Length и chunked bodies поддержаны; duplicate header
 TE+CL ambiguity, chunk trailers и Expect отклоняются. Limit: 1 MiB body,
 32 KiB headers/chunk overhead, 8 KiB line, 16 connections, total request-read
 deadline 10s. Overload → 503; JSON-RPC malformed input → fixed errors, no echo.
-Это bounded HTTP profile без SSE/session resumption/HTTP2; tool surface пока
-только project_info. Проверки: 9 real loopback cases (auth/rotation/Origin/Host/
+Это bounded HTTP profile без SSE/session resumption/HTTP2. Foundation bind
+оставляет project_info; bind_with_workers/CLI включает standalone handlers. Проверки: 9 real loopback cases (auth/rotation/Origin/Host/
 framing/parallel/overload/deadline/lock), HTTP CLI process + startup preflight.
 Source: `mcp_http.py` v17 и
 [MCP transport specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
@@ -3510,6 +3547,10 @@ Source: `mcp_http.py` v17 и
   spawn duplicate в lease window. Failed recovery требует positive wait;
   review/background opt out сохраняют gate. No prompt resend/auto permission.
 - **Проверки:** zero-wait/concurrent recovery MCP fixtures.
+- **8.20a. needs_user adapter (завершён).** Explicit zero-wait invokes guarded
+  service 7.10b, re-reads persisted status, failed spawn releases claim;
+  implicit task selection не восстанавливает needs_user. Проверен no-resend/
+  one-claim lease. Failed assistant recovery/full source parity ещё открыт.
 - **Зависит от:** 7.10b, 0B.4.
 
 ## Поток 9. Runtime CLI
@@ -3567,9 +3608,20 @@ Delta v17: вывод execution/delivery modes из validated config
   повторно пройдены protocol/help targeted checks и workspace clippy.
   Full task handlers/startup recovery остаются
   в 9.5c; process records/managed start/stop — в 9.6–9.10.
-- **9.5c. Full handlers/startup recovery (открыт).** Depends on 8.2–8.8,
-  8.11 и полный worker FSM. Без них MCP является read-only foundation,
-  а local controller delegation 9.13c остаётся закрытой.
+- **9.5c1. Standalone delegated handlers/worker launcher (завершён).**
+  `mcp`/`serve-mcp` injects trusted Rust worker argv, detached spawn и reaper
+  thread; ошибки fixed/content-free, stdout только protocol. Foundation
+  embedders без spawner сохраняют read-only surface. 15 integration tests:
+  idempotency/raw hash, refusals/no writes, scoped dirty baseline, failed spawn,
+  concurrent status lease, explicit needs_user claim, activity fail-closed,
+  budget override/structured scope, revision/accept/close и pending worktree.
+  Реальный CLI MCP → child worker → awaiting_review → manual accept проверен
+  на loopback OpenCode mock, один prompt и reservation release.
+  Full workspace: 1268 tests passed; fmt/diff-check и all-target Clippy чисты.
+- **9.5c. Full handlers/startup recovery (открыт).** Remaining: startup scan
+  8.11; failed assistant/delivery recovery, complete frozen envelope parity,
+  workflow metadata/activation и on_accept delivery. Local controller
+  consumer 9.13c и live provider smoke остаются отдельными этапами.
 
 ### 9.6. Process ownership и pidfd primitives
 
@@ -3634,8 +3686,8 @@ Delta v17: вывод execution/delivery modes из validated config
   tests и workspace all-targets clippy.
 - **9.13c. Local stdio MCP transport (открыт; depends on 9.5c).**
   Generator уже строит explicit absolute Rust `mcp --project --config
-  --state-root` argv. Rust mcp command реализована как read-only foundation (project_info).
-  Пока delegated tools/worker FSM не подключены, фактический launch любого
+  --state-root` argv. Rust mcp standalone handlers подключены в 9.5c1;
+  controller consumer пока не включён, фактический launch любого
   primary/linked stdio проекта отклоняется до state writes/spawn.
   HTTP endpoints должны быть запущены заранее: launch не запускает servers.
   Live OpenCode/provider smoke остаётся отдельной проверкой 15.x.

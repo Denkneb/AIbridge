@@ -1,8 +1,12 @@
-//! MCP transport foundation. Only implemented tools are advertised.
-//! No worker activation, recovery, model calls or Python runtime fallback.
+//! MCP transports and standalone delegated task adapters.
+//! Delegation requires an injected worker launcher; manual delivery only.
 pub mod http;
 pub mod protocol;
 pub mod stdio;
+mod tasks;
+mod tools;
+pub type WorkerSpawner =
+    std::sync::Arc<dyn Fn(&bridge_storage::RoundRef) -> std::result::Result<(), ()> + Send + Sync>;
 use bridge_config::{DEFAULT_PROFILE_ID, ProjectEntry};
 use bridge_storage::{RuntimeLock, RustStateLayout};
 use serde_json::{Value, json};
@@ -47,6 +51,8 @@ pub struct McpServer {
     project: ProjectEntry,
     layout: RustStateLayout,
     _lock: File,
+    spawner: Option<WorkerSpawner>,
+    registry: Vec<ProjectEntry>,
 }
 impl McpServer {
     /// Initializes only a proven Rust-owned namespace and claims its MCP lock.
@@ -84,10 +90,32 @@ impl McpServer {
         lock.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|_| McpError::Io)?;
         Ok(Self {
+            registry: vec![project.clone()],
             project,
             layout,
             _lock: lock,
+            spawner: None,
         })
+    }
+    /// Enable delegated tools only with a trusted worker launcher. Embedders
+    /// without one retain the read-only foundation surface.
+    pub fn with_workers(
+        mut self,
+        spawner: WorkerSpawner,
+        registry: Vec<ProjectEntry>,
+    ) -> Result<Self> {
+        if !registry
+            .iter()
+            .any(|p| p.id() == self.project.id() && p.workspace() == self.project.workspace())
+        {
+            return Err(McpError::Binding);
+        }
+        self.spawner = Some(spawner);
+        self.registry = registry;
+        Ok(self)
+    }
+    pub fn delegated_tools_enabled(&self) -> bool {
+        self.spawner.is_some()
     }
     /// Reads config labels and one coherent active-set snapshot; no activation.
     /// # Errors

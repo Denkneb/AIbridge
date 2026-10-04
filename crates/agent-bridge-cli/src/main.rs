@@ -15,9 +15,9 @@ Commands:
   mcp               Serve MCP over stdin/stdout
   serve-mcp         Serve authenticated MCP on the configured loopback HTTP endpoint
 
-Rust MCP currently exposes project_info only; delegated task tools are pending.
+Rust MCP exposes project_info and standalone delegated tasks with manual review.
 The state root must belong to Rust and be outside the bound project workspace.
-Local controller delegation remains unavailable until task tools are implemented.
+Local controller delegation is not yet enabled in launch-opencode.
 
 Options:
   --project ID        Configured project id (required)
@@ -175,13 +175,50 @@ fn mcp(args: LaunchArgs, http: bool) -> Result<ExitCode, String> {
         .ok_or("project not configured")?;
     let layout =
         RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    let executable = env::current_exe().map_err(|_| "bridge executable unavailable")?;
+    let worker_layout = layout.clone();
+    let workspace = project.workspace().to_owned();
+    let worker_project = project.id().clone();
+    let spawner: bridge_mcp::WorkerSpawner = std::sync::Arc::new(move |round| {
+        let invocation = bridge_worker::WorkerInvocation::new(
+            &executable,
+            worker_project.clone(),
+            &config_path,
+            worker_layout.state_root(),
+            round.task_id,
+            round.round_number,
+        )
+        .map_err(|_| ())?;
+        let launch_layout = worker_layout.clone();
+        let launch_workspace = workspace.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("bridge-worker-reaper".into())
+            .spawn(move || {
+                match bridge_worker::spawn_worker(&invocation, &launch_layout, &launch_workspace) {
+                    Ok(mut child) => {
+                        let _ = tx.send(Ok(()));
+                        let _ = child.wait();
+                    }
+                    Err(_) => {
+                        let _ = tx.send(Err(()));
+                    }
+                }
+            })
+            .map_err(|_| ())?;
+        rx.recv().map_err(|_| ())??;
+        Ok(())
+    });
+    let registry = config.projects().values().cloned().collect();
     if http {
-        bridge_mcp::http::HttpServer::bind(project.clone(), layout)
+        bridge_mcp::http::HttpServer::bind_with_workers(project.clone(), layout, spawner, registry)
             .and_then(|server| server.run())
             .map_err(|e| e.to_string())?;
         return Ok(ExitCode::SUCCESS);
     }
-    let server = bridge_mcp::McpServer::open(project.clone(), layout).map_err(|e| e.to_string())?;
+    let server = bridge_mcp::McpServer::open(project.clone(), layout)
+        .and_then(|server| server.with_workers(spawner, registry))
+        .map_err(|e| e.to_string())?;
     bridge_mcp::stdio::run(&server, std::io::stdin().lock(), std::io::stdout().lock())
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)

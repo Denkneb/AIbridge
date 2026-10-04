@@ -61,7 +61,19 @@ impl Error for SubmissionError {}
 pub fn submit_task_with_profile(
     storage: &mut StorageConnection,
     project: &ProjectEntry,
+    input: ProfileSubmissionInput,
+) -> Result<CreateTaskOutcome, SubmissionError> {
+    let raw_paths = input.task.allowed_paths.clone();
+    submit_task_with_profile_raw_paths(storage, project, input, &raw_paths)
+}
+
+/// Keeps the request hash on raw public paths while persisting proven normalized
+/// scopes. Caller validates these raw entries before invoking this service.
+pub fn submit_task_with_profile_raw_paths(
+    storage: &mut StorageConnection,
+    project: &ProjectEntry,
     mut input: ProfileSubmissionInput,
+    raw_paths: &[String],
 ) -> Result<CreateTaskOutcome, SubmissionError> {
     if &input.task.project_id != project.id()
         || std::fs::canonicalize(&input.task.workspace).ok().as_deref() != Some(project.workspace())
@@ -78,7 +90,7 @@ pub fn submit_task_with_profile(
         .map_err(|_| SubmissionError::UnknownProfile)?;
     let mut payload = json!({
         "kind":"implement", "task":input.task.task,
-        "allowed_paths":input.task.allowed_paths, "test_commands":input.task.test_commands,
+        "allowed_paths":raw_paths, "test_commands":input.task.test_commands,
         "allow_dirty":input.allow_dirty, "allow_commit":input.allow_commit,
     });
     if let Some(budget) = &input.budget {

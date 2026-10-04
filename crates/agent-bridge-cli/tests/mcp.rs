@@ -82,6 +82,7 @@ fn mcp_cli_serves_a_real_stdio_session_without_banner_or_executor_credentials() 
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 6);
     assert_eq!(messages[1]["result"]["tools"][0]["name"], "project_info");
     assert_eq!(
         messages[2]["result"]["structuredContent"]["project_id"],

@@ -90,6 +90,8 @@ impl Fixture {
                         stream.read_exact(&mut payload).unwrap();
                         recorded.lock().unwrap().push(format!("{method} {path}"));
                         let (status, value) = match (method, path) {
+                            ("GET", "/global/health") => (200, json!({"healthy":true})),
+                            ("GET", "/session/status") => (200, json!({})),
                             ("GET", "/path") => (200, json!({"directory":directory})),
                             ("GET", "/session") => (200, json!([])),
                             ("POST", "/session") | ("GET", "/session/session") => {
@@ -312,4 +314,130 @@ fn worker_cli_completes_requested_close_without_http() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(f.status(), TaskStatus::Closed);
     assert!(f.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn mcp_cli_submit_spawns_real_worker_and_manual_accept_finishes_review() {
+    use std::{
+        io::{BufRead, BufReader},
+        process::Stdio,
+        time::Instant,
+    };
+    let f = Fixture::new();
+    // This fixture seeds a task for the worker command tests. Start this MCP
+    // integration with an empty Rust namespace instead.
+    fs::remove_dir_all(f.layout.project_dir()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-bridge"))
+        .current_dir(&f.root)
+        .args([
+            "mcp",
+            "--project",
+            "proj",
+            "--config",
+            "projects.toml",
+            "--state-root",
+        ])
+        .arg(f.root.join("state"))
+        .env("AB_POLL_INTERVAL", "0.001")
+        .env("AB_ROUND_DEADLINE", "2")
+        .env("AB_HTTP_TIMEOUT", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    struct Process(std::process::Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut process = Process(child);
+    fn exchange(input: &mut impl Write, output: &mut impl BufRead, value: Value) -> Value {
+        writeln!(input, "{value}").unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+    exchange(
+        &mut input,
+        &mut output,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}),
+    );
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    let submit = exchange(
+        &mut input,
+        &mut output,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_task","arguments":{"request_id":"submit-live","task":"implement","allowed_paths":["**"],"test_commands":[]}}}),
+    );
+    let id = submit["result"]["structuredContent"]["task_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{submit}"))
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = exchange(
+            &mut input,
+            &mut output,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"task_status","arguments":{"task_id":id,"wait_seconds":0}}}),
+        );
+        if status["result"]["structuredContent"]["status"] == "awaiting_review" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{status}");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let accept = loop {
+        let result = exchange(
+            &mut input,
+            &mut output,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"accept_task","arguments":{"task_id":id}}}),
+        );
+        if result["result"]["structuredContent"]["error"] != "worker_running" {
+            break result;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        accept["result"]["structuredContent"]["status"], "accepted",
+        "{accept}"
+    );
+    drop(input);
+    assert!(process.0.wait().unwrap().success());
+    let mut stderr = String::new();
+    process
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty(), "{stderr}");
+    assert_eq!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.contains("prompt_async"))
+            .count(),
+        1
+    );
+    assert!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_active_writers(f.project.id())
+            .unwrap()
+            .is_empty()
+    );
 }

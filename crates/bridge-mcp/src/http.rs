@@ -32,10 +32,30 @@ impl HttpServer {
     /// # Errors
     /// Missing HTTP config/token, occupied port or foreign/busy state fail closed.
     pub fn bind(project: ProjectEntry, layout: RustStateLayout) -> Result<Self> {
+        Self::bind_server(project, layout, None)
+    }
+    /// Bind the delegated surface with a trusted worker launcher.
+    pub fn bind_with_workers(
+        project: ProjectEntry,
+        layout: RustStateLayout,
+        spawner: crate::WorkerSpawner,
+        registry: Vec<ProjectEntry>,
+    ) -> Result<Self> {
+        Self::bind_server(project, layout, Some((spawner, registry)))
+    }
+    fn bind_server(
+        project: ProjectEntry,
+        layout: RustStateLayout,
+        workers: Option<(crate::WorkerSpawner, Vec<ProjectEntry>)>,
+    ) -> Result<Self> {
         let port = project.mcp_endpoint().ok_or(McpError::Endpoint)?.port();
         token(&project).ok_or(McpError::Credentials)?;
         let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|_| McpError::Endpoint)?;
-        let server = Arc::new(McpServer::open(project, layout)?);
+        let mut server = McpServer::open(project, layout)?;
+        if let Some((spawner, registry)) = workers {
+            server = server.with_workers(spawner, registry)?;
+        }
+        let server = Arc::new(server);
         listener.set_nonblocking(true).map_err(|_| McpError::Io)?;
         Ok(Self { listener, server })
     }

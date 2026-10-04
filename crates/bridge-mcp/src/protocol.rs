@@ -86,7 +86,7 @@ impl Protocol {
                     .unwrap_or(PROTOCOL_VERSION);
                 json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},
                     "serverInfo":{"name":"agent-bridge","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"Rust MCP currently exposes project_info only; delegated task tools and startup recovery are not implemented."})
+                    "instructions":if server.delegated_tools_enabled() { "Standalone delegated tasks support manual review. Workflow metadata and on_accept delivery are unavailable." } else { "Rust MCP exposes project_info only without a worker launcher." }})
             }
             "ping" => json!({}),
             _ if self.phase != Phase::Ready => {
@@ -99,33 +99,38 @@ impl Protocol {
                 {
                     return Some(error(id, -32602, "Invalid params"));
                 }
-                json!({"tools":[{"name":"project_info","description":"Return the immutable project binding and active task state.",
-                    "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
-                    "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}]})
+                crate::tools::definitions(server)
             }
             "tools/call" => {
-                if params.get("name").and_then(Value::as_str) != Some("project_info") {
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                if !crate::tools::available(server, name) {
                     return Some(error(id, -32602, "Unknown or unavailable tool"));
                 }
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 if params
                     .as_object()
                     .unwrap()
                     .keys()
                     .any(|k| k != "name" && k != "arguments" && k != "_meta")
-                    || params
-                        .get("arguments")
-                        .is_some_and(|v| !v.as_object().is_some_and(|o| o.is_empty()))
+                    || !crate::tools::valid_arguments(server, name, &args)
                 {
                     return Some(error(id, -32602, "Invalid params"));
                 }
-                match server.project_info() {
-                    Ok(payload) => {
-                        json!({"content":[{"type":"text","text":payload.to_string()}],"structuredContent":payload,"isError":false})
-                    }
-                    Err(_) => {
-                        json!({"content":[{"type":"text","text":"mcp_state_unavailable"}],"isError":true})
-                    }
+                let payload = if name == "project_info" {
+                    server.project_info().map_err(|_| "mcp_state_unavailable")
+                } else {
+                    server.call_task(name, &args)
                 }
+                .unwrap_or_else(|code| json!({"error":code}));
+                let text = if name == "project_info" && payload.get("error").is_some() {
+                    "mcp_state_unavailable".into()
+                } else {
+                    payload.to_string()
+                };
+                json!({"content":[{"type":"text","text":text}],"isError":payload.get("error").is_some(),"structuredContent":payload})
             }
             _ => return Some(error(id, -32601, "Method not found")),
         };

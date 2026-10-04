@@ -972,3 +972,136 @@ fn orphan_scan_refuses_symlink_root_and_never_traverses_symlink_entries() {
     )
     .unwrap();
 }
+
+#[test]
+fn parallel_fenced_rounds_keep_distinct_checkouts_servers_and_task_local_recovery() {
+    use bridge_worker::{
+        execution::prepare_fenced_round_execution,
+        lifecycle::{RecoveryOutcome, recover_project_worktrees},
+    };
+    let _network = network_fence();
+    let f = pending_execution_fixture();
+    let mut s = f.layout.open().unwrap();
+    s.connection()
+        .execute("UPDATE active_writers SET parallel=1", [])
+        .unwrap();
+    let second: TaskId = "22222222-2222-4222-8222-222222222222".parse().unwrap();
+    let base = git(f.project.workspace(), &["rev-parse", "HEAD"]);
+    let paths = bridge_git::checkout::CheckoutPaths::new(&f.layout.project_dir(), second).unwrap();
+    let profile = f.project.profile_snapshot(None).unwrap();
+    s.create_task_with_profile_and_checkout(
+        CreateTaskInput {
+            task_id: second,
+            project_id: f.project.id().clone(),
+            workspace: f.project.workspace().to_str().unwrap().into(),
+            task: "second executor".into(),
+            request_id: "second".into(),
+            payload_hash: "second".into(),
+            base_head: Some(base.clone()),
+            allowed_paths: vec!["other".into()],
+            test_commands: vec![],
+            snapshot: Some(
+                bridge_git::take_snapshot(f.project.workspace())
+                    .unwrap()
+                    .to_json()
+                    .unwrap(),
+            ),
+        },
+        &AdmissionSettings::new(10, true, ExecutionMode::Worktree).unwrap(),
+        TaskStatus::Implementing,
+        None,
+        &profile,
+        &bridge_storage::PendingCheckout {
+            path: paths.checkout.to_str().unwrap().into(),
+            runtime_dir: paths.runtime_dir.to_str().unwrap().into(),
+            base_head: base,
+        },
+    )
+    .unwrap();
+    let command = ServerCommand::executable(
+        Path::new(env!("CARGO_BIN_EXE_worktree_server_fixture")),
+        vec!["serve".into()],
+    )
+    .unwrap();
+    let prepare = |id| {
+        prepare_fenced_round_execution(
+            &f.layout,
+            &f.project,
+            bridge_storage::RoundRef {
+                task_id: id,
+                project_id: f.project.id().clone(),
+                round_number: 1,
+            },
+            &[],
+            &[],
+            &command,
+            RuntimeOptions {
+                lock_wait: Duration::from_secs(1),
+                ready_timeout: Duration::from_secs(1),
+                request_timeout: Duration::from_millis(100),
+            },
+        )
+    };
+    // The live config is single-writer; persisted parallel admissions survive.
+    let first = prepare(f.task).unwrap();
+    let second_context = prepare(second).unwrap();
+    assert_ne!(first.execution.root, second_context.execution.root);
+    assert_ne!(
+        first.execution.server_port,
+        second_context.execution.server_port
+    );
+    assert!(prepare(f.task).is_err());
+    let main = bridge_git::take_snapshot(f.project.workspace()).unwrap();
+    first.execution.dispatch(&f.layout).unwrap();
+    second_context.execution.dispatch(&f.layout).unwrap();
+    std::fs::write(first.execution.root.join("file"), "first executor").unwrap();
+    std::fs::write(
+        second_context.execution.root.join("other"),
+        "second executor",
+    )
+    .unwrap();
+    assert!(
+        first
+            .execution
+            .collect_changes(&f.layout)
+            .unwrap()
+            .scope_violations()
+            .is_empty()
+    );
+    assert!(
+        second_context
+            .execution
+            .collect_changes(&f.layout)
+            .unwrap()
+            .scope_violations()
+            .is_empty()
+    );
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        main
+    );
+    assert_eq!(close(&f), RecoveryOutcome::Deferred);
+    let outcomes = recover_project_worktrees(&f.layout, &f.project, &[]).unwrap();
+    assert_eq!(outcomes.len(), 2);
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, o)| *o == RecoveryOutcome::Deferred)
+    );
+    drop(first);
+    // Closing one checkout is safe while the disjoint executor is still fenced.
+    assert_eq!(recover(&f), RecoveryOutcome::Closed);
+    assert!(second_context.execution.root.exists());
+    assert!(matches!(
+        bridge_worker::WorkerLock::try_acquire_task(&f.layout, second).unwrap(),
+        bridge_worker::WorkerLockOutcome::Busy
+    ));
+    drop(second_context);
+    assert_eq!(
+        recover_project_worktrees(&f.layout, &f.project, &[])
+            .unwrap()
+            .len(),
+        2
+    );
+    bridge_runtime::stop_worktree_server(&f.layout, &f.project, second, &[]).unwrap();
+}

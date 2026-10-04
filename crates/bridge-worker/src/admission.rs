@@ -44,10 +44,10 @@ pub enum ActivationOutcome {
 /// Lifetime fence for a single writer, including the per-task guard.
 #[derive(Debug)]
 pub struct WorkerFences {
-    _project: WorkerLock,
+    _project: Option<WorkerLock>,
     _task: WorkerLock,
 }
-/// Locks a B1 worker without activating waiting tasks. None means busy/no work.
+/// Locks a saved writer without activating waiting tasks. None means busy/no work.
 /// # Errors
 /// Ownership, binding, persisted mode and lock failures refuse before execution.
 pub fn acquire_worker_fences(
@@ -60,7 +60,7 @@ pub fn acquire_worker_fences(
             WorkerLockOutcome::Busy => return Ok(None),
             WorkerLockOutcome::Acquired(guard) => guard,
         };
-    let storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
+    let mut storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
     let task = bound_task(&storage, layout, project, task_id)?;
     if task.status.is_terminal()
         || task.status == TaskStatus::WaitingDependencies
@@ -68,15 +68,84 @@ pub fn acquire_worker_fences(
     {
         return Ok(None);
     }
+    // Read the saved flag before taking the lifetime fences. Missing rows use
+    // conservative single-writer fencing, then admission repairs the ledger.
+    let saved = storage
+        .get_active_writers(project.id())
+        .map_err(|_| AdmissionError::Metadata)?;
+    let parallel = saved
+        .iter()
+        .find(|r| r.task_id == task_id)
+        .is_some_and(|r| r.parallel);
+    let guards = acquire_lifecycle_fences(layout, project, task_id, parallel)?;
+    let Some(guards) = guards else {
+        return Ok(None);
+    };
+    let mode = task_mode(&storage, task_id)?;
+    let settings = AdmissionSettings::new(
+        project.max_active_tasks(),
+        project.allow_parallel_writers() && mode == ExecutionMode::Worktree,
+        mode,
+    )
+    .map_err(|_| AdmissionError::Metadata)?;
+    match storage.admit_saved_writer(task_id, project.id(), &settings) {
+        Ok(_) => {}
+        Err(
+            bridge_storage::WriterError::ProjectBusy | bridge_storage::WriterError::ScopeOverlap,
+        ) => return Ok(None),
+        Err(_) => return Err(AdmissionError::Metadata),
+    }
+    Ok(Some(guards))
+}
+
+/// Used for close/recovery too, including terminal tasks; never activates tasks.
+/// Caller must hold admission lock until this returns.
+pub(crate) fn acquire_lifecycle_fences(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+    parallel: bool,
+) -> Result<Option<WorkerFences>, AdmissionError> {
+    let storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
+    bound_task(&storage, layout, project, task_id)?;
     let project_guard = match WorkerLock::try_acquire(layout).map_err(|_| AdmissionError::Lock)? {
         WorkerLockOutcome::Busy => return Ok(None),
         WorkerLockOutcome::Acquired(guard) => guard,
     };
+    if !parallel {
+        // A parallel executor does not hold worker.lock. Probe every persisted
+        // task fence, including writers whose ledger row was lost, before
+        // letting a single writer take over after a config downgrade.
+        let mut statement=storage.connection().prepare("SELECT task_id FROM tasks WHERE project_id=?1 AND task_id!=?2 UNION SELECT task_id FROM active_writers WHERE project_id=?1 AND task_id!=?2")
+            .map_err(|_|AdmissionError::Storage)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![project.id().as_str(), task_id.to_string()],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|_| AdmissionError::Storage)?;
+        for raw in rows {
+            let id = raw
+                .map_err(|_| AdmissionError::Storage)?
+                .parse()
+                .map_err(|_| AdmissionError::Metadata)?;
+            match WorkerLock::try_acquire_task(layout, id).map_err(|_| AdmissionError::Lock)? {
+                WorkerLockOutcome::Busy => return Ok(None),
+                WorkerLockOutcome::Acquired(guard) => drop(guard),
+            }
+        }
+    }
     let task_guard =
         match WorkerLock::try_acquire_task(layout, task_id).map_err(|_| AdmissionError::Lock)? {
             WorkerLockOutcome::Busy => return Ok(None),
             WorkerLockOutcome::Acquired(guard) => guard,
         };
+    let project_guard = if parallel {
+        drop(project_guard);
+        None
+    } else {
+        Some(project_guard)
+    };
     Ok(Some(WorkerFences {
         _project: project_guard,
         _task: task_guard,
@@ -250,6 +319,24 @@ pub fn activate_direct_task(
     project: &ProjectEntry,
     task_id: TaskId,
 ) -> Result<ActivationOutcome, AdmissionError> {
+    activate_task(layout, project, task_id, true)
+}
+/// Explicit B1/B2 activation using saved execution mode; worktree base is frozen.
+/// # Errors
+/// Uses the same strict dependency, ownership and admission guards as B1.
+pub fn activate_waiting_task(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+) -> Result<ActivationOutcome, AdmissionError> {
+    activate_task(layout, project, task_id, false)
+}
+fn activate_task(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+    direct_only: bool,
+) -> Result<ActivationOutcome, AdmissionError> {
     let _admission =
         match WorkerLock::try_acquire_admission(layout).map_err(|_| AdmissionError::Lock)? {
             WorkerLockOutcome::Busy => return Ok(ActivationOutcome::Busy),
@@ -263,22 +350,23 @@ pub fn activate_direct_task(
     if task.close_requested_at.is_some() {
         return Ok(ActivationOutcome::CloseRequested);
     }
-    if task_mode(&storage, task_id)? != ExecutionMode::Direct {
+    let mode = task_mode(&storage, task_id)?;
+    if direct_only && mode != ExecutionMode::Direct {
         return Err(AdmissionError::Binding);
     }
-    let _worker = match WorkerLock::try_acquire(layout).map_err(|_| AdmissionError::Lock)? {
-        WorkerLockOutcome::Busy => return Ok(ActivationOutcome::Busy),
-        WorkerLockOutcome::Acquired(guard) => guard,
+    let parallel = mode == ExecutionMode::Worktree && project.allow_parallel_writers();
+    let _fences = match acquire_lifecycle_fences(layout, project, task_id, parallel)? {
+        Some(guards) => guards,
+        None => return Ok(ActivationOutcome::Busy),
     };
-    let _task =
-        match WorkerLock::try_acquire_task(layout, task_id).map_err(|_| AdmissionError::Lock)? {
-            WorkerLockOutcome::Busy => return Ok(ActivationOutcome::Busy),
-            WorkerLockOutcome::Acquired(guard) => guard,
-        };
     if !dependencies_ready(&storage, &task)? {
         return Ok(ActivationOutcome::Waiting);
     }
-    let refreshed = match baseline(project, &task)? {
+    let refreshed = match if mode == ExecutionMode::Direct {
+        baseline(project, &task)?
+    } else {
+        Ok(None)
+    } {
         Ok(value) => value,
         Err(outcome) => return Ok(outcome),
     };
@@ -291,7 +379,7 @@ pub fn activate_direct_task(
             return Ok(ActivationOutcome::Unchanged);
         }
     }
-    let settings = AdmissionSettings::new(project.max_active_tasks(), false, ExecutionMode::Direct)
+    let settings = AdmissionSettings::new(project.max_active_tasks(), parallel, mode)
         .map_err(|_| AdmissionError::Metadata)?;
     if storage
         .activate_waiting_dependencies_with_admission(task_id, project.id(), &settings)

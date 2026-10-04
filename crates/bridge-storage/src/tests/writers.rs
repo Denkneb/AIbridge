@@ -835,3 +835,45 @@ fn pending_close_finish_releases_and_release_failure_rolls_back_round_and_event(
     );
     assert!(!storage.writer_activity_present(&project).expect("released"));
 }
+
+#[test]
+fn saved_writer_admission_freezes_flags_repairs_missing_rows_and_rolls_back_corruption() {
+    let (_root, layout, workspace, project) = state("saved-writer-admission");
+    let mut storage = layout.open().unwrap();
+    storage
+        .create_task_with_admission(
+            input(1, &project, &workspace, &["src/a.rs"]),
+            &settings(10, true),
+            TaskStatus::Implementing,
+        )
+        .unwrap();
+    assert!(
+        storage
+            .admit_saved_writer(query_task_id(1), &project, &settings(10, false))
+            .unwrap()
+    );
+    storage
+        .connection()
+        .execute("DELETE FROM active_writers", [])
+        .unwrap();
+    assert!(
+        !storage
+            .admit_saved_writer(query_task_id(1), &project, &settings(10, false))
+            .unwrap()
+    );
+    assert!(
+        !storage
+            .admit_saved_writer(query_task_id(1), &project, &settings(10, true))
+            .unwrap()
+    );
+    storage
+        .connection()
+        .execute("UPDATE active_writers SET scopes_json='[\"src/b.rs\"]'", [])
+        .unwrap();
+    let before = rows(&storage);
+    assert!(matches!(
+        storage.admit_saved_writer(query_task_id(1), &project, &settings(10, true)),
+        Err(WriterError::ScopeDataError)
+    ));
+    assert_eq!(rows(&storage), before);
+}

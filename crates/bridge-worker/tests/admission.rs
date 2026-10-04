@@ -365,3 +365,179 @@ fn corrupt_edge_shapes_do_not_unlock_task() {
         assert_eq!(f.status(task), TaskStatus::WaitingDependencies);
     }
 }
+
+impl Fixture {
+    fn parallel_task(&self, scope: &str) -> TaskId {
+        let task = TaskId::from_str(&uuid::Uuid::new_v4().to_string()).unwrap();
+        self.layout
+            .open()
+            .unwrap()
+            .create_task_with_admission(
+                CreateTaskInput {
+                    task_id: task,
+                    project_id: self.project.id().clone(),
+                    workspace: self.project.workspace().to_str().unwrap().into(),
+                    task: "parallel".into(),
+                    request_id: task.to_string(),
+                    payload_hash: "hash".into(),
+                    base_head: None,
+                    allowed_paths: vec![scope.into()],
+                    test_commands: vec![],
+                    snapshot: None,
+                },
+                &AdmissionSettings::new(10, true, bridge_domain::ExecutionMode::Worktree).unwrap(),
+                TaskStatus::Implementing,
+            )
+            .unwrap();
+        task
+    }
+}
+#[test]
+fn saved_parallel_fences_survive_config_downgrade_and_do_not_block_disjoint_tasks() {
+    let f = Fixture::new();
+    let a = f.parallel_task("allowed.txt");
+    let b = f.parallel_task("other.txt");
+    // Live config is direct/single-writer; saved worktree flags stay authoritative.
+    let ga = acquire_worker_fences(&f.layout, &f.project, a)
+        .unwrap()
+        .unwrap();
+    assert!(WorkerLock::is_free(&f.layout).unwrap());
+    let gb = acquire_worker_fences(&f.layout, &f.project, b)
+        .unwrap()
+        .unwrap();
+    assert!(
+        acquire_worker_fences(&f.layout, &f.project, a)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_active_writers(f.project.id())
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(ga);
+    drop(gb);
+}
+#[test]
+fn config_upgrade_does_not_remove_saved_single_writer_fence() {
+    let f = Fixture::new();
+    let task = f.create(TaskStatus::Implementing);
+    let path = f.root.join("parallel.toml");
+    std::fs::write(&path,format!("[projects.proj]\nworkspace={}\nopencode_url=\"http://127.0.0.1:4999\"\npassword_file=\"unused\"\nmax_rounds=3\nmax_active_tasks=10\nexecution_mode=\"worktree\"\nallow_parallel_writers=true\n",json!(f.project.workspace()))).unwrap();
+    let project = load_config(&path).unwrap().project("proj").unwrap().clone();
+    let guard = acquire_worker_fences(&f.layout, &project, task)
+        .unwrap()
+        .unwrap();
+    assert!(WorkerLock::is_held(&f.layout).unwrap());
+    let saved = f
+        .layout
+        .open()
+        .unwrap()
+        .get_active_writers(f.project.id())
+        .unwrap();
+    assert!(!saved[0].parallel);
+    drop(guard);
+}
+#[test]
+fn overlapping_or_corrupt_saved_scopes_refuse_worker_admission() {
+    let f = Fixture::new();
+    let a = f.parallel_task("allowed.txt");
+    let b = f.parallel_task("other.txt");
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET allowed_paths='[\"allowed.txt\"]' WHERE task_id=?1",
+            [b.to_string()],
+        )
+        .unwrap();
+    assert!(
+        acquire_worker_fences(&f.layout, &f.project, b)
+            .unwrap()
+            .is_none()
+    );
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE active_writers SET scopes_json='null' WHERE task_id=?1",
+            [a.to_string()],
+        )
+        .unwrap();
+    assert!(acquire_worker_fences(&f.layout, &f.project, b).is_err());
+    assert!(WorkerLock::is_free(&f.layout).unwrap());
+}
+#[test]
+fn missing_ledger_cannot_hide_a_live_parallel_task_fence() {
+    let f = Fixture::new();
+    let a = f.parallel_task("allowed.txt");
+    let b = f.parallel_task("other.txt");
+    let ga = acquire_worker_fences(&f.layout, &f.project, a)
+        .unwrap()
+        .unwrap();
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("DELETE FROM active_writers", [])
+        .unwrap();
+    assert!(
+        acquire_worker_fences(&f.layout, &f.project, b)
+            .unwrap()
+            .is_none()
+    );
+    drop(ga);
+}
+
+#[test]
+fn explicit_worktree_activation_preserves_base_and_ignores_main_dirty_state() {
+    let f = Fixture::new();
+    let active = f.parallel_task("allowed.txt");
+    let task = TaskId::from_str(&uuid::Uuid::new_v4().to_string()).unwrap();
+    let snapshot = bridge_git::take_snapshot(f.project.workspace())
+        .unwrap()
+        .to_json()
+        .unwrap();
+    let base = snapshot["head"].as_str().unwrap().to_owned();
+    f.layout
+        .open()
+        .unwrap()
+        .create_task_with_admission(
+            CreateTaskInput {
+                task_id: task,
+                project_id: f.project.id().clone(),
+                workspace: f.project.workspace().to_str().unwrap().into(),
+                task: "waiting".into(),
+                request_id: task.to_string(),
+                payload_hash: "hash".into(),
+                base_head: Some(base.clone()),
+                allowed_paths: vec!["other.txt".into()],
+                test_commands: vec![],
+                snapshot: Some(snapshot.clone()),
+            },
+            &AdmissionSettings::new(10, true, bridge_domain::ExecutionMode::Worktree).unwrap(),
+            TaskStatus::WaitingDependencies,
+        )
+        .unwrap();
+    let path = f.root.join("parallel.toml");
+    std::fs::write(&path,format!("[projects.proj]\nworkspace={}\nopencode_url=\"http://127.0.0.1:4999\"\npassword_file=\"unused\"\nmax_rounds=3\nmax_active_tasks=10\nexecution_mode=\"worktree\"\nallow_parallel_writers=true\n",json!(f.project.workspace()))).unwrap();
+    let project = load_config(&path).unwrap().project("proj").unwrap().clone();
+    let guard = acquire_worker_fences(&f.layout, &project, active)
+        .unwrap()
+        .unwrap();
+    std::fs::write(f.project.workspace().join("outside.txt"), "dirty").unwrap();
+    assert_eq!(
+        bridge_worker::admission::activate_waiting_task(&f.layout, &project, task).unwrap(),
+        ActivationOutcome::Activated
+    );
+    let saved = f.layout.open().unwrap().get_task(task).unwrap().unwrap();
+    assert_eq!(saved.base_head, Some(base));
+    assert_eq!(saved.snapshot, Some(snapshot));
+    drop(guard);
+}

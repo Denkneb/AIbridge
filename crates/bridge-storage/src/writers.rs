@@ -362,6 +362,82 @@ pub(super) fn reconcile_legacy(connection: &Connection) -> Result<(), WriterErro
 }
 
 impl StorageConnection {
+    /// Checks a saved writer against both ledger and real task statuses, and
+    /// repairs its missing reservation atomically. Existing parallel flags are
+    /// immutable across config changes. Non-writers are not admitted here.
+    /// # Errors
+    /// Corrupt rows/scopes, overlap and inconsistent mode fail closed.
+    pub fn admit_saved_writer(
+        &mut self,
+        task_id: TaskId,
+        project: &ProjectId,
+        settings: &AdmissionSettings,
+    ) -> Result<bool, WriterError> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(WriterError::Database)?;
+        let task = tx
+            .query_row(
+                "SELECT * FROM tasks WHERE task_id=?1 AND project_id=?2",
+                params![task_id.to_string(), project.as_str()],
+                |r| Ok(Task::from_row(r)),
+            )
+            .optional()
+            .map_err(WriterError::Database)?
+            .ok_or(WriterError::InvalidTransition)?
+            .map_err(WriterError::TaskRow)?;
+        if !is_writer(task.status) || task.close_requested_at.is_some() {
+            return Err(WriterError::InvalidTransition);
+        }
+        let mode: String = tx
+            .query_row(
+                "SELECT execution_mode FROM tasks WHERE task_id=?1",
+                [task_id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(WriterError::Database)?;
+        if !matches!(mode.as_str(), "direct" | "worktree") {
+            return Err(WriterError::InvalidSettings);
+        }
+        let saved: Option<i64> = tx
+            .query_row(
+                "SELECT parallel FROM active_writers WHERE task_id=?1",
+                [task_id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(WriterError::Database)?;
+        if saved.is_some_and(|v| !matches!(v, 0 | 1)) {
+            return Err(WriterError::ScopeDataError);
+        }
+        let parallel = saved.map_or(settings.parallel && mode == "worktree", |v| v == 1);
+        if parallel && mode != "worktree" {
+            return Err(WriterError::InvalidSettings);
+        }
+        let raw =
+            serde_json::to_string(&task.allowed_paths).map_err(|_| WriterError::ScopeDataError)?;
+        let scopes = parse_scopes(&raw)?;
+        check_admission(
+            &tx,
+            project.as_str(),
+            &scopes,
+            Path::new(&task.workspace),
+            parallel,
+            &task_id.to_string(),
+        )?;
+        reserve(
+            &tx,
+            &task_id.to_string(),
+            project.as_str(),
+            &raw,
+            &utc_now_rfc3339_millis(),
+            parallel,
+        )?;
+        tx.commit().map_err(WriterError::Database)?;
+        Ok(parallel)
+    }
+
     /// Returns strict reservations for this project, without changing state.
     /// # Errors
     /// Corrupt scopes/identifiers/flags and SQLite errors fail closed.

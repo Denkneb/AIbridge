@@ -514,3 +514,38 @@ pub fn prepare_round_execution(
         round,
     })
 }
+
+/// Prepared execution with its worker fences held until the context is dropped.
+/// The short admission lock is released before runtime/HTTP readiness probes.
+pub struct FencedRoundExecution {
+    pub execution: RoundExecution,
+    _fences: crate::admission::WorkerFences,
+}
+impl fmt::Debug for FencedRoundExecution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FencedRoundExecution { .. }")
+    }
+}
+/// Production entry point for B1/B2 execution. No waiting-task autoactivation.
+/// # Errors
+/// Busy locks, incompatible reservations and ordinary execution failures refuse.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_fenced_round_execution(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    round: RoundRef,
+    layouts: &[&RustStateLayout],
+    projects: &[&ProjectEntry],
+    command: &ServerCommand,
+    options: RuntimeOptions,
+) -> Result<FencedRoundExecution, ExecutionError> {
+    let fences = crate::admission::acquire_worker_fences(layout, project, round.task_id)
+        .map_err(|_| ExecutionError::Binding)?
+        .ok_or(ExecutionError::Round)?;
+    let execution =
+        prepare_round_execution(layout, project, round, layouts, projects, command, options)?;
+    Ok(FencedRoundExecution {
+        execution,
+        _fences: fences,
+    })
+}

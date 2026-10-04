@@ -179,10 +179,24 @@ pub fn recover_worktree_task(
     if mode(&storage, &task)? == ExecutionMode::Direct {
         return Ok(RecoveryOutcome::Direct);
     }
-    let _guard = match WorkerLock::try_acquire(layout).map_err(|_| ExecutionError::Ownership)? {
-        WorkerLockOutcome::Busy => return Ok(RecoveryOutcome::Deferred),
-        WorkerLockOutcome::Acquired(guard) => guard,
+    let admission =
+        match WorkerLock::try_acquire_admission(layout).map_err(|_| ExecutionError::Ownership)? {
+            WorkerLockOutcome::Busy => return Ok(RecoveryOutcome::Deferred),
+            WorkerLockOutcome::Acquired(guard) => guard,
+        };
+    let parallel = storage
+        .get_active_writers(project.id())
+        .map_err(|_| ExecutionError::Storage)?
+        .iter()
+        .find(|r| r.task_id == id)
+        .is_some_and(|r| r.parallel);
+    let _guard = match crate::admission::acquire_lifecycle_fences(layout, project, id, parallel)
+        .map_err(|_| ExecutionError::Ownership)?
+    {
+        Some(guard) => guard,
+        None => return Ok(RecoveryOutcome::Deferred),
     };
+    drop(admission);
     // Reread after acquisition: close/revision may have been persisted meanwhile.
     let task = owned_task(&storage, project, id)?;
     let record = storage
@@ -341,4 +355,34 @@ pub fn quarantine_orphans(
         count += 1;
     }
     Ok(count)
+}
+
+/// Visits every task during startup recovery, including waiting/retained/terminal
+/// checkout records. It never activates dependencies or spawns workers.
+/// # Errors
+/// Ownership, invalid identifiers and ordinary recovery failures refuse.
+pub fn recover_project_worktrees(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    layouts: &[&RustStateLayout],
+) -> Result<Vec<(TaskId, RecoveryOutcome)>, ExecutionError> {
+    let storage = layout.open().map_err(|_| ExecutionError::Ownership)?;
+    if layout.project_id() != project.id() {
+        return Err(ExecutionError::Binding);
+    }
+    let mut statement = storage
+        .connection()
+        .prepare("SELECT task_id FROM tasks WHERE project_id=?1 ORDER BY created_at,task_id")
+        .map_err(|_| ExecutionError::Storage)?;
+    let ids = statement
+        .query_map([project.id().as_str()], |r| r.get::<_, String>(0))
+        .map_err(|_| ExecutionError::Storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ExecutionError::Storage)?;
+    let mut outcomes = Vec::new();
+    for raw in ids {
+        let id = raw.parse().map_err(|_| ExecutionError::Binding)?;
+        outcomes.push((id, recover_worktree_task(layout, project, id, layouts)?));
+    }
+    Ok(outcomes)
 }

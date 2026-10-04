@@ -83,7 +83,8 @@ Targeted checks:
   **7.16 завершён** как исполнимый блок application services (checkout, task runtime,
   revision/cwd, close/recovery/quarantine); manager lock **9.7a завершён**.
   **7.17a завершён** (B1 admission/activation services).
-  Следующий блок backend — **7.17b (parallel writer fences)**; полный worker FSM,
+  **7.17b services завершены**, live-model smoke остаётся в 15.3.
+  Следующий блок backend — **7.17c (shared active-set read model)**; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
   Исторический 7.7 сохраняет foundation v6 scope; изменённые recovery и
   permission контракты используют delta fixtures 0B.
@@ -2958,7 +2959,7 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
     Проверки: worker admission (8 cases), cross-process lock tests (8),
     storage dependencies (10), targeted clippy; old request hash не меняется.
 
-- **7.17b. B2 parallel worktree writers.**
+- **7.17b. B2 parallel worktree writers (services завершены; live smoke 15.3 открыт).**
   - **Цель:** `allow_parallel_writers=true` (только worktree), parallel
     admission без ослабления defaults.
   - **Source evidence:** `storage.py:2516-2641`; `mcp_server.py:2453-2500`;
@@ -2973,6 +2974,20 @@ Full worker FSM/CLI/MCP adapters, parallel per-task locks 7.17 и delivery 9.18
     (4.7/4.8).
   - **Targeted checks:** storage scope/admission tests; parallel smoke (15.3).
   - **Зависит от:** 7.17a, 7.16b. **Открывает:** 7.17c, 12.15, 15.3.
+  - **Результат:** saved reservation flag выбирает worker fences независимо от
+    live config; single worker удерживает project+task locks, parallel — task
+    lock после project probe под admission lock. Single fallback проверяет
+    все task locks, включая потерянный ledger. `admit_saved_writer` атомарно
+    проверяет scope/real statuses/own reservation и восстанавливает missing row;
+    overlap/corruption fail closed. `prepare_fenced_round_execution` удерживает
+    fences через checkout/server/dispatch/verification. Worktree activation
+    сохраняет base/snapshot; project recovery посещает все задачи без scheduler.
+    Close/recovery одной parallel task не затрагивает соседний executor.
+    Проверки: 13 worker admission, 18 storage writer, 25 runtime tests, clippy.
+    Local subprocess/HTTP fixture доказывает два checkout/server/ports и
+    independent dispatch/collection/close. Это не live-model smoke:
+    production CLI и реальный `smoke-opencode --parallel-worktrees` остаются 15.3.
+
 - **7.17c. Shared safe full active set.**
   - **Цель:** read-model полного active set для API/UI/diagnostics/hook.
   - **Source evidence:** `storage.py:2182-2346`;

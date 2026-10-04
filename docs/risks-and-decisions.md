@@ -11,6 +11,26 @@ Big-bang rewrite слишком рискован для накопленной s
 Codex/OpenCode сохраняют streaming, permissions, tools и slash-команды.
 Собственный chat client может стать отдельным будущим этапом.
 
+### Десктопный UI: Tauri 2, React, TypeScript, Vite
+
+**Принято 2026-10-04.** Целевой GUI использует React + TypeScript, frontend
+собирается Vite и работает в Tauri 2 WebView. Предыдущий выбор GPUI заменён
+до начала реализации GUI; существующий Rust backend сохраняется.
+Dashboard и settings относятся к React, terminal renderer — xterm.js,
+PTY/SQLite/Git/processes/credentials/security policy — к Rust services.
+
+Основание: формы и dashboard удобно разрабатывать в web UI, а xterm.js даёт
+готовый terminal renderer. Tauri adapter связывает UI с Rust без зависимости
+domain/services от UI framework. React + Vite поддерживаются
+[Tauri frontend configuration](https://v2.tauri.app/start/frontend/);
+роль terminal renderer описана в [xterm.js](https://xtermjs.org/).
+
+Следствия: добавляются frontend toolchain/lockfile, типизированный IPC boundary
+и системные WebView зависимости. Headless CLI остаётся отдельным target.
+Первый UI spike — window + terminal/dashboard split + настоящая PTY session,
+с проверкой input/resize/Unicode/large output/process cleanup. Полные settings
+и dashboard идут после него; backend-очередь продолжается с 7.14.
+
 ### Read-only dashboard
 
 Мутации задач требуют отдельной модели review и authorization; случайные GUI
@@ -33,14 +53,25 @@ CLI и GUI не должны расходиться или использова�
 
 ## Риски
 
-### GPUI pre-1.0
+### WebView и frontend toolchain
 
-Закрепить revision, обновлять отдельно и не пропускать GPUI types за границу UI.
+Закрепить Cargo и frontend lockfiles; обновления Tauri/frontend выполнять
+отдельно. Проверить WebKitGTK, Wayland/X11, fonts/HiDPI и packaging на целевых
+Linux-системах. Tauri/React types остаются в adapters, вне domain/services.
 
 ### Embedded terminal
 
-Terminal model не является готовым GPUI widget. Нужны rendering/input adapters,
-ранний spike, compatibility fixtures и внешний fallback.
+xterm.js отображает терминал, Rust adapter управляет настоящим PTY. Нужны
+IPC input/output bridge с bounded queues/backpressure, корректные resize/exit,
+ранний spike, Codex/OpenCode compatibility fixtures и внешний fallback.
+
+### Frontend/backend IPC
+
+Минимальные capabilities/CSP и узкие типизированные команды задаются явно.
+Backend проверяет project/session binding и policy; credential contents и
+универсальный shell executor не предоставляются frontend. Terminal data
+обрабатывается как недоверенный поток. Rust IPC adapter не заменяет
+существующие ownership/authorization guards.
 
 ### Python/Rust divergence
 
@@ -75,7 +106,7 @@ secret values и тесты argv/log/error output.
 
 - `rusqlite` или `sqlx`;
 - MCP SDK или собственный transport adapter;
-- `alacritty_terminal` или другой terminal engine;
+- Rust PTY crate, chunking и backpressure для Tauri channels;
 - Wayland-only MVP или Wayland+X11;
 - одна PTY session на окно или persistent tabs;
 - поведение PTY при закрытии GUI;

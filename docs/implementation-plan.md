@@ -3236,17 +3236,57 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 **Готовность потока:** совместимы argv, exit codes и безопасные ошибки.
 
-## Поток 10. GPUI foundation
+## Поток 10. Tauri 2 + React/TypeScript/Vite foundation (не завершён)
 
-### 10.1. Минимальное окно Wayland/X11
+Стек принят 2026-10-04, см. [решение](risks-and-decisions.md#десктопный-ui-tauri-2-react-typescript-vite).
+Rust backend и ближайшая задача 7.14 сохраняются. GUI пока не реализован.
+Полные settings/dashboard начинаются после успешного desktop/PTY prototype.
 
-### 10.2. Application state
+### 10.1. Tauri window и React/TypeScript/Vite scaffold
 
-### 10.3. Resizable split
+- **Цель:** минимальное desktop окно, frontend manifest/lockfile, Vite dev/build
+  и Tauri configuration; отдельный headless CLI target без WebView dependency.
+- **Приёмка:** dev и production assets открываются в Tauri на целевом Linux;
+  WebView/system dependencies документированы; IPC/capabilities/CSP заданы явно.
+- **Проверки:** frontend typecheck/build и desktop window smoke под Wayland/X11.
 
-### 10.4. Background service bridge
+### 10.2. React application state и typed DTO/IPC contract
+
+- **Цель:** project selection, navigation/loading/error states и typed Rust/TS
+  boundary. Domain/services не зависят от Tauri/React.
+- **Приёмка:** безопасные DTO без credentials; IPC inputs проверяет Rust,
+  проект/session не перепривязываются произвольным frontend input.
+
+### 10.3. Resizable terminal/dashboard split
+
+- **Цель:** React layout с сохранением размера панелей и keyboard focus.
+- **Приёмка:** resize не пересоздаёт terminal/session; empty/loading/error
+  dashboard states видимы до подключения полноценного query service.
+
+### 10.4. Tauri adapter к background Rust services
+
+- **Цель:** узкие commands и channels поверх общих CLI/MCP/desktop services.
+- **Приёмка:** SQLite/Git/HTTP/process waits выполняются вне UI thread;
+  cancellation и bounded queues проверяются; generic SQL/shell API отсутствует.
 
 ### 10.5. Theme, fonts и accessibility baseline
+
+- **Приёмка:** keyboard navigation, видимый focus, HiDPI/font sizing и
+  статусы, различимые без цвета, проверяются в Tauri WebView.
+
+### 10.6. Первый desktop/PTY prototype
+
+- **Цель:** window + resizable terminal/dashboard split + настоящая PTY session.
+- **Содержание:** xterm.js React adapter, Rust PTY input/output, resize, Unicode,
+  large-output/backpressure, process exit/cleanup и window-close policy.
+- **Приёмка:** настоящий процесс принимает ввод, корректно получает resize,
+  вывод сохраняет порядок и не блокирует UI; session не теряется при rerender.
+  Compatibility Codex/OpenCode подтверждается отдельно в 13.13/13.14.
+- **Зависит от:** 10.1–10.4, минимальных 13.1–13.4/13.7/13.16; не требует
+  завершения всех terminal features или backend parity.
+- **Открывает:** полноценные settings/dashboard потоков 11/12.
+- **Проверки:** real PTY integration и packaged Tauri smoke; mock UI не заменяет
+  проверку IPC/WebView/PTY lifecycle.
 
 ## Поток 11. Настройки проектов
 
@@ -3341,19 +3381,36 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 ## Поток 13. Embedded terminal
 
-### 13.1. Выбор terminal engine
+### 13.1. xterm.js React adapter
+
+Renderer выбран: xterm.js. Подключить terminal instance к DOM, определить
+component/session lifecycle и проверить работу в Tauri WebView. Rust PTY crate
+и транспорт stream уточняются spike; собственный cell renderer не планируется.
 
 ### 13.2. PTY spawn и exit
 
+Rust создаёт PTY и управляет процессом; frontend получает opaque session
+reference и safe lifecycle events. Project binding/ownership guards сохраняются.
+
 ### 13.3. PTY resize/SIGWINCH
 
-### 13.4. Базовый cell rendering
+Размеры xterm.js передаются в Rust через typed IPC; resize до ready и после exit
+обрабатывается явно и не обращается к чужой session.
 
-### 13.5. ANSI colors и cursor
+### 13.4. PTY stream через Tauri channels
 
-### 13.6. Unicode, wide и combining glyphs
+Передавать byte chunks в xterm.js с сохранением порядка и incremental decoding.
+Bounded buffering/backpressure реализуются на уровне bridge; поток не хранится
+в React state. Проверить большой output, завершение stream и cancellation.
+
+### 13.5. ANSI colors и cursor compatibility в xterm.js
+
+### 13.6. Unicode, wide и combining glyphs compatibility
 
 ### 13.7. Keyboard input
+
+xterm.js input передаётся через scoped IPC в Rust PTY; focus и key handling не
+должны терять ввод или перехватывать управляющие клавиши TUI.
 
 ### 13.8. Scrollback
 
@@ -3373,7 +3430,8 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 ### 13.16. Project switch/window close policy
 
-**Готовность потока:** Codex/OpenCode compatibility suite проходит в GPUI.
+**Готовность потока:** Codex/OpenCode compatibility suite проходит в Tauri
+WebView с xterm.js и настоящим Rust PTY; input/resize/stream/cleanup проверены.
 
 ## Поток 14. Миграция
 

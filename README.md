@@ -5,8 +5,12 @@ Rust-переписывание `agent-bridge`: Cargo workspace с доменн�
 инспекцией SQLite (`bridge-storage`), primitives политики команд
 (`bridge-command-policy`), лексической политики путей (`bridge-path-policy`) и
 CLI (`agent-bridge-cli`). Цель —
-сохранить контракты CLI, MCP и SQLite, перейти к единому Rust-бинарнику и
-добавить GUI на GPUI. Миграция идёт поэтапно, без одномоментной замены Python.
+сохранить контракты CLI, MCP и SQLite, предоставить headless Rust CLI и
+десктопное приложение на **Tauri 2 + React + TypeScript**, со сборкой frontend
+через **Vite**. Встроенный терминал — **xterm.js**, PTY и процессы — в Rust.
+GUI пока не реализован; выбор стека зафиксирован в
+[решениях](docs/risks-and-decisions.md#десктопный-ui-tauri-2-react-typescript-vite).
+Миграция идёт поэтапно, без одномоментной замены Python.
 Python и Rust делят только канонический `projects.toml` для чтения (запись —
 от активной реализации при остановленном runtime). Рабочую БД и runtime state
 они не делят: у каждой реализации свои state root, SQLite, locks,

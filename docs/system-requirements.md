@@ -9,19 +9,26 @@ runtime от pidfd и файловых блокировок.
 
 - Linux с pidfd support;
 - Wayland или X11;
-- GPU/драйвер, поддерживаемый GPUI renderer;
+- WebKitGTK и системные библиотеки, требуемые Tauri 2 на Linux;
 - `git`, `codex` и `opencode` в `PATH`;
 - доступ к localhost endpoints проектов;
 - Unix permissions и locking semantics.
 
-Точные версии ядра, дистрибутивов и GPU фиксируются после prototype и CI.
+Точные версии ядра, дистрибутивов, WebView и требования к GPU фиксируются после
+desktop prototype и CI. Системные пакеты сверяются с
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ## Сборка
 
 - Stable Rust, закреплённый `rust-toolchain.toml`.
 - Cargo lockfile хранится в репозитории.
-- GPUI закрепляется точной версией или Git revision, поскольку он pre-1.0.
-- В Linux включаются GPUI backends `wayland`, `x11` либо оба.
+- Tauri 2 закрепляется через Cargo lockfile; React, TypeScript, Vite и xterm.js —
+  через frontend package manifest и lockfile.
+- Для frontend development/build нужны Node.js и выбранный package manager;
+  их версии фиксируются при UI prototype вместе с версиями frontend packages.
+- Vite собирает статические assets для Tauri WebView; dev server используется
+  только при разработке. Production desktop не требует отдельного Node server.
+- Headless CLI не зависит от Tauri/WebView и frontend build.
 - Build packages документируются после первого CI build на поддерживаемых ОС.
 
 ## Runtime layout
@@ -55,7 +62,10 @@ fail-closed отказывается запускаться по ownership/forma
 
 ## Предлагаемые зависимости
 
-- GPUI/`gpui_platform` — UI;
+- Tauri 2 — desktop window, WebView и IPC;
+- React + TypeScript — dashboard, settings и UI state;
+- Vite — frontend development/build;
+- xterm.js — terminal rendering/input, Rust PTY adapter — process lifecycle;
 - `tokio`, `reqwest` — async и HTTP;
 - `serde`, `serde_json`, `toml` — данные;
 - `rusqlite` или `sqlx` — SQLite;
@@ -64,13 +74,19 @@ fail-closed отказывается запускаться по ownership/forma
 - `rustix`/`nix` — pidfd, PTY, signals и locks;
 - `tracing`, `thiserror`, `proptest`.
 
-Выбор SQLite crate, MCP SDK и terminal engine принимается отдельными spikes.
+Выбор MCP SDK, Rust PTY crate и способ передачи terminal stream уточняются
+отдельными spikes. Frontend стек и terminal renderer выбраны; их совместимость
+с Codex/OpenCode проверяется первым desktop prototype.
 
 ## Распространение
 
-Цель — один бинарник `agent-bridge`. На первом этапе подходят архив с binary и
-checksums либо пакет дистрибутива. AppImage/Flatpak оцениваются отдельно из-за
-доступа к PTY, workspaces, процессам и внешним CLI.
+Headless поставка — бинарник `agent-bridge`. Desktop поставка — Tauri application
+package с Rust executable и собранными frontend assets; имя desktop executable
+фиксируется при prototype. Backend services общие для CLI и desktop.
+Для CLI подходят архив с binary/checksums либо пакет дистрибутива.
+Desktop Linux packages и WebView dependencies проверяются отдельно;
+AppImage/Flatpak оцениваются с учётом доступа к PTY, workspaces, процессам
+и внешним CLI.
 
 ## Нефункциональные требования
 

@@ -3,7 +3,7 @@
 ## Принципы
 
 1. Доменная логика не зависит от UI, CLI и MCP transport.
-2. CLI, MCP и GPUI используют один сервисный слой.
+2. CLI, MCP и Tauri desktop используют один Rust сервисный слой.
 3. Привязка процесса к project, workspace и endpoints неизменяема.
 4. Worker остаётся отдельным процессом для изоляции и recovery.
 5. Переходы состояния проверяются моделью и выполняются транзакционно.
@@ -12,13 +12,16 @@
 ## Общая схема
 
 ```text
-GPUI ────────────┐
-CLI ─────────────┼── application services ── domain
-MCP stdio/HTTP ──┘            │                 │
-                              ├── SQLite        │
-                              ├── OpenCode HTTP │
-                              ├── Git/processes │
-                              └── worker ───────┘
+React + TypeScript (Vite, Tauri WebView)
+        │ typed IPC / streamed PTY output
+Tauri Rust adapter ─┐
+CLI ────────────────┼── application services ── domain
+MCP stdio/HTTP ─────┘            │                 │
+                                ├── SQLite        │
+                                ├── OpenCode HTTP │
+                                ├── Git/processes │
+                                ├── PTY           │
+                                └── worker ───────┘
 ```
 
 ## Cargo workspace
@@ -35,13 +38,35 @@ crates/
   bridge-worker/       implementation, revision, recovery
   bridge-mcp/          stdio и authenticated HTTP MCP
   bridge-runtime/      locks, pidfd, start/status/stop
-  bridge-terminal/     PTY и terminal model
-  bridge-ui/           GPUI views и application state
+  bridge-terminal/     PTY, input/output, resize и process lifecycle
+  bridge-desktop/      Tauri entry point, IPC adapter и window lifecycle
   agent-bridge-cli/    итоговый бинарник
+frontend/             React + TypeScript, Vite, dashboard и xterm.js
 ```
 
 Это границы ответственности, а не обязательное число crates: пакеты можно
 объединить, если разделение не улучшает независимое тестирование.
+
+## Граница desktop frontend/backend
+
+React владеет отображением, формами и состоянием навигации; xterm.js —
+отображением терминала и terminal input. Tauri adapter предоставляет
+типизированные команды и потоки данных к существующим Rust services.
+Rust владеет SQLite, Git, HTTP, credentials, policy checks, PTY и subprocesses.
+Domain/services не зависят от React или Tauri; headless CLI собирается и
+работает отдельно от desktop/WebView.
+
+Frontend получает безопасные DTO и opaque session references. Он не получает
+credential contents, прямой SQL-доступ или универсальную команду запуска shell.
+Rust проверяет project/session binding и входные данные каждого IPC-вызова;
+Tauri capabilities и CSP задаются явно, с минимально необходимыми разрешениями.
+Terminal output считается недоверенными данными и передаётся в xterm.js.
+
+PTY output передаётся порциями через Tauri channels с bounded buffering и
+backpressure. Terminal byte stream не хранится в React state; component lifecycle
+не должен пересоздавать работающий terminal или завершать backend session.
+Resize/input/exit/cancellation и поведение при закрытии окна имеют отдельный
+контракт. Detached runtime services сохраняют существующую ownership модель.
 
 ## Доменная модель
 

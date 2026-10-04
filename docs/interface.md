@@ -1,5 +1,18 @@
 # Интерфейс
 
+## Выбранный стек
+
+Целевой desktop UI: **React + TypeScript**, сборка **Vite**, оболочка **Tauri 2**.
+Dashboard, настройки и navigation реализуются в React. **xterm.js** отображает
+терминал; Rust backend создаёт PTY, запускает Codex/OpenCode и обрабатывает
+input/output, resize и завершение процессов. Выбор стека принят 2026-10-04;
+GUI пока не реализован.
+
+Первый UI-прототип проверяет Tauri window, resizable terminal/dashboard split
+и настоящую PTY session. До разработки полноценных форм и dashboard проверяются
+ввод, Unicode, resize, поток вывода и process cleanup. Очередь backend-задач
+сохраняется: ближайшая задача — 7.14.
+
 ## Основное окно
 
 ```text
@@ -38,6 +51,11 @@ glyphs, SIGWINCH, scrollback, selection, clipboard, bracketed paste, mouse
 reporting, keyboard focus и graceful shutdown. До полной совместимости остаётся
 кнопка открытия внешнего терминала.
 
+xterm.js подключается к DOM через React adapter; PTY stream идёт из Rust через
+Tauri channels. Размеры терминала передаются в backend для PTY resize/SIGWINCH.
+Вывод не проходит через React state или HTML rendering; очереди ограничены,
+порядок байтов и backpressure проверяются при большом объёме output.
+
 ## Правая панель: dashboard
 
 Dashboard первого релиза read-only. Он показывает:
@@ -49,6 +67,7 @@ Dashboard первого релиза read-only. Он показывает:
 - blockers, tool errors, verification и repository violations;
 - usage/model только в диагностических деталях.
 
+React получает read-only DTO через Tauri IPC из Rust query service.
 SQLite и HTTP операции выполняются вне UI thread. WAL notification допустим
 как оптимизация, периодический refresh остаётся fallback. Список
 виртуализируется, выбранная строка сохраняется по `task_id`.

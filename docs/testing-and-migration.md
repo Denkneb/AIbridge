@@ -30,10 +30,19 @@ idempotency. Любая ошибка разбора означает отказ,
 
 ### GUI и terminal
 
-View models тестируются без окна. GPUI tests покрывают focus, actions, filters
-и layout states; smoke tests идут под Wayland compositor и Xvfb. Terminal
-fixtures покрывают ANSI, alternate screen, cursor, Unicode, resize, paste,
-mouse modes и scrollback.
+View models и React components тестируются без desktop окна с mock typed IPC.
+UI tests покрывают focus, actions, filters и layout states; Rust tests проверяют
+IPC input validation, project/session binding, безопасные DTO и lifecycle.
+Tauri desktop smoke tests проверяют реальные WebView/IPC под поддерживаемыми
+Wayland/X11 окружениями; конкретный harness фиксируется после prototype.
+Headless CLI отдельно собирается и тестируется без WebView.
+
+Первый desktop spike проверяет window + terminal/dashboard split + реальный PTY.
+xterm.js/Rust PTY fixtures покрывают ANSI, alternate screen, cursor, Unicode,
+resize/SIGWINCH, paste, mouse modes, scrollback, порядок output chunks,
+bounded buffering/backpressure, process exit и cleanup при закрытии окна.
+Codex/OpenCode запускаются в compatibility smoke; mock IPC или статический
+terminal screenshot не считаются доказательством PTY compatibility.
 
 ## Migration gates
 

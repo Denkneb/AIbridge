@@ -3347,6 +3347,18 @@ project_info cases проверены (legacy fields + additive v17 surface).
 
 ### 8.7. `accept_task`
 
+- **8.7a. Review prerequisites (завершены).** Narrow atomic manual accept
+  проверяет awaiting_review/current complete round, frozen manual policy и close;
+  task/event/reservation release commit together. Repeated accepted returns no event.
+  Worker `try_review_fences` не активирует задачи и не изменяет reservations;
+  `task_execution_view` доказывает saved worktree checkout/endpoint без fallback
+  к static project server. Scoped session/status gate: absent/idle -> idle,
+  busy/retry/unknown state -> active, malformed -> refusal. Exact spawn lease
+  rollback не отменяет started child и close. Shared secret scanner экспортирует
+  только stable categories. 3 storage atomic/rollback/guard tests и OpenCode
+  loopback activity matrix прошли, workspace Clippy чист. MCP adapters и
+  on_accept delivery остаются отдельными consumers.
+
 ### 8.8. `close_task`
 
 ### 8.9. stdio transport (foundation завершён)

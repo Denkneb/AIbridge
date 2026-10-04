@@ -105,6 +105,11 @@ pub use state_approval::state_directory_permission_pattern;
 use url::Url;
 
 mod profile_secrets;
+
+/// Stable scanner categories only; matched text and credentials never escape.
+pub fn suspected_secret_categories(text: &str) -> Vec<&'static str> {
+    profile_secrets::categories(text)
+}
 mod profiles;
 pub use profiles::{
     BUILTIN_PROFILE_VERSION, CUSTOM_PROFILE_VERSION, DEFAULT_PROFILE_ID, ProfileDefinition,

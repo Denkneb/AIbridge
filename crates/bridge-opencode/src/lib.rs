@@ -1658,6 +1658,26 @@ impl OpenCodeClient {
         parse_session(response.body())
     }
 
+    /// Reads scoped session activity. Missing entry is idle; any non-idle type
+    /// is active. Malformed entries never permit releasing the writer slot.
+    pub fn session_turn_active(&self, session_id: &str) -> Result<bool, SessionError> {
+        session_path(session_id)?;
+        let request = HttpRequest::get("/session/status")
+            .with_query("directory", self.workspace.to_string_lossy().into_owned());
+        let response = self.transport.request(&request)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(response.body()).map_err(|_| SessionError::Malformed)?;
+        let statuses = value.as_object().ok_or(SessionError::Malformed)?;
+        match statuses.get(session_id) {
+            None => Ok(false),
+            Some(status) => status
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(|kind| kind != "idle")
+                .ok_or(SessionError::Malformed),
+        }
+    }
+
     /// Lists the messages of a session with `GET /session/<id>/message` scoped
     /// with the workspace `directory` (reference `list_messages`).
     ///
@@ -5440,6 +5460,35 @@ mod tests {
             client.health().expect_err("must be unavailable"),
             HealthError::Transport(TransportError::Unavailable)
         );
+    }
+
+    #[test]
+    fn session_activity_is_scoped_and_unknown_or_malformed_never_looks_idle() {
+        for (body, expected) in [
+            (serde_json::json!({}), Ok(false)),
+            (
+                serde_json::json!({"session":{"type":"idle"},"foreign":{"type":"busy"}}),
+                Ok(false),
+            ),
+            (serde_json::json!({"session":{"type":"busy"}}), Ok(true)),
+            (serde_json::json!({"session":{"type":"retry"}}), Ok(true)),
+            (
+                serde_json::json!({"session":{"type":"new-state"}}),
+                Ok(true),
+            ),
+            (
+                serde_json::json!({"session":null}),
+                Err(SessionError::Malformed),
+            ),
+            (serde_json::json!([]), Err(SessionError::Malformed)),
+        ] {
+            let response = ok_json_value(&body);
+            let (port, capture) = spawn_server(move |_| response.clone());
+            let (_dir, client) = client_for(port, PathBuf::from("/tmp/ws"));
+            assert_eq!(client.session_turn_active("session"), expected);
+            let raw = capture.lock().unwrap().clone();
+            assert!(request_target(&raw).starts_with("GET /session/status?directory="));
+        }
     }
 
     #[test]

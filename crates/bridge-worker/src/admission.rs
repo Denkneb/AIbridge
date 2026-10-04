@@ -99,6 +99,29 @@ pub fn acquire_worker_fences(
 }
 
 /// Used for close/recovery too, including terminal tasks; never activates tasks.
+/// Public review fence. It neither activates nor repairs writer reservations.
+pub fn try_review_fences(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+) -> Result<Option<WorkerFences>, AdmissionError> {
+    let _admission =
+        match WorkerLock::try_acquire_admission(layout).map_err(|_| AdmissionError::Lock)? {
+            WorkerLockOutcome::Busy => return Ok(None),
+            WorkerLockOutcome::Acquired(guard) => guard,
+        };
+    let storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
+    bound_task(&storage, layout, project, task_id)?;
+    let parallel = storage
+        .get_active_writers(project.id())
+        .map_err(|_| AdmissionError::Metadata)?
+        .iter()
+        .find(|r| r.task_id == task_id)
+        .is_some_and(|r| r.parallel);
+    acquire_lifecycle_fences(layout, project, task_id, parallel)
+}
+
+/// Used for close/recovery too, including terminal tasks; never activates tasks.
 /// Caller must hold admission lock until this returns.
 pub(crate) fn acquire_lifecycle_fences(
     layout: &RustStateLayout,

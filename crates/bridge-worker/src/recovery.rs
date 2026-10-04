@@ -109,6 +109,30 @@ pub(crate) fn saved_view(
         .execution_view(&root, endpoint)
         .map_err(|_| RecoveryError::Binding)
 }
+
+/// Proves an existing task-scoped endpoint. Pending worktree preparation has
+/// no endpoint to probe; a created but corrupt binding fails closed.
+pub fn task_execution_view(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+) -> Result<Option<ProjectEntry>, RecoveryError> {
+    let storage = layout.open().map_err(|_| RecoveryError::Ownership)?;
+    let task = saved_task(&storage, layout, project, id)?;
+    if mode(&storage, &task).map_err(|_| RecoveryError::Binding)? == ExecutionMode::Worktree {
+        let record = storage
+            .get_worktree(id, project.id())
+            .map_err(|_| RecoveryError::Storage)?
+            .ok_or(RecoveryError::Binding)?;
+        if matches!(
+            record.status,
+            bridge_storage::WorktreeStatus::Pending | bridge_storage::WorktreeStatus::Creating
+        ) {
+            return Ok(None);
+        }
+    }
+    saved_view(&storage, layout, project, &task).map(Some)
+}
 /// The background caller keeps the permission/question gate. Explicit recovery
 /// may observe a stale blocker after endpoint identity is proved. No prompt,
 /// permission reply, question answer or new session is ever issued here.

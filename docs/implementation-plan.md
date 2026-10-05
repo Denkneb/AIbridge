@@ -4272,7 +4272,7 @@ limits не расширяются по модельному ответу. Ав�
   all-targets Clippy чист. Тесты покрывают binary/delete/mode/symlink и восемь
   вариантов tampering/refusal, cumulative delivery и отдельный current-step scope.
 
-### 16.5. Detached coordinator lifecycle
+### 16.5. Detached coordinator lifecycle (завершено)
 
 - **Контракт:** automation.lock + process record/run/project/workspace binding,
   pid/start identity и launch lease; private supervisor log вне checkout.
@@ -4280,6 +4280,16 @@ limits не расширяются по модельному ответу. Ав�
 - **Source:** `automation.project_lock:295-316`, `launch:752-799`.
 - **Checks:** duplicate supervisor/stale identity/failed spawn/crash fixtures.
   Depends on 3.14, 9.6, 16.2.
+
+- **Реализовано:** `bridge-automation::lifecycle`; detached session, exact
+  automation-worker argv, private supervisor.log/process.json, pid/start/boot
+  identity и run/project/workspace binding. Durable spawn record публикуется
+  под automation lock; child получает lifetime lock с bounded startup wait.
+  Duplicate resume отказывает до control/status write; failed spawn сохраняет
+  blocked/paused state. Terminal/foreign records fail closed; stale identity
+  допускает explicit resume. Delivery resume сохраняет config guard, main
+  partial state принадлежит materializer journal. Automation suite (17 tests)
+  и all-targets Clippy прошли. CLI consumer добавляется в 16.9.
 
 ### 16.6. Internal MCP provenance и managed revisions
 

@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+bridge-artifact.workspace = true
 bridge-config.workspace = true
 bridge-command-policy.workspace = true
 bridge-path-policy.workspace = true
@@ -20,6 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 uuid = { workspace = true, features = ["v4"] }
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 bridge-domain.workspace = true

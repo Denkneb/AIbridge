@@ -154,10 +154,21 @@ pub fn check_binding(
     layout: &RustStateLayout,
     run: &AutomationRun,
 ) -> Result<(), Error> {
+    check_config_binding(project, layout, run)?;
+    if origin(project).map_err(|_| Error::Binding)? != run.document()["origin"] {
+        return Err(Error::Binding);
+    }
+    Ok(())
+}
+
+/// Delivery resumes check config binding while main files may already be mixed.
+pub fn check_config_binding(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+    run: &AutomationRun,
+) -> Result<(), Error> {
     layout.open_readonly().map_err(|_| Error::State)?;
-    if binding(project, layout)? != run.document()["binding"]
-        || origin(project).map_err(|_| Error::Binding)? != run.document()["origin"]
-    {
+    if binding(project, layout)? != run.document()["binding"] {
         return Err(Error::Binding);
     }
     Ok(())

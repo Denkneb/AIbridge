@@ -1,9 +1,11 @@
+use bridge_automation::lifecycle::{directory, launch_command, supervisor_running};
 use bridge_automation::{
     AutomationError as Error,
     plan::validate_plan,
     run::{AutomationLock, check_binding, create_run},
 };
 use bridge_config::{ProjectEntry, load_config_with_state_root};
+use bridge_storage::automation::{RunControl, RunStatus};
 use bridge_storage::{CreateTaskInput, RustStateLayout, automation::AutomationRunStore};
 use bridge_worker::{WorkerLock, WorkerLockOutcome};
 use serde_json::{Value, json};
@@ -474,4 +476,113 @@ fn binding_inspection_preserves_run_and_automation_lock() {
     assert_eq!(before.document(), after.document());
     assert_eq!(before.updated_at(), after.updated_at());
     assert_eq!(fs::read_to_string(file).unwrap(), "lock-content-sentinel");
+}
+
+fn stop_fixture(pid: i32) {
+    use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
+    if let Ok(fd) = pidfd_open(Pid::from_raw(pid).unwrap(), PidfdFlags::empty()) {
+        let _ = pidfd_send_signal(&fd, Signal::KILL);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::path::Path::new(&format!("/proc/{pid}")).exists()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+#[test]
+fn detached_launch_lease_duplicate_refusal_and_stale_resume() {
+    let fixture = Fixture::new();
+    fixture.repo();
+    let run = create_run(&fixture.project, &fixture.layout, &plan()).unwrap();
+    let store = AutomationRunStore::new(fixture.layout.clone());
+    let script = "import time;time.sleep(30)";
+    let launch = |resume| {
+        launch_command(
+            &fixture.layout,
+            &fixture.project,
+            run.id(),
+            std::path::Path::new("/usr/bin/python3"),
+            vec!["-c".into(), script.into()],
+            resume,
+        )
+    };
+    let result = launch(false).unwrap();
+    let pid = result["pid"].as_i64().unwrap() as i32;
+    assert!(supervisor_running(&fixture.layout, &fixture.project, run.id()).unwrap());
+    store.set_control(run.id(), RunControl::Pause).unwrap();
+    let before = store.load(Some(run.id())).unwrap();
+    assert_eq!(launch(true).err(), Some(Error::Busy));
+    let after = store.load(Some(run.id())).unwrap();
+    assert_eq!(before.control(), after.control());
+    assert_eq!(before.updated_at(), after.updated_at());
+    stop_fixture(pid);
+    assert!(!supervisor_running(&fixture.layout, &fixture.project, run.id()).unwrap());
+    store.save(run.document(), RunStatus::Blocked).unwrap();
+    assert_eq!(launch(false).err(), Some(Error::State));
+    let resumed = launch(true).unwrap();
+    stop_fixture(resumed["pid"].as_i64().unwrap() as i32);
+    assert_eq!(
+        store.load(Some(run.id())).unwrap().control(),
+        RunControl::Run
+    );
+    assert_eq!(
+        store.load(Some(run.id())).unwrap().status(),
+        RunStatus::Running
+    );
+}
+#[test]
+fn failed_spawn_terminal_and_foreign_record_preserve_run_state() {
+    let fixture = Fixture::new();
+    fixture.repo();
+    let run = create_run(&fixture.project, &fixture.layout, &plan()).unwrap();
+    let store = AutomationRunStore::new(fixture.layout.clone());
+    store.save(run.document(), RunStatus::Blocked).unwrap();
+    store.set_control(run.id(), RunControl::Pause).unwrap();
+    let executable = fixture.root.join("not-executable");
+    fs::write(&executable, "fixture").unwrap();
+    let before = store.load(Some(run.id())).unwrap();
+    assert_eq!(
+        launch_command(
+            &fixture.layout,
+            &fixture.project,
+            run.id(),
+            &executable,
+            vec![],
+            true
+        )
+        .err(),
+        Some(Error::State)
+    );
+    let after = store.load(Some(run.id())).unwrap();
+    assert_eq!(before.document(), after.document());
+    assert_eq!(before.control(), after.control());
+    let dir = directory(&fixture.layout, run.id());
+    let own = std::process::id();
+    let stat = fs::read_to_string(format!("/proc/{own}/stat")).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap();
+    fs::write(dir.join("process.json"),json!({"pid":own,"start":start,"boot_id":fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),"project_id":"foreign","workspace":fixture.project.workspace(),"run_id":run.id().to_string(),"kind":"automation"}).to_string()).unwrap();
+    assert_eq!(
+        supervisor_running(&fixture.layout, &fixture.project, run.id()),
+        Err(Error::Binding)
+    );
+    store.save(run.document(), RunStatus::Stopped).unwrap();
+    assert_eq!(
+        launch_command(
+            &fixture.layout,
+            &fixture.project,
+            run.id(),
+            std::path::Path::new("/usr/bin/python3"),
+            vec![],
+            true
+        )
+        .err(),
+        Some(Error::State)
+    );
 }

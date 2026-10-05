@@ -65,6 +65,7 @@ dependencies = [
 name = "bridge-automation"
 version = "0.1.0"
 dependencies = [
+ "bridge-artifact",
  "bridge-command-policy",
  "bridge-config",
  "bridge-domain",
@@ -74,6 +75,7 @@ dependencies = [
  "bridge-worker",
  "nix 0.27.1",
  "process-wrap",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

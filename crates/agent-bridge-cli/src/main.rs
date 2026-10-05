@@ -10,6 +10,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  deliver-task      Build, validate or apply accepted worktree changes (--task ID)
   worker            Run an existing task round (--task ID --round N required)
   launch-opencode   Launch an OpenCode controller using existing HTTP MCP servers
   mcp               Serve MCP over stdin/stdout
@@ -23,7 +24,10 @@ Options:
   --project ID        Configured project id (required)
   --config PATH       projects.toml path (required)
   --state-root PATH   Separate absolute Rust state root (required)
-  --task ID           Task UUID (worker only, required)
+  --task ID           Task UUID (worker/deliver-task, required)
+  --build             Build a private delivery artifact
+  --dry-run           Validate delivery without target writes (default)
+  --apply             Apply or resume the delivery journal
   --round N           Positive round number (worker only, required)
   -h, --help          Show help
   -V, --version       Show version";
@@ -40,8 +44,15 @@ enum Action {
     Mcp(LaunchArgs),
     ServeMcp(LaunchArgs),
     Worker(LaunchArgs, TaskId, u32),
+    Deliver(LaunchArgs, TaskId, DeliveryAction),
 }
 
+#[derive(Clone, Copy)]
+enum DeliveryAction {
+    Build,
+    DryRun,
+    Apply,
+}
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static str> {
     let mut args = args.into_iter();
     let Some(command) = args.next() else {
@@ -65,11 +76,13 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         && command != "mcp"
         && command != "serve-mcp"
         && command != "worker"
+        && command != "deliver-task"
     {
         return Err("unsupported command; use --help");
     }
     let (mut project, mut config, mut state_root, mut task, mut round) =
         (None, None, None, None, None);
+    let mut delivery_mode = None;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             return Ok(Action::Help);
@@ -83,11 +96,22 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             },
             None => return Err("invalid option encoding"),
         };
+        if matches!(flag, "--build" | "--dry-run" | "--apply") && command == "deliver-task" {
+            if delivery_mode.is_some() || inline.is_some() {
+                return Err("select one delivery mode");
+            }
+            delivery_mode = Some(match flag {
+                "--build" => DeliveryAction::Build,
+                "--apply" => DeliveryAction::Apply,
+                _ => DeliveryAction::DryRun,
+            });
+            continue;
+        }
         let slot = match flag {
             "--project" => &mut project,
             "--config" => &mut config,
             "--state-root" => &mut state_root,
-            "--task" if command == "worker" => &mut task,
+            "--task" if command == "worker" || command == "deliver-task" => &mut task,
             "--round" if command == "worker" => &mut round,
             _ => return Err("unknown option; use --help"),
         };
@@ -133,6 +157,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             .filter(|n| *n > 0)
             .ok_or("invalid round number")?;
         Action::Worker(common, task, round)
+    } else if command == "deliver-task" {
+        let id = task
+            .ok_or("--task required")?
+            .into_string()
+            .map_err(|_| "invalid task encoding")?
+            .parse()
+            .map_err(|_| "invalid task id")?;
+        Action::Deliver(common, id, delivery_mode.unwrap_or(DeliveryAction::DryRun))
     } else if command == "mcp" {
         Action::Mcp(common)
     } else if command == "serve-mcp" {
@@ -266,6 +298,33 @@ fn worker(args: LaunchArgs, task_id: TaskId, round_number: u32) -> Result<ExitCo
         }
     }
 }
+fn deliver(args: LaunchArgs, id: TaskId, mode: DeliveryAction) -> Result<ExitCode, String> {
+    let config =
+        load_config_with_state_root(&args.config, &args.state_root).map_err(|e| e.to_string())?;
+    let project = config
+        .project(&args.project)
+        .ok_or("project not configured")?;
+    let layout =
+        RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    let result = match mode {
+        DeliveryAction::Build => bridge_delivery::build(&layout, project, id),
+        DeliveryAction::DryRun => bridge_delivery::dry_run(&layout, project, id),
+        DeliveryAction::Apply => bridge_delivery::apply(&layout, project, id),
+    };
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({"status":"refused","code":error.code,"paths":error.paths})
+            );
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
 fn main() -> ExitCode {
     match parse(env::args_os().skip(1)) {
         Ok(Action::Help) => {
@@ -280,6 +339,7 @@ fn main() -> ExitCode {
         Ok(Action::Mcp(args)) => finish(mcp(args, false)),
         Ok(Action::ServeMcp(args)) => finish(mcp(args, true)),
         Ok(Action::Worker(args, task, round)) => finish(worker(args, task, round)),
+        Ok(Action::Deliver(args, task, mode)) => finish(deliver(args, task, mode)),
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)

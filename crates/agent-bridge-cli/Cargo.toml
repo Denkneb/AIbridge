@@ -18,7 +18,9 @@ bridge-runtime.workspace = true
 bridge-storage.workspace = true
 bridge-mcp.workspace = true
 bridge-worker.workspace = true
+bridge-delivery.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 bridge-git.workspace = true
-serde_json.workspace = true
+uuid = { workspace = true, features = ["v4"] }

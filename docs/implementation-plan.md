@@ -4386,3 +4386,9 @@ improvement**. Limitation не выдаётся за реализованное 
 - Implemented `bridge-delivery`: accepted-only byte-complete manifest/blobs, binary files, delete, executable modes and symlink targets; bounded read-only commit blob reader; full ordered artifact/checkout revalidation and clean-main/ancestry/exact-base preflight. Artifact files are private and atomically fsynced. Admission remains held across writer-status/ledger and lifecycle/task-lock checks, independent of parallel-writer config downgrade.
 - Checks: three integration scenarios passed (five object operations; dirty/drift/blob corruption/outside scope with unchanged main; accepted/writer reservation refusal before artifact writes); targeted Clippy clean.
 - Remaining: journal/materializer/resume, CLI wiring, automatic on_accept wrapper.
+
+### 9.18c. Journal, materializer and deliver-task CLI
+
+- Implemented: fsynced ordered journal before applying; per-file atomic writes, raw symlink targets, deletes and mode changes; exact base/artifact resume independent of advisory applied markers; fixed third-state refusal without rollback; HEAD/index and complete final output verification before durable delivered. Dry-run uses the same resume preflight. `deliver-task --task T [--build|--dry-run|--apply]` defaults to validation and emits structured reports.
+- Checks: six delivery integration scenarios passed, including thirteen injected durable-boundary interruptions and resume, third-state refusal/unchanged target, applied-marker revert/reapply, missing artifact and symlink parent refusal; CLI build/default validation/apply/repeat scenario passed; targeted Clippy clean.
+- Limits: files are individually atomic, not an atomic multi-file transaction; interruption may leave mixed base/artifact paths; third states require operator recovery.

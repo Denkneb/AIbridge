@@ -1,5 +1,6 @@
 //! Byte-complete accepted checkout delivery. All diagnostics use fixed codes.
 mod artifact;
+mod materialize;
 pub use artifact::{Artifact, Entry, build_entries, load_artifact};
 use bridge_config::ProjectEntry;
 use bridge_domain::{TaskId, TaskStatus};
@@ -152,20 +153,33 @@ pub fn dry_run(layout: &RustStateLayout, project: &ProjectEntry, id: TaskId) -> 
         .map_err(|_| DeliveryError::new("state_unavailable"))?
         .ok_or(DeliveryError::new("project_busy"))?;
     let ctx = context(layout, project, id)?;
-    if ctx
-        .record
-        .delivery_state
-        .is_some_and(|s| s != WorktreeDeliveryState::None)
-    {
-        return Err(DeliveryError::new("delivery_in_progress"));
-    }
-    let (artifact, _) = derive(&ctx)?;
-    validate_artifact(&ctx, &artifact, false)?;
-    initial_preflight(project, &artifact)?;
-    Ok(
-        json!({"mode":"dry-run","status":"validated","entries":artifact.entries,"base_head":artifact.base_head,"delivery_state":"none"}),
-    )
+    materialize::run(&ctx, layout, project, false, &mut |_| false)
 }
+/// Applies or resumes a proven artifact while holding admission and task fences.
+pub fn apply(layout: &RustStateLayout, project: &ProjectEntry, id: TaskId) -> Result<Value> {
+    apply_with_fault(layout, project, id, |_| false)
+}
+/// Deterministic interruption hook for integration tests. Returning true stops
+/// immediately at a durable boundary; state remains available for resume.
+pub fn apply_with_fault(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+    mut hook: impl FnMut(&str) -> bool,
+) -> Result<Value> {
+    let _admission = match WorkerLock::try_acquire_admission(layout)
+        .map_err(|_| DeliveryError::new("state_unavailable"))?
+    {
+        WorkerLockOutcome::Busy => return Err(DeliveryError::new("project_busy")),
+        WorkerLockOutcome::Acquired(g) => g,
+    };
+    let _fences = bridge_worker::admission::try_review_fences_while_admitted(layout, project, id)
+        .map_err(|_| DeliveryError::new("state_unavailable"))?
+        .ok_or(DeliveryError::new("project_busy"))?;
+    let ctx = context(layout, project, id)?;
+    materialize::run(&ctx, layout, project, true, &mut hook)
+}
+
 fn validate_artifact(ctx: &Context, derived: &Artifact, required: bool) -> Result<()> {
     let dest = ctx.runtime.join("artifact");
     if dest.join("manifest.json").exists() {

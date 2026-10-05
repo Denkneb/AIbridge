@@ -1,120 +1,10 @@
-use bridge_config::{ProjectEntry, load_config_with_state_root};
-use bridge_domain::TaskId;
-use bridge_storage::{CreateTaskInput, RustStateLayout, WorktreeRegistration, WorktreeStatus};
-use serde_json::json;
+mod common;
+use common::Fixture;
 use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::PathBuf,
-    process::Command,
 };
-struct Fixture {
-    root: PathBuf,
-    project: ProjectEntry,
-    layout: RustStateLayout,
-    id: TaskId,
-    checkout: PathBuf,
-}
-impl Fixture {
-    fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("bridge-delivery-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&root).unwrap();
-        let main = root.join("main");
-        fs::create_dir(&main).unwrap();
-        let git = |args: &[&str]| {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(&main)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
-        git(&["init", "-q"]);
-        git(&["config", "user.name", "fixture"]);
-        git(&["config", "user.email", "fixture@example.test"]);
-        fs::create_dir(main.join("src")).unwrap();
-        fs::write(main.join("src/a"), b"base\0binary").unwrap();
-        fs::write(main.join("src/remove"), "remove").unwrap();
-        fs::write(main.join("src/executable"), "exec").unwrap();
-        symlink("a", main.join("src/link")).unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "base"]);
-        fs::write(root.join("password"), "fixture-secret").unwrap();
-        fs::set_permissions(root.join("password"), fs::Permissions::from_mode(0o600)).unwrap();
-        fs::write(root.join("projects.toml"),format!("[projects.proj]\nworkspace={}\nopencode_url=\"http://127.0.0.1:9000\"\npassword_file={}\nmax_rounds=3\nexecution_mode=\"worktree\"\n",json!(main),json!(root.join("password")))).unwrap();
-        let project = load_config_with_state_root(&root.join("projects.toml"), &root.join("state"))
-            .unwrap()
-            .project("proj")
-            .unwrap()
-            .clone();
-        let layout = RustStateLayout::new(root.join("state"), project.id().clone()).unwrap();
-        layout.initialize().unwrap();
-        let id = uuid::Uuid::new_v4().to_string().parse().unwrap();
-        let baseline = bridge_git::take_snapshot(&main).unwrap();
-        let base = baseline.head().unwrap().as_str().to_owned();
-        let mut storage = layout.open().unwrap();
-        storage
-            .create_task(CreateTaskInput {
-                task_id: id,
-                project_id: project.id().clone(),
-                workspace: main.to_str().unwrap().into(),
-                task: "change".into(),
-                request_id: "request".into(),
-                payload_hash: "hash".into(),
-                base_head: Some(base.clone()),
-                allowed_paths: vec!["src/".into()],
-                test_commands: vec![],
-                snapshot: Some(baseline.to_json().unwrap()),
-            })
-            .unwrap();
-        storage.connection().execute_batch("UPDATE tasks SET status='accepted',execution_mode='worktree';DELETE FROM active_writers;").unwrap();
-        let binding =
-            bridge_git::checkout::create_checkout(&main, &layout.project_dir(), id, &base).unwrap();
-        storage
-            .register_worktree(
-                id,
-                project.id(),
-                binding.paths.checkout.to_str().unwrap(),
-                &WorktreeRegistration {
-                    runtime_dir: Some(binding.paths.runtime_dir.to_str().unwrap().into()),
-                    base_head: Some(base),
-                    baseline_json: Some(baseline.to_json().unwrap().to_string()),
-                    status: Some(WorktreeStatus::Created),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        Self {
-            root,
-            project,
-            layout,
-            id,
-            checkout: binding.paths.checkout,
-        }
-    }
-    fn changes(&self) {
-        fs::write(self.checkout.join("src/a"), b"result\xff\0").unwrap();
-        fs::remove_file(self.checkout.join("src/remove")).unwrap();
-        fs::write(self.checkout.join("src/new"), [0, 255, 10, 20]).unwrap();
-        fs::set_permissions(
-            self.checkout.join("src/executable"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        fs::remove_file(self.checkout.join("src/link")).unwrap();
-        symlink("new", self.checkout.join("src/link")).unwrap();
-    }
-    fn dest(&self) -> PathBuf {
-        self.checkout.parent().unwrap().join("runtime/artifact")
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
 #[test]
 fn byte_complete_artifact_supports_binary_delete_modes_and_symlink() {
     let f = Fixture::new();
@@ -228,4 +118,133 @@ fn accepted_guard_and_writer_reservation_gate_precede_artifact_writes() {
         "active_writers"
     );
     assert!(!f.dest().exists());
+}
+#[test]
+fn apply_and_every_durable_boundary_resume_preserve_index_and_head() {
+    let phases = std::iter::once("after_journal".to_owned())
+        .chain((0..5).flat_map(|i| [format!("after_op:{i}"), format!("after_applied:{i}")]))
+        .chain(["before_post_verify".into(), "after_post_verify".into()]);
+    for phase in phases {
+        let f = Fixture::new();
+        f.changes();
+        bridge_delivery::build(&f.layout, &f.project, f.id).unwrap();
+        let head = bridge_git::head(f.project.workspace()).unwrap();
+        let index = bridge_git::index_fingerprint(f.project.workspace()).unwrap();
+        assert_eq!(
+            bridge_delivery::apply_with_fault(&f.layout, &f.project, f.id, |at| at == phase)
+                .unwrap_err()
+                .code,
+            "simulated_crash",
+            "{phase}"
+        );
+        let state = f
+            .layout
+            .open()
+            .unwrap()
+            .get_worktree(f.id, f.project.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.delivery_state,
+            Some(bridge_storage::WorktreeDeliveryState::Applying)
+        );
+        assert!(state.delivered_at.is_none());
+        assert_eq!(
+            bridge_delivery::dry_run(&f.layout, &f.project, f.id).unwrap()["status"],
+            "validated",
+            "{phase}"
+        );
+        assert_eq!(
+            bridge_delivery::apply(&f.layout, &f.project, f.id).unwrap()["status"],
+            "delivered",
+            "{phase}"
+        );
+        assert_eq!(bridge_git::head(f.project.workspace()).unwrap(), head);
+        assert_eq!(
+            bridge_git::index_fingerprint(f.project.workspace()).unwrap(),
+            index
+        );
+        assert_eq!(
+            fs::read(f.project.workspace().join("src/a")).unwrap(),
+            b"result\xff\0"
+        );
+        assert!(!f.project.workspace().join("src/remove").exists());
+        assert_eq!(
+            fs::read_link(f.project.workspace().join("src/link")).unwrap(),
+            PathBuf::from("new")
+        );
+        assert_eq!(
+            fs::metadata(f.project.workspace().join("src/executable"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0o111
+        );
+        assert_eq!(
+            bridge_delivery::apply(&f.layout, &f.project, f.id)
+                .unwrap_err()
+                .code,
+            "already_delivered"
+        );
+    }
+}
+#[test]
+fn third_state_resume_refuses_before_more_writes_and_reverted_marker_reapplies() {
+    let f = Fixture::new();
+    f.changes();
+    bridge_delivery::build(&f.layout, &f.project, f.id).unwrap();
+    assert!(
+        bridge_delivery::apply_with_fault(&f.layout, &f.project, f.id, |at| at
+            == "after_applied:0")
+        .is_err()
+    );
+    fs::write(f.project.workspace().join("src/a"), "third state").unwrap();
+    let before = bridge_git::take_snapshot(f.project.workspace())
+        .unwrap()
+        .to_json()
+        .unwrap();
+    for apply in [false, true] {
+        let error = if apply {
+            bridge_delivery::apply(&f.layout, &f.project, f.id)
+        } else {
+            bridge_delivery::dry_run(&f.layout, &f.project, f.id)
+        }
+        .unwrap_err();
+        assert_eq!(error.code, "needs_manual_recovery");
+        assert_eq!(
+            bridge_git::take_snapshot(f.project.workspace())
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            before
+        );
+    }
+    // The persisted applied marker is advisory; exact base state may be safely reapplied.
+    fs::write(f.project.workspace().join("src/a"), b"base\0binary").unwrap();
+    assert_eq!(
+        bridge_delivery::apply(&f.layout, &f.project, f.id).unwrap()["status"],
+        "delivered"
+    );
+}
+#[test]
+fn apply_preflight_requires_artifact_and_rejects_symlink_parent_without_writes() {
+    let f = Fixture::new();
+    f.changes();
+    assert_eq!(
+        bridge_delivery::apply(&f.layout, &f.project, f.id)
+            .unwrap_err()
+            .code,
+        "artifact_missing"
+    );
+    assert_eq!(
+        fs::read(f.project.workspace().join("src/a")).unwrap(),
+        b"base\0binary"
+    );
+    bridge_delivery::build(&f.layout, &f.project, f.id).unwrap();
+    let saved = f.root.join("saved");
+    fs::rename(f.project.workspace().join("src"), &saved).unwrap();
+    symlink(&saved, f.project.workspace().join("src")).unwrap();
+    assert!(bridge_delivery::apply(&f.layout, &f.project, f.id).is_err());
+    assert_eq!(fs::read(saved.join("a")).unwrap(), b"base\0binary");
 }

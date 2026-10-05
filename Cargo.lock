@@ -7,6 +7,7 @@ name = "agent-bridge-cli"
 version = "0.1.0"
 dependencies = [
  "bridge-config",
+ "bridge-delivery",
  "bridge-domain",
  "bridge-git",
  "bridge-mcp",
@@ -14,6 +15,7 @@ dependencies = [
  "bridge-storage",
  "bridge-worker",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

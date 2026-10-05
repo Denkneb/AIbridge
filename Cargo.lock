@@ -70,6 +70,7 @@ dependencies = [
  "bridge-config",
  "bridge-domain",
  "bridge-git",
+ "bridge-mcp",
  "bridge-path-policy",
  "bridge-storage",
  "bridge-worker",

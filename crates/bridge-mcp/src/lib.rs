@@ -53,7 +53,7 @@ pub type Result<T> = std::result::Result<T, McpError>;
 pub struct McpServer {
     project: ProjectEntry,
     layout: RustStateLayout,
-    _lock: File,
+    _lock: Option<File>,
     spawner: Option<WorkerSpawner>,
     registry: Vec<ProjectEntry>,
 }
@@ -96,7 +96,7 @@ impl McpServer {
             registry: vec![project.clone()],
             project,
             layout,
-            _lock: lock,
+            _lock: Some(lock),
             spawner: None,
         })
     }
@@ -119,6 +119,25 @@ impl McpServer {
     }
     pub fn delegated_tools_enabled(&self) -> bool {
         self.spawner.is_some()
+    }
+    /// In-process application adapter. No transport, MCP lock or startup
+    /// recovery is started; worker/task/admission fences still apply.
+    pub fn internal(
+        project: ProjectEntry,
+        layout: RustStateLayout,
+        spawner: WorkerSpawner,
+        registry: Vec<ProjectEntry>,
+    ) -> Result<Self> {
+        check_layout(&project, &layout)?;
+        layout.open_readonly().map_err(|_| McpError::State)?;
+        let server = Self {
+            project,
+            layout,
+            _lock: None,
+            spawner: None,
+            registry: vec![],
+        };
+        server.with_workers(spawner, registry)
     }
     /// Recovery runs beside the transport, while the MCP ownership lock remains
     /// held. Shutdown drains recovery before releasing that lock.

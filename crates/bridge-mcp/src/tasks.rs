@@ -218,6 +218,24 @@ impl McpServer {
         };
         Ok(outcome.unwrap_or_else(|code| self.error_payload(code, args)))
     }
+    /// Trusted coordinator calls only. Run identity is an explicit Rust
+    /// parameter, never a field accepted by public JSON-RPC wrappers.
+    pub fn call_automation(
+        &self,
+        name: &str,
+        args: &Value,
+        run: bridge_storage::automation::RunId,
+    ) -> Value {
+        let outcome = match name {
+            "submit_task" => self.submit_managed(args, Some(run)),
+            "request_changes" => self.revise_managed(args, Some(run)),
+            "task_status" => self.status(args),
+            "accept_task" => self.accept(args),
+            "close_task" => self.close(args),
+            _ => Err("unknown_tool"),
+        };
+        outcome.unwrap_or_else(|code| self.error_payload(code, args))
+    }
     pub(super) fn storage(&self) -> Result<StorageConnection> {
         self.layout.open().map_err(|_| "state_unavailable")
     }
@@ -356,6 +374,35 @@ impl McpServer {
         Ok(())
     }
     fn submit(&self, args: &Value) -> Result<Value> {
+        self.submit_managed(args, None)
+    }
+    fn submit_managed(
+        &self,
+        args: &Value,
+        caller: Option<bridge_storage::automation::RunId>,
+    ) -> Result<Value> {
+        if caller.is_some()
+            && (self.project.execution_mode() != ExecutionMode::Worktree
+                || self.project.delivery_mode() != DeliveryMode::Manual)
+        {
+            return Err("automation_execution_policy_mismatch");
+        }
+        let provenance = caller
+            .map(|run| {
+                bridge_worker::automation::submit_provenance(&self.layout, &self.project, run, args)
+            })
+            .transpose()?;
+        if caller.is_none()
+            && [
+                "automation_run_id",
+                "inherit_task_id",
+                "inherit_fingerprint",
+            ]
+            .iter()
+            .any(|k| args.get(*k).is_some())
+        {
+            return Err("invalid_arguments");
+        }
         let request_id = text(args, "request_id").map_err(|_| "invalid_request_id")?;
         let task_text = text(args, "task").map_err(|_| "empty_task")?;
         let paths = strings(args, "allowed_paths").map_err(|_| "invalid_allowed_paths")?;
@@ -401,6 +448,11 @@ impl McpServer {
         }
         if !workflow.depends_on.is_empty() {
             payload["depends_on"] = json!(workflow.depends_on);
+        }
+        if let Some(provenance) = &provenance {
+            for (key, value) in provenance.as_object().ok_or("automation_state_corrupt")? {
+                payload[key] = value.clone();
+            }
         }
         let hash = request_payload_hash(&payload);
         if let Some(existing) = request(&self.storage()?, self.project.id(), request_id)? {
@@ -507,6 +559,11 @@ impl McpServer {
             }
         }
         snapshot["external_repositories"] = json!(external);
+        if let Some(provenance) = &provenance {
+            for (key, value) in provenance.as_object().ok_or("automation_state_corrupt")? {
+                snapshot[key] = value.clone();
+            }
+        }
         if self.project.execution_mode() == ExecutionMode::Direct {
             let client = bridge_opencode::OpenCodeClient::from_project(&self.project, PROBE)
                 .map_err(|_| "server_unavailable")?;
@@ -545,6 +602,18 @@ impl McpServer {
             }
         }
         let mut storage = self.storage()?;
+        if let Some(caller) = caller
+            && bridge_worker::automation::submit_provenance(
+                &self.layout,
+                &self.project,
+                caller,
+                args,
+            )?
+            .as_object()
+                != provenance.as_ref().and_then(Value::as_object)
+        {
+            return Err("automation_binding_changed");
+        }
         let outcome = bridge_submission::submit_task_with_workflow(
             &mut storage,
             &self.project,
@@ -754,6 +823,13 @@ impl McpServer {
         }
     }
     fn revise(&self, args: &Value) -> Result<Value> {
+        self.revise_managed(args, None)
+    }
+    fn revise_managed(
+        &self,
+        args: &Value,
+        caller: Option<bridge_storage::automation::RunId>,
+    ) -> Result<Value> {
         let id = id(args)?;
         let request_id = text(args, "request_id").map_err(|_| "invalid_request_id")?;
         let findings = text(args, "findings").map_err(|_| "empty_findings")?;
@@ -762,13 +838,13 @@ impl McpServer {
         let Some(task) = self.status_task(id)? else {
             return Ok(json!({"status":"unknown_task"}));
         };
-        if task
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.get("automation_run_id").is_some())
-        {
-            return Err("automation_managed");
-        }
+        bridge_worker::automation::revision_authorized(
+            &self.layout,
+            &self.project,
+            &task,
+            caller,
+            args,
+        )?;
         let trusted = self
             .project
             .auto_approve_external_directories()
@@ -796,6 +872,13 @@ impl McpServer {
             .map_err(|_| "state_unavailable")?
             .ok_or("worker_running")?;
         let task = self.status_task(id)?.ok_or("unknown_task")?;
+        bridge_worker::automation::revision_authorized(
+            &self.layout,
+            &self.project,
+            &task,
+            caller,
+            args,
+        )?;
         if task.status == TaskStatus::NeedsUser {
             return self.result(&task, false);
         }

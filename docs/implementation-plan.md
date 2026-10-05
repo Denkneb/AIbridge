@@ -4291,7 +4291,7 @@ limits не расширяются по модельному ответу. Ав�
   partial state принадлежит materializer journal. Automation suite (17 tests)
   и all-targets Clippy прошли. CLI consumer добавляется в 16.9.
 
-### 16.6. Internal MCP provenance и managed revisions
+### 16.6. Internal MCP provenance и managed revisions (завершено)
 
 - **Контракт:** inherit_task_id/fingerprint/run id входят в internal submit
   hash/snapshot; public MCP wrapper их не принимает. Parent accepted/same
@@ -4301,6 +4301,18 @@ limits не расширяются по модельному ответу. Ав�
   `request_changes_impl:2898-2937`.
 - **Checks:** parent mismatch/public-wrapper/hash replay/managed revision cases.
   Depends on 8.14, 8.17, 8.18, 16.2, 16.4.
+
+- **Реализовано:** in-process MCP application adapter без transport/MCP lock;
+  trusted typed run identity отделена от public JSON arguments. Persisted
+  submit intent фиксирует prepared task, cumulative scopes, approved commands,
+  profile/workflow/parent; parent accepted/workflow/base/fingerprint проверяются.
+  Run/parent/fingerprint входят в hash и snapshot; public wrapper их отвергает.
+  Managed revision требует running control, точный caller run, phase и pending
+  revision intent; automation view принудительно worktree/manual с approved limit.
+  Проверены replay, public bypass, changed scope/commands/profile/workflow,
+  pause/stop и foreign revision caller. Submission suite (13), automation suite
+  (20), MCP regression suite и targeted all-targets Clippy прошли. Existing
+  partial-delivery test теперь требует exact simulated_crash вместо любого error.
 
 ### 16.7. Durable sequential coordinator
 

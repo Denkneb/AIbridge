@@ -132,11 +132,21 @@ fn accepted_partial_delivery_resumes_the_existing_journal() {
         .execute("UPDATE tasks SET delivery_mode='on_accept'", [])
         .unwrap();
     bridge_delivery::build(&f.layout, &f.project, f.id).unwrap();
-    assert!(
-        bridge_delivery::apply_with_fault(&f.layout, &f.project, f.id, |phase| phase
-            == "after_op:0")
-        .is_err()
-    );
+    // Busy is a legitimate non-blocking refusal, and does not prove that the
+    // injected crash boundary was reached. Require that exact failure.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let error = bridge_delivery::apply_with_fault(&f.layout, &f.project, f.id, |phase| {
+            phase == "after_op:0"
+        })
+        .unwrap_err();
+        if error.code == "project_busy" && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+        assert_eq!(error.code, "simulated_crash");
+        break;
+    }
     let server = server(&f);
     let status = call(
         &server,

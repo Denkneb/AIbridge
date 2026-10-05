@@ -582,6 +582,19 @@ impl ProjectEntry {
         view.opencode_endpoint = endpoint;
         Ok(view)
     }
+    /// Trusted coordinator view. Does not modify projects.toml or credentials.
+    pub fn automation_view(&self, max_revisions: u64) -> Result<Self> {
+        if !(1..=20).contains(&max_revisions) {
+            return Err(DomainError::invalid_input(
+                "invalid automation revision limit",
+            ));
+        }
+        let mut view = self.clone();
+        view.execution_mode = ExecutionMode::Worktree;
+        view.delivery_mode = DeliveryMode::Manual;
+        view.max_rounds = max_revisions;
+        Ok(view)
+    }
     /// Opt-in state access is separate from trusted external Git directories.
     #[must_use]
     pub fn auto_approve_state_directory(&self) -> bool {

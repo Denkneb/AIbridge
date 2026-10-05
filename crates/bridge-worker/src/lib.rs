@@ -102,6 +102,7 @@ pub mod session;
 pub mod startup;
 pub mod usage;
 
+pub mod automation;
 mod blockers;
 mod completion;
 pub mod execution;

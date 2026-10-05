@@ -122,6 +122,17 @@ pub fn submit_task_with_workflow(
     if !workflow.depends_on.is_empty() {
         payload["depends_on"] = json!(workflow.depends_on);
     }
+    if let Some(snapshot) = &input.task.snapshot {
+        for key in [
+            "automation_run_id",
+            "automation_parent",
+            "automation_parent_fingerprint",
+        ] {
+            if let Some(value) = snapshot.get(key) {
+                payload[key] = value.clone();
+            }
+        }
+    }
     input.task.payload_hash = request_payload_hash(&payload);
     let snapshot = input.task.snapshot.get_or_insert_with(|| json!({}));
     let object = snapshot

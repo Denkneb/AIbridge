@@ -507,7 +507,16 @@ fn detached_launch_lease_duplicate_refusal_and_stale_resume() {
             resume,
         )
     };
-    let result = launch(false).unwrap();
+    let result = (0..100)
+        .find_map(|_| match launch(false) {
+            Ok(v) => Some(v),
+            Err(Error::Busy) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                None
+            }
+            Err(e) => panic!("{e}"),
+        })
+        .expect("startup lock becomes free");
     let pid = result["pid"].as_i64().unwrap() as i32;
     assert!(supervisor_running(&fixture.layout, &fixture.project, run.id()).unwrap());
     store.set_control(run.id(), RunControl::Pause).unwrap();
@@ -584,5 +593,174 @@ fn failed_spawn_terminal_and_foreign_record_preserve_run_state() {
         )
         .err(),
         Some(Error::State)
+    );
+}
+
+fn submit_intent(
+    f: &Fixture,
+) -> (
+    bridge_storage::automation::AutomationRun,
+    Value,
+    bridge_mcp::McpServer,
+) {
+    let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+    let mut doc = run.document().clone();
+    doc["steps"][0]["prepared_task"] = json!("Approved implementation task");
+    doc["steps"][0]["phase"] = json!("submit");
+    let run = AutomationRunStore::new(f.layout.clone())
+        .save(&doc, RunStatus::Running)
+        .unwrap();
+    let step = &doc["steps"][0]["step"];
+    let args = json!({"request_id":format!("auto:{}:{}:submit",run.id(),step["id"].as_str().unwrap()),"task":doc["steps"][0]["prepared_task"],"allowed_paths":step["allowed_paths"],"test_commands":step["test_commands"],"profile":step["profile"],"workflow_id":run.id().to_string()});
+    let view = f.project.automation_view(3).unwrap();
+    let server = bridge_mcp::McpServer::internal(
+        view.clone(),
+        f.layout.clone(),
+        Arc::new(|_| Ok(())),
+        vec![view],
+    )
+    .unwrap();
+    (run, args, server)
+}
+#[test]
+fn internal_submission_freezes_provenance_and_public_wrapper_cannot_mint_it() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, args, server) = submit_intent(&f);
+    let result = server.call_automation("submit_task", &args, run.id());
+    assert!(result.get("error").is_none(), "{result}");
+    let id: bridge_domain::TaskId = result["task_id"].as_str().unwrap().parse().unwrap();
+    let task = f
+        .layout
+        .open_readonly()
+        .unwrap()
+        .get_task(id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.snapshot.as_ref().unwrap()["automation_run_id"],
+        run.id().to_string()
+    );
+    assert_eq!(task.delivery_mode, bridge_domain::DeliveryMode::Manual);
+    assert_eq!(
+        server.call_automation("submit_task", &args, run.id())["task_id"],
+        result["task_id"]
+    );
+    let mut invalid = args.clone();
+    invalid["allowed_paths"] = json!(["module.py", "outside.py"]);
+    assert_eq!(
+        server.call_automation("submit_task", &invalid, run.id())["error"],
+        "automation_approved_step_mismatch"
+    );
+    let mut public = args.clone();
+    public["automation_run_id"] = json!(run.id().to_string());
+    let response=bridge_mcp::protocol::Protocol::stateless_http().handle(&server,json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"submit_task","arguments":public}})).unwrap();
+    assert_eq!(response["error"]["code"], -32602);
+    let revision = json!({"task_id":id,"request_id":"foreign","findings":"defect"});
+    let response=bridge_mcp::protocol::Protocol::stateless_http().handle(&server,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_changes","arguments":revision}})).unwrap();
+    assert!(response.to_string().contains("automation_managed"));
+}
+#[test]
+fn internal_submission_requires_approved_intent_and_running_control() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, args, server) = submit_intent(&f);
+    for key in ["task", "test_commands", "workflow_id", "profile"] {
+        let mut invalid = args.clone();
+        invalid[key] = json!("unapproved");
+        assert!(
+            server
+                .call_automation("submit_task", &invalid, run.id())
+                .get("error")
+                .is_some(),
+            "{key}"
+        );
+    }
+    let store = AutomationRunStore::new(f.layout.clone());
+    store.set_control(run.id(), RunControl::Pause).unwrap();
+    assert_eq!(
+        server.call_automation("submit_task", &args, run.id())["error"],
+        "automation_not_running"
+    );
+    assert!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .list_tasks(f.project.id(), false, 100, 0)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn managed_revision_identity_phase_and_pending_intent_are_pinned() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, args, server) = submit_intent(&f);
+    let result = server.call_automation("submit_task", &args, run.id());
+    let id: bridge_domain::TaskId = result["task_id"].as_str().unwrap().parse().unwrap();
+    let task = f
+        .layout
+        .open_readonly()
+        .unwrap()
+        .get_task(id)
+        .unwrap()
+        .unwrap();
+    let store = AutomationRunStore::new(f.layout.clone());
+    let mut doc = run.document().clone();
+    doc["steps"][0]["task_id"] = json!(id);
+    doc["steps"][0]["phase"] = json!("revise");
+    doc["steps"][0]["pending_revision"] = json!({"request_id":format!("auto:{}:fix:rev:1",run.id()),"findings":"Approved correction"});
+    store.save(&doc, RunStatus::Running).unwrap();
+    let revision = json!({"task_id":id,"request_id":doc["steps"][0]["pending_revision"]["request_id"],"findings":"Approved correction"});
+    assert!(
+        bridge_worker::automation::revision_authorized(
+            &f.layout,
+            &f.project,
+            &task,
+            Some(run.id()),
+            &revision
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        bridge_worker::automation::revision_authorized(
+            &f.layout, &f.project, &task, None, &revision
+        ),
+        Err("automation_managed")
+    );
+    let foreign = uuid::Uuid::new_v4().to_string().parse().unwrap();
+    assert_eq!(
+        bridge_worker::automation::revision_authorized(
+            &f.layout,
+            &f.project,
+            &task,
+            Some(foreign),
+            &revision
+        ),
+        Err("automation_managed")
+    );
+    let mut modified = revision.clone();
+    modified["findings"] = json!("Unapproved change");
+    assert_eq!(
+        bridge_worker::automation::revision_authorized(
+            &f.layout,
+            &f.project,
+            &task,
+            Some(run.id()),
+            &modified
+        ),
+        Err("automation_revision_mismatch")
+    );
+    store.set_control(run.id(), RunControl::Stop).unwrap();
+    assert_eq!(
+        bridge_worker::automation::revision_authorized(
+            &f.layout,
+            &f.project,
+            &task,
+            Some(run.id()),
+            &revision
+        ),
+        Err("automation_not_running")
     );
 }

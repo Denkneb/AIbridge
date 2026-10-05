@@ -4314,7 +4314,7 @@ limits не расширяются по модельному ответу. Ав�
   (20), MCP regression suite и targeted all-targets Clippy прошли. Existing
   partial-delivery test теперь требует exact simulated_crash вместо любого error.
 
-### 16.7. Durable sequential coordinator
+### 16.7. Durable sequential coordinator (завершено)
 
 - **Контракт:** prepare→submit→active→revise/accept→accepted, затем deliver.
   Intent/request id сохраняется до submit/revision; existing request replay
@@ -4324,6 +4324,14 @@ limits не расширяются по модельному ответу. Ав�
 - **Checks:** crashes at phase boundaries, no duplicate outbound prompt,
   revision limit/invalid review/blocker fixtures. Depends on 16.3, 16.5,
   16.6, 16.8, 7.10b, verifier integration 7.11.
+
+- **Реализовано:** `bridge-automation::coordinator`; durable intents и replay
+  submit/revision/accept, последовательные checkout, approved scope/commands,
+  read-only prepare/review и independent acceptance. Elapsed budget сохраняется,
+  retries ограничены тремя вызовами, pause/stop проверяются при model call.
+  Четыре coordinator tests проверяют crashes после submit/revision/accept,
+  отсутствие duplicate task/round/accepted event, model retry и control/time limits.
+  Targeted tests и all-targets Clippy прошли. Delivery consumer — в 16.10.
 
 ### 16.8. Independent acceptance gate (завершено)
 

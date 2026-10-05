@@ -151,6 +151,13 @@ pub struct CodexClient {
     prefix: Vec<OsString>,
 }
 impl CodexClient {
+    pub fn set_timeout(&mut self, timeout: Duration) -> Result<(), CodexError> {
+        if timeout.is_zero() || timeout > Duration::from_secs(3600) {
+            return Err(CodexError::Input);
+        }
+        self.timeout = timeout;
+        Ok(())
+    }
     pub fn new(
         directory: PathBuf,
         timeout: Duration,

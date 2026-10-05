@@ -976,3 +976,205 @@ fn atomic_acceptance_gate_cannot_bypass_pause_or_direct_storage_api() {
         bridge_domain::TaskStatus::AwaitingReview
     );
 }
+
+use bridge_automation::codex::{CodexError, Operation};
+use bridge_automation::coordinator::{Coordinator, ReviewClient, Tick};
+struct Model {
+    calls: Arc<AtomicU64>,
+    answer: Value,
+}
+impl ReviewClient for Model {
+    fn call(
+        &mut self,
+        _: Operation,
+        _: &std::path::Path,
+        _: &Value,
+        _: std::time::Duration,
+        _: &mut dyn FnMut() -> bool,
+    ) -> Result<Value, CodexError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(self.answer.clone())
+    }
+}
+fn coordinator(
+    f: &Fixture,
+    id: bridge_storage::automation::RunId,
+    answer: Value,
+    calls: Arc<AtomicU64>,
+) -> Coordinator<Model> {
+    Coordinator::open(
+        f.project.clone(),
+        f.layout.clone(),
+        id,
+        Arc::new(|_| Ok(())),
+        vec![f.project.clone()],
+        Model { answer, calls },
+    )
+    .unwrap()
+}
+#[test]
+fn coordinator_submission_crash_replays_exactly_one_task() {
+    let f = Fixture::new();
+    f.repo();
+    let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut c = coordinator(
+        &f,
+        run.id(),
+        json!({"task":"Implement approved changes"}),
+        calls.clone(),
+    );
+    assert_eq!(c.tick().unwrap(), Tick::Continue);
+    assert_eq!(
+        c.tick_with_fault(|p| p == "after_submit").unwrap_err().0,
+        "simulated_crash"
+    );
+    assert_eq!(c.document()["steps"][0]["phase"], "submit");
+    drop(c);
+    let mut c = coordinator(
+        &f,
+        run.id(),
+        json!({"task":"must not prepare again"}),
+        calls.clone(),
+    );
+    assert_eq!(c.tick().unwrap(), Tick::Continue);
+    assert_eq!(c.document()["steps"][0]["phase"], "active");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .list_tasks(f.project.id(), false, 100, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[test]
+fn coordinator_accept_crash_replays_without_second_accept_event() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, _server, id, _root) = review_fixture(&f);
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut c = coordinator(&f, run.id(), Value::Null, calls.clone());
+    assert_eq!(
+        c.tick_with_fault(|p| p == "after_accept").unwrap_err().0,
+        "simulated_crash"
+    );
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        bridge_domain::TaskStatus::Accepted
+    );
+    drop(c);
+    let mut c = coordinator(&f, run.id(), Value::Null, calls.clone());
+    assert_eq!(c.tick().unwrap(), Tick::Continue);
+    assert_eq!(c.document()["index"], 1);
+    assert_eq!(c.document()["steps"][0]["phase"], "accepted");
+    let storage = f.layout.open_readonly().unwrap();
+    let count: i64 = storage
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE task_id=?1 AND kind='accepted'",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+#[test]
+fn coordinator_review_revision_intent_survives_crash() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, _server, id, _root) = review_fixture(&f);
+    let store = AutomationRunStore::new(f.layout.clone());
+    let mut doc = run.document().clone();
+    doc["steps"][0]["phase"] = json!("active");
+    store.save(&doc, RunStatus::Running).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut c = coordinator(
+        &f,
+        run.id(),
+        json!({"decision":"request_changes","summary":"Fix criterion","findings":["Missing required behavior"]}),
+        calls.clone(),
+    );
+    assert_eq!(c.tick().unwrap(), Tick::Continue);
+    assert_eq!(c.document()["steps"][0]["phase"], "revise");
+    assert_eq!(
+        c.tick_with_fault(|p| p == "after_revision").unwrap_err().0,
+        "simulated_crash"
+    );
+    drop(c);
+    let mut c = coordinator(&f, run.id(), Value::Null, calls.clone());
+    assert_eq!(c.tick().unwrap(), Tick::Continue);
+    assert_eq!(c.document()["steps"][0]["revisions"], 1);
+    let round: i64 = f
+        .layout
+        .open_readonly()
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT MAX(round_number) FROM rounds WHERE task_id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(round, 2);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+#[test]
+fn coordinator_bounds_model_retries_and_obeys_pause_stop_budget() {
+    for case in ["model", "pause", "stop", "time"] {
+        let f = Fixture::new();
+        f.repo();
+        let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+        let store = AutomationRunStore::new(f.layout.clone());
+        match case {
+            "pause" => {
+                store.set_control(run.id(), RunControl::Pause).unwrap();
+            }
+            "stop" => {
+                store.set_control(run.id(), RunControl::Stop).unwrap();
+            }
+            "time" => {
+                let mut doc = run.document().clone();
+                doc["elapsed"] = doc["plan"]["max_seconds"].clone();
+                store.save(&doc, RunStatus::Running).unwrap();
+            }
+            _ => {}
+        }
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut c = coordinator(
+            &f,
+            run.id(),
+            json!({"task":"","injected_scope":["/"]}),
+            calls.clone(),
+        );
+        assert_eq!(
+            c.tick().unwrap(),
+            match case {
+                "pause" => Tick::Paused,
+                "stop" => Tick::Stopped,
+                _ => Tick::Blocked,
+            }
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            if case == "model" { 3 } else { 0 }
+        );
+        assert!(
+            f.layout
+                .open_readonly()
+                .unwrap()
+                .list_tasks(f.project.id(), false, 100, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

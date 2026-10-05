@@ -764,3 +764,215 @@ fn managed_revision_identity_phase_and_pending_intent_are_pinned() {
         Err("automation_not_running")
     );
 }
+
+fn review_fixture(
+    f: &Fixture,
+) -> (
+    bridge_storage::automation::AutomationRun,
+    bridge_mcp::McpServer,
+    bridge_domain::TaskId,
+    PathBuf,
+) {
+    let (run, args, server) = submit_intent(f);
+    let submitted = server.call_automation("submit_task", &args, run.id());
+    let id: bridge_domain::TaskId = submitted["task_id"].as_str().unwrap().parse().unwrap();
+    let mut storage = f.layout.open().unwrap();
+    let task = storage.get_task(id).unwrap().unwrap();
+    let binding = bridge_git::checkout::create_checkout(
+        f.project.workspace(),
+        &f.layout.project_dir(),
+        id,
+        task.base_head.as_deref().unwrap(),
+    )
+    .unwrap();
+    storage
+        .update_worktree_status(
+            id,
+            f.project.id(),
+            bridge_storage::WorktreeStatus::Creating,
+            None,
+        )
+        .unwrap();
+    let baseline = bridge_git::take_snapshot(&binding.paths.checkout).unwrap();
+    storage
+        .update_worktree_baseline(
+            id,
+            f.project.id(),
+            &baseline.to_json().unwrap().to_string(),
+            task.base_head.as_deref(),
+        )
+        .unwrap();
+    storage
+        .update_worktree_status(
+            id,
+            f.project.id(),
+            bridge_storage::WorktreeStatus::Created,
+            None,
+        )
+        .unwrap();
+    storage
+        .update_worktree_server(
+            id,
+            f.project.id(),
+            "http://127.0.0.1:9000",
+            std::num::NonZeroU16::new(9000).unwrap(),
+            None,
+        )
+        .unwrap();
+    fs::write(binding.paths.checkout.join("module.py"), "print(2)\n").unwrap();
+    let reference = bridge_storage::RoundRef {
+        task_id: id,
+        project_id: f.project.id().clone(),
+        round_number: 1,
+    };
+    storage
+        .prepare_round(reference.clone(), "outbound".into())
+        .unwrap();
+    storage.mark_round_sent(reference.clone()).unwrap();
+    storage.mark_round_observing(reference.clone()).unwrap();
+    bridge_verifier::run_round_verification_persisted(
+        &mut storage,
+        reference.clone(),
+        &binding.paths.checkout,
+        &["python3 -B module.py"],
+        std::time::Duration::from_secs(5),
+        4096,
+    )
+    .unwrap();
+    storage
+        .finish_round(bridge_storage::FinishRoundInput {
+            round: reference,
+            round_status: bridge_domain::RoundStatus::Complete,
+            task_status: bridge_domain::TaskStatus::AwaitingReview,
+            response_message_id: None,
+            response: None,
+            error_code: None,
+            result_json: None,
+        })
+        .unwrap();
+    let task = storage.get_task(id).unwrap().unwrap();
+    let step = &run.document()["steps"][0]["step"];
+    let evidence =
+        bridge_worker::acceptance::acceptance_checks(&f.layout, &f.project, &task, step).unwrap();
+    let mut doc = run.document().clone();
+    doc["steps"][0]["task_id"] = json!(id);
+    doc["steps"][0]["phase"] = json!("accept");
+    doc["steps"][0]["review"] = json!({"decision":"accept","summary":"Reviewed","findings":[],"fingerprint":evidence.fingerprint,"round":evidence.round});
+    let run = AutomationRunStore::new(f.layout.clone())
+        .save(&doc, RunStatus::Running)
+        .unwrap();
+    (run, server, id, binding.paths.checkout)
+}
+fn public_accept(server: &bridge_mcp::McpServer, id: bridge_domain::TaskId) -> Value {
+    bridge_mcp::protocol::Protocol::stateless_http().handle(server,json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accept_task","arguments":{"task_id":id}}})).unwrap()["result"]["structuredContent"].clone()
+}
+#[test]
+fn independent_acceptance_requires_exact_review_and_passed_authoritative_commands() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, server, id, root) = review_fixture(&f);
+    let store = AutomationRunStore::new(f.layout.clone());
+    let storage = f.layout.open().unwrap();
+    let raw: String = storage
+        .connection()
+        .query_row(
+            "SELECT verifier_json FROM rounds WHERE task_id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for mode in [
+        "phase",
+        "review",
+        "round",
+        "findings",
+        "failed",
+        "missing",
+        "side_effects",
+        "commands",
+        "exit",
+        "scope",
+        "drift",
+        "pause",
+    ] {
+        let mut doc = run.document().clone();
+        let mut verification: Value = serde_json::from_str(&raw).unwrap();
+        match mode {
+            "phase" => doc["steps"][0]["phase"] = json!("active"),
+            "review" => doc["steps"][0]["review"]["fingerprint"] = json!({}),
+            "round" => doc["steps"][0]["review"]["round"] = json!(2),
+            "findings" => doc["steps"][0]["review"]["findings"] = json!(["defect"]),
+            "failed" => verification["status"] = json!("failed"),
+            "missing" => verification = Value::Null,
+            "side_effects" => verification["side_effects"] = json!(["module.py"]),
+            "commands" => verification["commands"] = json!([]),
+            "exit" => verification["commands"][0]["exit_code"] = json!(1),
+            "scope" => doc["steps"][0]["step"]["allowed_paths"] = json!(["consumer.py"]),
+            "drift" => fs::write(root.join("module.py"), "print(3)\n").unwrap(),
+            "pause" => {
+                store.set_control(run.id(), RunControl::Pause).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        store.save(&doc, RunStatus::Running).unwrap();
+        storage
+            .connection()
+            .execute(
+                "UPDATE rounds SET verifier_json=?1 WHERE task_id=?2",
+                [verification.to_string(), id.to_string()],
+            )
+            .unwrap();
+        let result = public_accept(&server, id);
+        assert_eq!(
+            result["error"], "automation_acceptance_refused",
+            "{mode}: {result}"
+        );
+        assert_eq!(
+            storage.get_task(id).unwrap().unwrap().status,
+            bridge_domain::TaskStatus::AwaitingReview
+        );
+        storage
+            .connection()
+            .execute(
+                "UPDATE rounds SET verifier_json=?1 WHERE task_id=?2",
+                [raw.clone(), id.to_string()],
+            )
+            .unwrap();
+        store.set_control(run.id(), RunControl::Run).unwrap();
+        fs::write(root.join("module.py"), "print(2)\n").unwrap();
+    }
+    store.save(run.document(), RunStatus::Running).unwrap();
+    assert_eq!(public_accept(&server, id)["status"], "accepted");
+    assert_eq!(public_accept(&server, id)["status"], "accepted");
+    let count: i64 = storage
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE task_id=?1 AND kind='accepted'",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+#[test]
+fn atomic_acceptance_gate_cannot_bypass_pause_or_direct_storage_api() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, _server, id, _) = review_fixture(&f);
+    let mut storage = f.layout.open().unwrap();
+    assert!(storage.accept_manual_task(id, f.project.id()).is_err());
+    AutomationRunStore::new(f.layout.clone())
+        .set_control(run.id(), RunControl::Pause)
+        .unwrap();
+    assert!(
+        storage
+            .accept_manual_task_guarded(id, f.project.id(), |task| {
+                bridge_worker::acceptance::positive_review_gate(&f.layout, &f.project, task).is_ok()
+            })
+            .is_err()
+    );
+    assert_eq!(
+        storage.get_task(id).unwrap().unwrap().status,
+        bridge_domain::TaskStatus::AwaitingReview
+    );
+}

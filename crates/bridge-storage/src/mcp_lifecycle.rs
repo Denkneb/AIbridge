@@ -40,7 +40,22 @@ impl StorageConnection {
         id: TaskId,
         project: &ProjectId,
     ) -> Result<Task, RoundUpdateError> {
-        self.accept_review_inner(id, project, true)
+        self.accept_review_inner(id, project, true, &mut |task| {
+            !task
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.get("automation_run_id").is_some())
+        })
+    }
+    /// Gate executes inside IMMEDIATE transaction, serializing control writes
+    /// with the acceptance transition. No task/event/reservation changes precede it.
+    pub fn accept_manual_task_guarded(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+        mut gate: impl FnMut(&Task) -> bool,
+    ) -> Result<Task, RoundUpdateError> {
+        self.accept_review_inner(id, project, true, &mut gate)
     }
     /// Accepts either frozen delivery policy; delivery orchestration belongs to
     /// the fenced caller and never participates in this terminal transaction.
@@ -49,13 +64,19 @@ impl StorageConnection {
         id: TaskId,
         project: &ProjectId,
     ) -> Result<Task, RoundUpdateError> {
-        self.accept_review_inner(id, project, false)
+        self.accept_review_inner(id, project, false, &mut |task| {
+            !task
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.get("automation_run_id").is_some())
+        })
     }
     fn accept_review_inner(
         &mut self,
         id: TaskId,
         project: &ProjectId,
         manual_only: bool,
+        gate: &mut dyn FnMut(&Task) -> bool,
     ) -> Result<Task, RoundUpdateError> {
         let now = utc_now_rfc3339_millis();
         let tx = self
@@ -75,6 +96,9 @@ impl StorageConnection {
             return Ok(task);
         }
         if task.status != TaskStatus::AwaitingReview {
+            return Err(RoundUpdateError::InvalidTaskTransition);
+        }
+        if !gate(&task) {
             return Err(RoundUpdateError::InvalidTaskTransition);
         }
         let number = current_round_number(&tx, id)?;

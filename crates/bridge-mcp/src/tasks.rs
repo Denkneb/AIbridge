@@ -950,7 +950,8 @@ impl McpServer {
             .as_ref()
             .is_some_and(|s| s.get("automation_run_id").is_some())
         {
-            return Err("automation_managed");
+            bridge_worker::acceptance::positive_review_gate(&self.layout, &self.project, &task)
+                .map_err(|_| "automation_acceptance_refused")?;
         }
         self.turn_idle(&task)?;
         if self.execution_mode(id)? == ExecutionMode::Worktree {
@@ -965,8 +966,29 @@ impl McpServer {
         }
         let task = self
             .storage()?
-            .accept_manual_task(id, self.project.id())
-            .map_err(|_| "accept_failed")?;
+            .accept_manual_task_guarded(id, self.project.id(), |task| {
+                !task
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.get("automation_run_id").is_some())
+                    || bridge_worker::acceptance::positive_review_gate(
+                        &self.layout,
+                        &self.project,
+                        task,
+                    )
+                    .is_ok()
+            })
+            .map_err(|_| {
+                if task
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.get("automation_run_id").is_some())
+                {
+                    "automation_acceptance_refused"
+                } else {
+                    "accept_failed"
+                }
+            })?;
         Ok(json!({"task_id":task.task_id.to_string(),"status":task.status}))
     }
     fn finish_close(&self, task: &Task) -> Result<()> {

@@ -73,6 +73,7 @@ dependencies = [
  "bridge-mcp",
  "bridge-path-policy",
  "bridge-storage",
+ "bridge-verifier",
  "bridge-worker",
  "nix 0.27.1",
  "process-wrap",

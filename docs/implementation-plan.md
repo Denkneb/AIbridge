@@ -4325,7 +4325,7 @@ limits не расширяются по модельному ответу. Ав�
   revision limit/invalid review/blocker fixtures. Depends on 16.3, 16.5,
   16.6, 16.8, 7.10b, verifier integration 7.11.
 
-### 16.8. Independent acceptance gate
+### 16.8. Independent acceptance gate (завершено)
 
 - **Контракт:** approved step scope, immutable HEAD/index, exact current round,
   current passed verifier before=after=current fingerprint, no side effects,
@@ -4336,6 +4336,17 @@ limits не расширяются по модельному ответу. Ав�
 - **Приёмка:** stale/changed/missing/failed evidence не принимает задачу;
   accept только в running/control=run. Checks: MCP bypass/stale review/scope.
   Depends on 16.6, 7.11, 8.7. Opens 16.7.
+
+- **Реализовано:** `bridge-worker::acceptance`; task/worktree/base/runtime/
+  workflow binding, current-step scope, immutable HEAD/index, exact completed
+  round и authoritative done/passed verifier before=after=current. Approved
+  commands должны совпасть целиком и иметь exit=0 без timeout/side effects.
+  Positive review связывает exact round/fingerprint; running/control=run и
+  persisted accept phase обязательны. Public MCP использует тот же gate;
+  последний guard вызывается внутри IMMEDIATE acceptance transaction. Plain
+  storage acceptance не принимает managed task без explicit guarded API.
+  Два новых tests покрывают 12 invalid evidence/control вариантов и idempotent
+  success с реальным verifier; storage/manual/on_accept regressions и Clippy прошли.
 
 ### 16.9. CLI controls и recovery
 

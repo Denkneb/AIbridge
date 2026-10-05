@@ -244,3 +244,60 @@ fn claim_and_release_event_failure_rolls_back_every_row_and_redacts_sql() {
     assert!(storage.release_needs_user_recovery(&c).is_err());
     assert_eq!(all_rows(&storage), before);
 }
+
+#[test]
+fn delivery_claim_requires_attempted_identity_and_exact_release_preserves_delivery_error() {
+    let (_root, layout, id, project) = state(
+        "delivery-recovery",
+        RoundKind::Implement,
+        RoundStatus::DeliveryUnknown,
+    );
+    let mut storage = layout.open().unwrap();
+    storage
+        .connection()
+        .execute("UPDATE tasks SET status='delivery_unknown'", [])
+        .unwrap();
+    storage
+        .connection()
+        .execute("UPDATE rounds SET error_code='delivery_unknown'", [])
+        .unwrap();
+    let c = storage
+        .claim_delivery_recovery(id, &project)
+        .unwrap()
+        .unwrap();
+    assert_eq!(c.round().status, RoundStatus::Observing);
+    assert_eq!(
+        c.round().outbound_message_id.as_deref(),
+        Some("bound-message")
+    );
+    assert!(
+        storage
+            .claim_delivery_recovery(id, &project)
+            .unwrap()
+            .is_none()
+    );
+    assert!(storage.release_observation_recovery(&c).unwrap());
+    assert!(!storage.release_observation_recovery(&c).unwrap());
+    let row = storage
+        .connection()
+        .query_row("SELECT * FROM rounds", [], |r| Ok(RoundRow::from_row(r)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, RoundStatus::DeliveryUnknown);
+    assert_eq!(row.error_code.as_deref(), Some("delivery_unknown"));
+    for sql in [
+        "UPDATE rounds SET attempted=0",
+        "UPDATE rounds SET attempted=1,session_id=NULL",
+        "UPDATE rounds SET session_id='bound-session',outbound_message_id=NULL",
+    ] {
+        storage.connection().execute(sql, []).unwrap();
+        let before = all_rows(&storage);
+        assert!(
+            storage
+                .claim_delivery_recovery(id, &project)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(all_rows(&storage), before);
+    }
+}

@@ -147,12 +147,56 @@ pub fn recover_needs_user<T, E>(
     timeout: Duration,
     spawn: impl FnOnce(&RoundRef) -> Result<T, E>,
 ) -> Result<RecoverySpawnOutcome<T>, RecoveryError> {
+    recover_observation(
+        layout,
+        project,
+        id,
+        TaskStatus::NeedsUser,
+        explicit,
+        layouts,
+        timeout,
+        spawn,
+    )
+}
+/// Proves the saved endpoint before claiming ambiguous delivery for observation.
+/// # Errors
+/// Binding, lock or storage errors fail closed without issuing a prompt.
+pub fn recover_delivery_unknown<T, E>(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+    layouts: &[&RustStateLayout],
+    timeout: Duration,
+    spawn: impl FnOnce(&RoundRef) -> Result<T, E>,
+) -> Result<RecoverySpawnOutcome<T>, RecoveryError> {
+    recover_observation(
+        layout,
+        project,
+        id,
+        TaskStatus::DeliveryUnknown,
+        true,
+        layouts,
+        timeout,
+        spawn,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn recover_observation<T, E>(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+    parked: TaskStatus,
+    explicit: bool,
+    layouts: &[&RustStateLayout],
+    timeout: Duration,
+    spawn: impl FnOnce(&RoundRef) -> Result<T, E>,
+) -> Result<RecoverySpawnOutcome<T>, RecoveryError> {
     if task_worker_running(layout, id).map_err(|_| RecoveryError::Lock)? {
         return Ok(RecoverySpawnOutcome::Busy);
     }
     let mut storage = layout.open().map_err(|_| RecoveryError::Ownership)?;
     let task = saved_task(&storage, layout, project, id)?;
-    if task.status != TaskStatus::NeedsUser || task.close_requested_at.is_some() {
+    if task.status != parked || task.close_requested_at.is_some() {
         return Ok(RecoverySpawnOutcome::Unchanged);
     }
     match crate::lifecycle::recover_worktree_task(layout, project, id, layouts)
@@ -204,13 +248,16 @@ pub fn recover_needs_user<T, E>(
         return Ok(RecoverySpawnOutcome::Busy);
     }
     let current = saved_task(&storage, layout, project, id)?;
-    if current.status != TaskStatus::NeedsUser || current.close_requested_at.is_some() {
+    if current.status != parked || current.close_requested_at.is_some() {
         return Ok(RecoverySpawnOutcome::Unchanged);
     }
     let current_round = saved_round(&storage, &current)?;
     if current_round.round_number != row.round_number
         || current_round.session_id != row.session_id
         || current_round.status != row.status
+        || current_round.outbound_message_id != row.outbound_message_id
+        || current_round.attempted != row.attempted
+        || current_round.error_code != row.error_code
     {
         return Ok(RecoverySpawnOutcome::Unchanged);
     }
@@ -220,9 +267,12 @@ pub fn recover_needs_user<T, E>(
     {
         return Err(RecoveryError::Binding);
     }
-    let claim = storage
-        .claim_needs_user_recovery(id, project.id())
-        .map_err(|_| RecoveryError::Storage)?;
+    let claim = match parked {
+        TaskStatus::NeedsUser => storage.claim_needs_user_recovery(id, project.id()),
+        TaskStatus::DeliveryUnknown => storage.claim_delivery_recovery(id, project.id()),
+        _ => return Err(RecoveryError::Binding),
+    }
+    .map_err(|_| RecoveryError::Storage)?;
     let Some(claim) = claim else {
         return Ok(RecoverySpawnOutcome::Unchanged);
     };
@@ -231,7 +281,7 @@ pub fn recover_needs_user<T, E>(
         Ok(worker) => Ok(RecoverySpawnOutcome::Spawned(worker)),
         Err(_) => {
             storage
-                .release_needs_user_recovery(&claim)
+                .release_observation_recovery(&claim)
                 .map_err(|_| RecoveryError::Storage)?;
             Ok(RecoverySpawnOutcome::SpawnFailed)
         }

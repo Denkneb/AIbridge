@@ -164,6 +164,7 @@ impl McpServer {
                     TaskStatus::Implementing | TaskStatus::Revising if gate.may_spawn() => {
                         self.maybe_spawn(task.task_id)
                     }
+                    TaskStatus::DeliveryUnknown => self.maybe_spawn(task.task_id),
                     TaskStatus::NeedsUser => {
                         let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
                         let outcome = bridge_worker::recovery::recover_needs_user(
@@ -265,6 +266,27 @@ impl McpServer {
         let Some(task) = self.task(id)? else {
             return Ok(());
         };
+        if task.status == TaskStatus::DeliveryUnknown && task.close_requested_at.is_none() {
+            let layouts = self.layouts()?;
+            let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
+            let outcome = bridge_worker::recovery::recover_delivery_unknown(
+                &self.layout,
+                &self.project,
+                id,
+                &layouts.iter().collect::<Vec<_>>(),
+                PROBE,
+                |r| spawn(r),
+            )
+            .map_err(|_| "recovery_failed")?;
+            return if matches!(
+                outcome,
+                bridge_worker::recovery::RecoverySpawnOutcome::SpawnFailed
+            ) {
+                Err("worker_spawn_failed")
+            } else {
+                Ok(())
+            };
+        }
         if !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising)
             || task.close_requested_at.is_some()
         {

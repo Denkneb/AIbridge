@@ -89,7 +89,9 @@ impl Fixture {
                             .next()
                             .unwrap();
                         let value = match path {
-                            "/global/health" => json!({"healthy":true}),
+                            "/global/health" => {
+                                json!({"healthy":a.lock().unwrap().get("_health").and_then(Value::as_bool).unwrap_or(true)})
+                            }
                             "/path" => json!({"directory":directory}),
                             "/session/status" => a.lock().unwrap().clone(),
                             "/permission" => b.lock().unwrap()["permissions"].clone(),
@@ -833,12 +835,7 @@ fn startup_background_needs_user_keeps_blocker_gate_and_rolls_back_failed_spawn(
 }
 #[test]
 fn startup_leaves_review_failed_and_waiting_tasks_parked_and_readonly_is_inert() {
-    for status in [
-        "awaiting_review",
-        "failed",
-        "waiting_dependencies",
-        "delivery_unknown",
-    ] {
+    for status in ["awaiting_review", "failed", "waiting_dependencies"] {
         let f = Fixture::new("");
         let server = f.server();
         let id = task_id(&f.submit(&server));
@@ -1127,4 +1124,70 @@ fn http_transport_runs_startup_recovery_beside_authenticated_handshake() {
         h.join().unwrap().unwrap();
     });
     assert!(McpServer::open(f.project.clone(), f.layout.clone()).is_ok());
+}
+
+#[test]
+fn ambiguous_delivery_recovery_probes_health_claims_once_and_never_posts() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    park(&f, id);
+    f.layout.open().unwrap().connection().execute_batch("UPDATE tasks SET status='delivery_unknown'; UPDATE rounds SET status='delivery_unknown',error_code='delivery_unknown'").unwrap();
+    *f.activity.lock().unwrap() = json!({"_health":false});
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::DeliveryUnknown
+    );
+    *f.activity.lock().unwrap() = json!({});
+    f.fail.store(true, Ordering::Relaxed);
+    assert!(server.recover_startup().is_err());
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::DeliveryUnknown
+    );
+    f.fail.store(false, Ordering::Relaxed);
+    thread::scope(|scope| {
+        let a = scope.spawn(|| server.recover_startup());
+        let b = scope.spawn(|| {
+            call(
+                &server,
+                "task_status",
+                json!({"task_id":id.to_string(),"wait_seconds":0}),
+            )
+        });
+        a.join().unwrap().unwrap();
+        b.join().unwrap();
+    });
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 3);
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Implementing
+    );
+    assert!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.starts_with("GET "))
+    );
 }

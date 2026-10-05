@@ -2893,6 +2893,16 @@ namespace, meta/runtime_owner и Rust/Python isolation guards; поддержк�
 
 ### 7.10. Continuation recovery
 
+- **7.10d / 8.11b. Delivery-unknown observation recovery (завершён).**
+  Startup и task_status проверяют saved endpoint/root, затем admission/task
+  fences и atomic delivery claim переводят attempted delivery_unknown в
+  implementing/revising + observing. Outbound/session/baseline не меняются;
+  prompt не отправляется. Dead/unhealthy server оставляет прежний статус.
+  Failed spawn делает exact-claim rollback с исходным error_code; общая event
+  identity защищает lease от stale release другого recovery kind. Checks:
+  storage claim/identity/rollback и concurrent startup/status loopback test;
+  MCP regressions и targeted Clippy.
+
 - **7.10a. Recovery spawn lease/probes (service завершён).** Task+project lock
   probes сериализуются внутри процесса, исключая ложный busy от двух probe;
   startup grace закрывает spawn-before-worker-lock window, expired lease
@@ -3440,11 +3450,11 @@ Source: `mcp_http.py` v17 и
   implementing/revising — через existing lifecycle/spawn fences и persisted
   startup lease, needs_user — через background blocker gate и atomic claim.
   Deferred close завершается без нового prompt. Waiting/review/failed и
-  delivery_unknown не запускаются; read-only embedders без spawner инертны.
+  read-only embedders без spawner инертны. Delivery recovery подключён в 8.11b.
   Ошибка одного spawn не останавливает остальных writers, failed spawn отпускает
   собственный lease/claim. Saved attempted round/session/outbound и baseline
   сохраняются; pending worktree передаётся worker без static endpoint probe.
-  **Граница:** delivery_unknown/failed assistant recovery остаются в 9.5c;
+  **Граница:** failed assistant recovery остаётся в 9.5c;
   full source parity не заявлена. Targeted tests: 9 новых startup cases,
   включая concurrent claims, live worker/lease, blocker gate/rollback,
   parallel writers, deferred close/reconcile, orphan preservation и

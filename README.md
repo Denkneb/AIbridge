@@ -40,7 +40,8 @@ checkpoint для каждого repo. Baseline/scope заморожены, по
 сохраняют ограничение на один checkout. Пять delegated MCP handlers подключены
 для standalone задач с manual review (**9.5c1**). Startup recovery **8.11a** подключён к stdio/HTTP в фоне: writer ledger,
 orphan quarantine, deferred close, implementing/revising и needs_user с blocker
-gate; handshake не ждёт recovery. Полная source error-policy
+gate; delivery_unknown восстанавливается после saved endpoint probe (**8.11b**).
+Handshake не ждёт recovery. Полная source error-policy
 parity, workflow metadata и on_accept delivery остаются
 открыты; live OpenCode/provider smoke ещё не выполнен.
 
@@ -88,8 +89,8 @@ Rust worker; request_id сохраняет idempotency, review/close прове�
 сохранённой session. `task_status` поддерживает wait_seconds 0..300 и explicit
 needs_user recovery. Workflow metadata возвращает `workflow_metadata_unavailable`,
 accept с frozen on_accept policy — `on_accept_delivery_unavailable` без смены
-статуса. Автосканирование при старте MCP подключено; failed assistant и
-delivery_unknown recovery остаются отдельными задачами.
+статуса. Автосканирование при старте MCP и delivery_unknown recovery подключены;
+failed assistant recovery остаётся отдельной задачей.
 Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
 
 MCP stdio доступен через тот же explicit Rust state root:

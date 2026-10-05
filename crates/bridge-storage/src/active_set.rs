@@ -106,7 +106,10 @@ impl StorageConnection {
                 .map_err(|_|ActiveSetError::Database)?;
             let rows = statement
                 .query_map([project.as_str()], |r| {
-                    Ok((Task::from_row(r), r.get::<_, String>("execution_mode")?))
+                    Ok((
+                        crate::map_task_runtime(&self.connection, r),
+                        r.get::<_, String>("execution_mode")?,
+                    ))
                 })
                 .map_err(|_| ActiveSetError::Database)?;
             let mut tasks = Vec::new();

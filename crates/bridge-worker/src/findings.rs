@@ -80,6 +80,26 @@ impl RevisionFindings {
         )
     }
 
+    /// One-round override, recorded atomically with the newly created round.
+    pub fn create_round_with_budget_override(
+        &self,
+        storage: &mut StorageConnection,
+        round: RoundRef,
+        request_id: String,
+    ) -> Result<RevisionRoundOutcome, RoundUpdateError> {
+        storage.create_revision_round_with_budget_override(
+            CreateRevisionRoundInput {
+                task_id: round.task_id,
+                project_id: round.project_id,
+                round_number: round.round_number,
+                request_id,
+                payload_hash: self.payload_hash.clone(),
+                findings: Some(self.text.clone()),
+            },
+            self.structured.clone(),
+        )
+    }
+
     /// Text-only and empty-array revisions keep the historical prompt verbatim.
     /// Nonempty structured findings append the reference's deterministic block.
     pub fn prompt_findings(&self) -> String {

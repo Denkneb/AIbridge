@@ -110,6 +110,27 @@ pub(crate) fn saved_view(
         .map_err(|_| RecoveryError::Binding)
 }
 
+/// Bound review task supplied by the fenced caller. Only saved workspace and
+/// endpoint establish this view; a corrupt budget cannot authorize execution.
+pub fn review_execution_view(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task: &Task,
+) -> Result<ProjectEntry, RecoveryError> {
+    if task.status != TaskStatus::AwaitingReview
+        || &task.project_id != project.id()
+        || std::path::Path::new(&task.workspace) != project.workspace()
+    {
+        return Err(RecoveryError::Binding);
+    }
+    saved_view(
+        &layout.open().map_err(|_| RecoveryError::Storage)?,
+        layout,
+        project,
+        task,
+    )
+}
+
 /// Proves an existing task-scoped endpoint. Pending worktree preparation has
 /// no endpoint to probe; a created but corrupt binding fails closed.
 pub fn task_execution_view(

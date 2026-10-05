@@ -191,10 +191,25 @@ fn bound_task(
     if layout.project_id() != project.id() {
         return Err(AdmissionError::Binding);
     }
-    let task = storage
-        .get_task(task)
-        .map_err(|_| AdmissionError::Storage)?
-        .ok_or(AdmissionError::Binding)?;
+    let task = match storage.get_task(task) {
+        Ok(Some(task)) => task,
+        Ok(None) => return Err(AdmissionError::Binding),
+        Err(_) => {
+            let task = storage
+                .connection()
+                .query_row(
+                    "SELECT * FROM tasks WHERE task_id=?1",
+                    [task.to_string()],
+                    |row| Ok(Task::from_row_for_status(row)),
+                )
+                .map_err(|_| AdmissionError::Storage)?
+                .map_err(|_| AdmissionError::Storage)?;
+            if task.status != TaskStatus::AwaitingReview {
+                return Err(AdmissionError::Storage);
+            }
+            task
+        }
+    };
     if &task.project_id != project.id() || Path::new(&task.workspace) != project.workspace() {
         return Err(AdmissionError::Binding);
     }

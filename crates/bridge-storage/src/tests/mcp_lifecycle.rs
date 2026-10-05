@@ -154,3 +154,44 @@ fn revision_limit_parks_once_and_event_failure_rolls_back() {
         1
     );
 }
+#[test]
+fn budget_override_audit_is_atomic_and_authorizes_only_the_current_revision() {
+    let (_root, layout, task, project) = state(true);
+    let mut s = layout.open().unwrap();
+    s.connection()
+        .execute("UPDATE tasks SET budget_json='corrupt'", [])
+        .unwrap();
+    let input = CreateRevisionRoundInput {
+        task_id: task,
+        project_id: project.clone(),
+        round_number: 2,
+        request_id: "override".into(),
+        payload_hash: "hash".into(),
+        findings: Some("fix".into()),
+    };
+    s.connection().execute_batch("CREATE TRIGGER reject_override BEFORE INSERT ON events WHEN NEW.kind='budget_override' BEGIN SELECT RAISE(ABORT,'private trigger detail'); END;").unwrap();
+    assert!(
+        s.create_revision_round_with_budget_override(input.clone(), None)
+            .is_err()
+    );
+    assert!(s.get_task(task).is_err());
+    assert_eq!(
+        s.connection()
+            .query_row("SELECT COUNT(*) FROM rounds", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    s.connection()
+        .execute_batch("DROP TRIGGER reject_override")
+        .unwrap();
+    let outcome = s
+        .create_revision_round_with_budget_override(input, None)
+        .unwrap();
+    assert_eq!(outcome.state.task.status, TaskStatus::Revising);
+    assert!(s.get_task(task).unwrap().is_some());
+    assert!(s.active_set(&project).is_ok());
+    // An older audit cannot grant execution permission to a new unaudited round.
+    s.connection().execute("INSERT INTO rounds(task_id,project_id,round_number,request_id,payload_hash,kind,status,attempted,created_at,updated_at) VALUES (?1,?2,3,'unaudited','hash','revise','pending',0,'stamp','stamp')",rusqlite::params![task.to_string(),project.as_str()]).unwrap();
+    assert!(s.get_task(task).is_err());
+    assert!(s.active_set(&project).is_err());
+}

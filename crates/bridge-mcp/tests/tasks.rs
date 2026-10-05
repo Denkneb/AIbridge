@@ -1705,3 +1705,141 @@ fn linked_workflow_reads_owned_state_and_removed_link_blocks_activation() {
     assert_eq!(task_id(&call(&server, "submit_task", args)), child);
     assert_eq!(f.spawns.load(Ordering::Relaxed), 0);
 }
+#[test]
+fn corrupt_budget_requires_audited_one_round_override_and_blocks_the_next_revision() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    f.review(id, false);
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET budget_json='broken-budget'", [])
+        .unwrap();
+    let args = json!({"task_id":id.to_string(),"request_id":"corrupt-revision","findings":"fix"});
+    let refusal = call(&server, "request_changes", args.clone());
+    assert_eq!(refusal["error"], "budget_corrupt", "{refusal}");
+    assert_eq!(refusal["status"], "awaiting_review");
+    assert_eq!(refusal["budget"]["corrupt"], true);
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    let mut override_args = args;
+    override_args["allow_budget_override"] = json!(true);
+    let result = call(&server, "request_changes", override_args.clone());
+    assert_eq!(result["status"], "revising", "{result}");
+    assert_eq!(result["round_number"], 2);
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        call(&server, "request_changes", override_args)["round_number"],
+        2
+    );
+    let mut s = f.layout.open().unwrap();
+    assert_eq!(
+        s.connection()
+            .query_row("SELECT budget_json FROM tasks", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "broken-budget"
+    );
+    assert_eq!(
+        s.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='budget_override'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let reference = RoundRef {
+        task_id: id,
+        project_id: f.project.id().clone(),
+        round_number: 2,
+    };
+    s.prepare_round(reference.clone(), "revision-outbound".into())
+        .unwrap();
+    s.mark_round_sent(reference.clone()).unwrap();
+    s.mark_round_observing(reference.clone()).unwrap();
+    s.finish_round(FinishRoundInput {
+        round: reference,
+        round_status: RoundStatus::Complete,
+        task_status: TaskStatus::AwaitingReview,
+        response_message_id: None,
+        response: None,
+        error_code: None,
+        result_json: None,
+    })
+    .unwrap();
+    let refusal = call(
+        &server,
+        "request_changes",
+        json!({"task_id":id.to_string(),"request_id":"next","findings":"next"}),
+    );
+    assert_eq!(refusal["error"], "budget_corrupt", "{refusal}");
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+}
+#[test]
+fn validation_error_envelopes_match_29_frozen_source_cases() {
+    let corpus: Value =
+        serde_json::from_str(include_str!("../../../docs/fixtures/mcp-cases.json")).unwrap();
+    let selected = [
+        "invalid_structured_findings",
+        "invalid_budget",
+        "invalid_git_policy",
+        "invalid_allow_budget_override",
+        "invalid_allow_suspected_secrets",
+        "invalid_verbose",
+        "invalid_wait_seconds",
+        "invalid_request_id",
+        "empty_task",
+        "empty_findings",
+        "invalid_test_commands",
+        "depends_on_requires_workflow",
+        "duplicate_dependency",
+        "invalid_workflow_id",
+        "invalid_depends_on",
+        "invalid_dependency_identifier",
+    ];
+    fn expand(v: &mut Value, id: TaskId) {
+        match v{Value::String(s)=>{match s.as_str(){"${TASK_ID}"=>*s=id.to_string(),"${REQUEST_ID}"=>*s="submit".into(),"${REVISION_REQUEST_ID}"=>*s="revise".into(),"${PROJECT_ID}"=>*s="proj".into(),"${OTHER_TASK_ID}"=>*s="dependency".into(),"${WORKFLOW_ID}"=>*s="flow-1".into(),"${STRUCTURED_FINDINGS_201}"=>*v=json!((0..201).map(|_|json!({"severity":"error","path":"module.py","line":2,"code":"STYLE-1","message":"finding"})).collect::<Vec<_>>()),_=>{}}},Value::Array(a)=>a.iter_mut().for_each(|v|expand(v,id)),Value::Object(o)=>o.values_mut().for_each(|v|expand(v,id)),_=>{}}
+    }
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    f.review(id, false);
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET allowed_paths='[\"module.py\"]'", [])
+        .unwrap();
+    let mut count = 0;
+    for case in corpus["cases"].as_array().unwrap().iter().filter(|c| {
+        c["error_category"]
+            .as_str()
+            .is_some_and(|e| selected.contains(&e))
+    }) {
+        let mut args = case["input"].clone();
+        expand(&mut args, id);
+        let result = call(&server, case["tool"].as_str().unwrap(), args);
+        assert_eq!(
+            result["error"], case["error_category"],
+            "{}: {result}",
+            case["id"]
+        );
+        if let Some(payload) = case["error_payload"].as_object() {
+            for (key, expected) in payload {
+                if matches!(
+                    key.as_str(),
+                    "index" | "detail" | "status" | "reason" | "categories"
+                ) {
+                    assert_eq!(&result[key], expected, "{} / {key}: {result}", case["id"]);
+                }
+            }
+        }
+        count += 1;
+    }
+    assert_eq!(count, 29);
+    assert_eq!(f.count(), 1);
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+}

@@ -244,6 +244,15 @@ impl McpServer {
             .collect()
     }
     fn view(&self, task: &Task) -> Result<Option<bridge_config::ProjectEntry>> {
+        if task.status == TaskStatus::AwaitingReview {
+            return bridge_worker::recovery::review_execution_view(
+                &self.layout,
+                &self.project,
+                task,
+            )
+            .map(Some)
+            .map_err(|_| "execution_binding_invalid");
+        }
         bridge_worker::recovery::task_execution_view(&self.layout, &self.project, task.task_id)
             .map_err(|_| "execution_binding_invalid")
     }
@@ -262,7 +271,7 @@ impl McpServer {
         let active = client
             .session_turn_active(session)
             .map_err(|_| "server_unavailable")?;
-        let latest = self.task(task.task_id)?.ok_or("unknown_task")?;
+        let latest = self.status_task(task.task_id)?.ok_or("unknown_task")?;
         let current_view = self.view(&latest)?.ok_or("execution_binding_invalid")?;
         if latest.session_id != task.session_id
             || current_view.workspace() != view.workspace()
@@ -422,7 +431,9 @@ impl McpServer {
         if self.project.execution_mode() == ExecutionMode::Worktree
             && paths.iter().any(|p| Path::new(p).is_absolute())
         {
-            return Err("external_paths_not_supported_in_worktree_mode");
+            return Ok(
+                json!({"error":"external_paths_not_supported_in_worktree_mode","paths":paths.iter().filter(|p|Path::new(p).is_absolute()).collect::<Vec<_>>()}),
+            );
         }
         let trusted = self
             .project
@@ -457,7 +468,18 @@ impl McpServer {
                 bridge_git::take_snapshot(group.root()).map_err(|_| "git_snapshot_failed")?
             };
             if !allow_dirty && !baseline.dirty_paths().is_empty() {
-                return Err("dirty_workspace");
+                let dirty = baseline
+                    .dirty_paths()
+                    .iter()
+                    .map(|p| {
+                        if group.root() == self.project.workspace() {
+                            p.to_string_lossy().into_owned()
+                        } else {
+                            group.root().join(p).to_string_lossy().into_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                return Ok(json!({"error":"dirty_workspace","dirty_paths":dirty}));
             }
             for path in baseline.dirty_paths() {
                 let qualified = if group.root() == self.project.workspace() {
@@ -475,7 +497,7 @@ impl McpServer {
                         || qualified == *scope
                         || (scope.ends_with('/') && qualified.starts_with(scope))
                 }) {
-                    return Err("dirty_paths_outside_scope");
+                    return Ok(json!({"error":"dirty_paths_outside_scope","paths":[qualified]}));
                 }
             }
             if group.root() != self.project.workspace() {
@@ -737,7 +759,7 @@ impl McpServer {
         let findings = text(args, "findings").map_err(|_| "empty_findings")?;
         let override_budget = flag(args, "allow_budget_override")?;
         secret_gate(args)?;
-        let Some(task) = self.task(id)? else {
+        let Some(task) = self.status_task(id)? else {
             return Ok(json!({"status":"unknown_task"}));
         };
         if task
@@ -773,7 +795,10 @@ impl McpServer {
         let _fences = bridge_worker::admission::try_review_fences(&self.layout, &self.project, id)
             .map_err(|_| "state_unavailable")?
             .ok_or("worker_running")?;
-        let task = self.task(id)?.ok_or("unknown_task")?;
+        let task = self.status_task(id)?.ok_or("unknown_task")?;
+        if task.status == TaskStatus::NeedsUser {
+            return self.result(&task, false);
+        }
         if task.status != TaskStatus::AwaitingReview || task.close_requested_at.is_some() {
             return Err("not_awaiting_review");
         }
@@ -786,11 +811,10 @@ impl McpServer {
             return Err("revision_limit");
         }
         let mut storage = self.storage()?;
-        if let Some(error) = storage
+        let budget_decision = storage
             .revision_budget_decision(id, self.project.id(), override_budget)
-            .map_err(|_| "state_unavailable")?
-            .error
-        {
+            .map_err(|_| "state_unavailable")?;
+        if let Some(error) = budget_decision.error {
             return Err(error);
         }
         self.turn_idle(&task)?;
@@ -799,26 +823,26 @@ impl McpServer {
             .round_number
             .checked_add(1)
             .ok_or("revision_limit")?;
-        validated
-            .create_round(
-                &mut storage,
-                RoundRef {
-                    task_id: id,
-                    project_id: self.project.id().clone(),
-                    round_number: number,
-                },
-                request_id.into(),
-            )
-            .map_err(|e| {
-                if matches!(e, bridge_storage::RoundUpdateError::RequestConflict) {
-                    "request_conflict"
-                } else {
-                    "revision_failed"
-                }
-            })?;
+        let reference = RoundRef {
+            task_id: id,
+            project_id: self.project.id().clone(),
+            round_number: number,
+        };
+        (if budget_decision.overridden {
+            validated.create_round_with_budget_override(&mut storage, reference, request_id.into())
+        } else {
+            validated.create_round(&mut storage, reference, request_id.into())
+        })
+        .map_err(|e| {
+            if matches!(e, bridge_storage::RoundUpdateError::RequestConflict) {
+                "request_conflict"
+            } else {
+                "revision_failed"
+            }
+        })?;
         drop(_fences);
         self.maybe_spawn(id)?;
-        self.result(&self.task(id)?.ok_or("state_unavailable")?, false)
+        self.result(&self.status_task(id)?.ok_or("state_unavailable")?, false)
     }
     fn accept(&self, args: &Value) -> Result<Value> {
         let id = id(args)?;

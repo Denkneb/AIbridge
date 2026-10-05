@@ -1,5 +1,5 @@
 //! Atomic admission and fail-closed writer scope identity.
-use super::{StorageConnection, Task, TaskRowError, utc_now_rfc3339_millis};
+use super::{StorageConnection, TaskRowError, utc_now_rfc3339_millis};
 use bridge_domain::{DeliveryMode, ExecutionMode, ProjectId, TaskId, TaskStatus};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{
@@ -398,7 +398,7 @@ impl StorageConnection {
             .query_row(
                 "SELECT * FROM tasks WHERE task_id=?1 AND project_id=?2",
                 params![task_id.to_string(), project.as_str()],
-                |r| Ok(Task::from_row(r)),
+                |r| Ok(crate::map_task_runtime(&tx, r)),
             )
             .optional()
             .map_err(WriterError::Database)?
@@ -550,7 +550,7 @@ impl StorageConnection {
             .query_row(
                 "SELECT * FROM tasks WHERE task_id=?1 AND project_id=?2",
                 params![task_id.to_string(), project.as_str()],
-                |row| Ok(Task::from_row(row)),
+                |row| Ok(crate::map_task_runtime(&transaction, row)),
             )
             .optional()
             .map_err(WriterError::Database)?;

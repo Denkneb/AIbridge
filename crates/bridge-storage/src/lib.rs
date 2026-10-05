@@ -1142,7 +1142,7 @@ impl StorageConnection {
         let row = self
             .connection
             .query_row(sql, params![task_id.to_string()], |row| {
-                Ok(Task::from_row(row))
+                Ok(map_task_runtime(&self.connection, row))
             })
             .optional()
             .map_err(QueryError::Database)?;
@@ -11555,7 +11555,7 @@ impl StorageConnection {
         &mut self,
         input: CreateRevisionRoundInput,
     ) -> Result<RoundUpdateOutcome, RoundUpdateError> {
-        self.create_revision_round_inner(input, None, false)
+        self.create_revision_round_inner(input, None, false, false)
             .map(|outcome| outcome.state)
     }
 
@@ -11575,7 +11575,24 @@ impl StorageConnection {
         {
             return Err(RoundUpdateError::InvalidInput);
         }
-        self.create_revision_round_inner(input, structured, true)
+        self.create_revision_round_inner(input, structured, true, false)
+    }
+
+    /// Explicit one-round budget override. The caller holds review fences and
+    /// has evaluated budget exhaustion/corruption; other gates still apply.
+    pub fn create_revision_round_with_budget_override(
+        &mut self,
+        input: CreateRevisionRoundInput,
+        structured: Option<bridge_domain::StructuredFindings>,
+    ) -> Result<RevisionRoundOutcome, RoundUpdateError> {
+        if input
+            .findings
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        {
+            return Err(RoundUpdateError::InvalidInput);
+        }
+        self.create_revision_round_inner(input, structured, true, true)
     }
 
     /// Read-only structured findings for a project-scoped round. SQL NULL is
@@ -11606,6 +11623,7 @@ impl StorageConnection {
         input: CreateRevisionRoundInput,
         structured: Option<bridge_domain::StructuredFindings>,
         replay: bool,
+        budget_override: bool,
     ) -> Result<RevisionRoundOutcome, RoundUpdateError> {
         if input.request_id.is_empty() || input.payload_hash.is_empty() || input.round_number == 0 {
             return Err(RoundUpdateError::InvalidInput);
@@ -11625,7 +11643,20 @@ impl StorageConnection {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(RoundUpdateError::Database)?;
 
-        let task = load_task_for_update(&transaction, input.task_id)?;
+        let task = if budget_override {
+            transaction
+                .query_row(
+                    "SELECT * FROM tasks WHERE task_id=?1",
+                    [input.task_id.to_string()],
+                    |row| Ok(Task::from_row_for_status(row)),
+                )
+                .optional()
+                .map_err(RoundUpdateError::Database)?
+                .ok_or(RoundUpdateError::MissingTask)?
+                .map_err(RoundUpdateError::TaskRow)?
+        } else {
+            load_task_for_update(&transaction, input.task_id)?
+        };
         if task.project_id != input.project_id {
             return Err(RoundUpdateError::ProjectMismatch);
         }
@@ -11755,6 +11786,9 @@ impl StorageConnection {
             )
             .map_err(RoundUpdateError::Database)?;
 
+        if budget_override {
+            transaction.execute("INSERT INTO events(task_id,round_number,kind,message,created_at) VALUES (?1,?2,'budget_override','explicit one-round budget override',?3)",params![input.task_id.to_string(),input.round_number,now]).map_err(RoundUpdateError::Database)?;
+        }
         let outcome = read_round_update_outcome(&transaction, input.task_id, input.round_number)?;
         transaction.commit().map_err(RoundUpdateError::Database)?;
         Ok(RevisionRoundOutcome {
@@ -13198,6 +13232,19 @@ pub const CLOSE_REASON_FALLBACK: &str = "requested while worker was running";
 
 /// Loads one `tasks` row inside a transaction, mapping it through
 /// [`Task::from_row`], or `None` when the task is absent.
+fn map_task_runtime(connection: &Connection, row: &Row<'_>) -> Result<Task, TaskRowError> {
+    match Task::from_row(row) {
+        Ok(task) => Ok(task),
+        Err(error) => {
+            let Ok(task) = Task::from_row_for_status(row) else {
+                return Err(error);
+            };
+            let authorized=connection.query_row("SELECT EXISTS(SELECT 1 FROM events e JOIN rounds r ON r.task_id=e.task_id AND r.round_number=e.round_number WHERE e.task_id=?1 AND e.kind='budget_override' AND e.message='explicit one-round budget override' AND r.kind='revise' AND r.round_number=(SELECT MAX(round_number) FROM rounds WHERE task_id=?1))",[task.task_id.to_string()],|r|r.get::<_,bool>(0)).unwrap_or(false);
+            if authorized { Ok(task) } else { Err(error) }
+        }
+    }
+}
+
 fn load_optional_task_for_update(
     connection: &Connection,
     task_id: TaskId,
@@ -13206,7 +13253,7 @@ fn load_optional_task_for_update(
         .query_row(
             "SELECT * FROM tasks WHERE task_id = ?1",
             params![task_id.to_string()],
-            |row| Ok(Task::from_row(row)),
+            |row| Ok(map_task_runtime(connection, row)),
         )
         .optional()
         .map_err(RoundUpdateError::Database)?;
@@ -13227,7 +13274,7 @@ fn load_task_for_update(
         .query_row(
             "SELECT * FROM tasks WHERE task_id = ?1",
             params![task_id.to_string()],
-            |row| Ok(Task::from_row(row)),
+            |row| Ok(map_task_runtime(connection, row)),
         )
         .optional()
         .map_err(RoundUpdateError::Database)?

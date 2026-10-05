@@ -4380,3 +4380,9 @@ improvement**. Limitation не выдаётся за реализованное 
 
 - Implemented: structural workflow normalization, atomic task/round/profile/checkout metadata, request hash/replay before referential probes, owned mode=ro dependency reads, linked-root validation, bounded transitive cycle check, source-compatible workflow/workflow_gate status fields. Explicit task_status activates through admission/lifecycle fences; startup leaves waiting tasks parked.
 - Validation: full MCP 31 checks passed before final payload-key correction; three final workflow scenarios passed (local gate/replay/cycle + linked read-only/unlinked refusal); submission 13 and storage dependency 10 checks passed; targeted Clippy clean.
+
+### 9.18a/b and 7.17d/9.18d service foundation
+
+- Implemented `bridge-delivery`: accepted-only byte-complete manifest/blobs, binary files, delete, executable modes and symlink targets; bounded read-only commit blob reader; full ordered artifact/checkout revalidation and clean-main/ancestry/exact-base preflight. Artifact files are private and atomically fsynced. Admission remains held across writer-status/ledger and lifecycle/task-lock checks, independent of parallel-writer config downgrade.
+- Checks: three integration scenarios passed (five object operations; dirty/drift/blob corruption/outside scope with unchanged main; accepted/writer reservation refusal before artifact writes); targeted Clippy clean.
+- Remaining: journal/materializer/resume, CLI wiring, automatic on_accept wrapper.

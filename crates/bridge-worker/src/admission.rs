@@ -110,6 +110,14 @@ pub fn try_review_fences(
             WorkerLockOutcome::Busy => return Ok(None),
             WorkerLockOutcome::Acquired(guard) => guard,
         };
+    try_review_fences_while_admitted(layout, project, task_id)
+}
+/// Review fence for callers already holding admission across an operation.
+pub fn try_review_fences_while_admitted(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+) -> Result<Option<WorkerFences>, AdmissionError> {
     let storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
     bound_task(&storage, layout, project, task_id)?;
     let parallel = storage

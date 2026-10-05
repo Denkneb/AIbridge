@@ -14,6 +14,7 @@ members = [
     "crates/bridge-submission",
     "crates/bridge-runtime",
     "crates/bridge-mcp",
+    "crates/bridge-delivery",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ bridge-storage = { path = "crates/bridge-storage" }
 bridge-worker = { path = "crates/bridge-worker" }
 bridge-runtime = { path = "crates/bridge-runtime" }
 bridge-mcp = { path = "crates/bridge-mcp" }
+bridge-delivery = { path = "crates/bridge-delivery" }
 command-group = "5"
 nix = { version = "0.27", default-features = false, features = ["fs"] }
 process-wrap = { version = "10", default-features = false, features = ["std", "process-session"] }

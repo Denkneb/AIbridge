@@ -4369,3 +4369,9 @@ improvement**. Limitation не выдаётся за реализованное 
 - Codex/OpenCode работают во встроенном PTY;
 - dashboard отзывчив и соответствует storage;
 - установка и rollback документированы.
+
+### 9.5c3. Safe MCP error context and revision-limit parking
+
+- Implemented: public validation categories for flags/request/text, command index/reason and deduplicated secret categories; review/budget error status context. Revision limit atomically parks in needs_user with one event and no new round.
+- Validation: 28 existing MCP regressions passed; new safe-error/limit scenario passed after fixture correction; four storage lifecycle checks including rollback on event failure passed.
+- Remaining error parity: structured findings details, dirty scope evidence and corrupt-budget revision handling.

@@ -1,5 +1,6 @@
 //! MCP transports and standalone delegated task adapters.
 //! Delegation requires an injected worker launcher; manual delivery only.
+mod errors;
 pub mod http;
 pub mod protocol;
 mod status;

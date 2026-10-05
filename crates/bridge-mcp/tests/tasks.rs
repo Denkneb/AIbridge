@@ -275,7 +275,7 @@ fn validation_refusals_never_persist_or_spawn() {
         ),
         ("budget", json!({"invalid":2}), "invalid_budget"),
         ("profile", json!("missing"), "unknown_profile"),
-        ("allow_commit", json!("true"), "invalid_boolean"),
+        ("allow_commit", json!("true"), "invalid_git_policy"),
     ] {
         let mut args = input();
         args[key] = value;
@@ -1420,4 +1420,46 @@ fn status_payloads_match_frozen_review_diagnostics_and_progress_corpus() {
         }
         drop(admission);
     }
+}
+#[test]
+fn safe_error_context_and_revision_limit_never_send_a_round() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let mut args = input();
+    args["test_commands"] = json!(["git push"]);
+    let error = call(&server, "submit_task", args);
+    assert_eq!(error["index"], 0);
+    assert!(error["reason"].is_string());
+    assert!(!error.to_string().contains("git push"));
+    let mut args = input();
+    args["task"] = json!("-----BEGIN PRIVATE KEY-----\nprivate-content");
+    let error = call(&server, "submit_task", args);
+    assert!(!error["categories"].as_array().unwrap().is_empty());
+    assert!(!error.to_string().contains("private-content"));
+    let id = task_id(&f.submit(&server));
+    f.review(id, false);
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET revision_count=3", [])
+        .unwrap();
+    let error = call(
+        &server,
+        "request_changes",
+        json!({"task_id":id.to_string(),"request_id":"limit","findings":"fix"}),
+    );
+    assert_eq!(error["error"], "revision_limit");
+    assert_eq!(error["status"], "needs_user");
+    assert!(error["detail"].as_str().unwrap().contains("max_rounds=3"));
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .query_row("SELECT COUNT(*) FROM rounds", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }

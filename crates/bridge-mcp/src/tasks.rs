@@ -32,7 +32,13 @@ fn flag(v: &Value, key: &str) -> Result<bool> {
     match v.get(key) {
         None => Ok(false),
         Some(Value::Bool(b)) => Ok(*b),
-        _ => Err("invalid_boolean"),
+        _ => Err(match key {
+            "verbose" => "invalid_verbose",
+            "allow_dirty" | "allow_commit" => "invalid_git_policy",
+            "allow_suspected_secrets" => "invalid_allow_suspected_secrets",
+            "allow_budget_override" => "invalid_allow_budget_override",
+            _ => "invalid_boolean",
+        }),
     }
 }
 fn strings(v: &Value, key: &str) -> Result<Vec<String>> {
@@ -44,7 +50,10 @@ fn strings(v: &Value, key: &str) -> Result<Vec<String>> {
         .collect()
 }
 fn id(v: &Value) -> Result<TaskId> {
-    text(v, "task_id")?.parse().map_err(|_| "invalid_task_id")
+    text(v, "task_id")
+        .map_err(|_| "invalid_task_id")?
+        .parse()
+        .map_err(|_| "invalid_task_id")
 }
 fn secret_gate(v: &Value) -> Result<()> {
     if flag(v, "allow_suspected_secrets")? {
@@ -199,14 +208,15 @@ impl McpServer {
 
     pub(crate) fn call_task(&self, name: &str, args: &Value) -> Result<Value> {
         check_layout(&self.project, &self.layout).map_err(|_| "mcp_state_unavailable")?;
-        match name {
+        let outcome = match name {
             "submit_task" => self.submit(args),
             "task_status" => self.status(args),
             "request_changes" => self.revise(args),
             "accept_task" => self.accept(args),
             "close_task" => self.close(args),
             _ => Err("unknown_tool"),
-        }
+        };
+        Ok(outcome.unwrap_or_else(|code| self.error_payload(code, args)))
     }
     pub(super) fn storage(&self) -> Result<StorageConnection> {
         self.layout.open().map_err(|_| "state_unavailable")
@@ -337,13 +347,13 @@ impl McpServer {
         Ok(())
     }
     fn submit(&self, args: &Value) -> Result<Value> {
-        let request_id = text(args, "request_id")?;
-        let task_text = text(args, "task")?;
-        let paths = strings(args, "allowed_paths")?;
+        let request_id = text(args, "request_id").map_err(|_| "invalid_request_id")?;
+        let task_text = text(args, "task").map_err(|_| "empty_task")?;
+        let paths = strings(args, "allowed_paths").map_err(|_| "invalid_allowed_paths")?;
         if paths.is_empty() {
             return Err("invalid_allowed_paths");
         }
-        let commands = strings(args, "test_commands")?;
+        let commands = strings(args, "test_commands").map_err(|_| "invalid_test_commands")?;
         let allow_dirty = flag(args, "allow_dirty")?;
         let allow_commit = flag(args, "allow_commit")?;
         secret_gate(args)?;
@@ -695,8 +705,8 @@ impl McpServer {
     }
     fn revise(&self, args: &Value) -> Result<Value> {
         let id = id(args)?;
-        let request_id = text(args, "request_id")?;
-        let findings = text(args, "findings")?;
+        let request_id = text(args, "request_id").map_err(|_| "invalid_request_id")?;
+        let findings = text(args, "findings").map_err(|_| "empty_findings")?;
         let override_budget = flag(args, "allow_budget_override")?;
         secret_gate(args)?;
         let Some(task) = self.task(id)? else {
@@ -742,6 +752,9 @@ impl McpServer {
         if u64::try_from(task.revision_count).map_err(|_| "state_unavailable")?
             >= self.project.max_rounds()
         {
+            self.storage()?
+                .park_revision_limit(id, self.project.id())
+                .map_err(|_| "state_unavailable")?;
             return Err("revision_limit");
         }
         let mut storage = self.storage()?;

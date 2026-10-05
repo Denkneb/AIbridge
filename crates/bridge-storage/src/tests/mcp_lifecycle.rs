@@ -119,3 +119,38 @@ fn spawn_lease_release_cannot_cancel_started_child_or_close() {
     s.request_task_close(task, "close").unwrap();
     assert!(!s.release_worker_spawn(&reference, &claim).unwrap());
 }
+#[test]
+fn revision_limit_parks_once_and_event_failure_rolls_back() {
+    let (_root, layout, task, project) = state(true);
+    let mut s = layout.open().unwrap();
+    s.connection().execute_batch("CREATE TRIGGER reject_park BEFORE INSERT ON events WHEN NEW.message='revision limit reached' BEGIN SELECT RAISE(ABORT,'blocked'); END;").unwrap();
+    assert!(s.park_revision_limit(task, &project).is_err());
+    assert_eq!(
+        s.get_task(task).unwrap().unwrap().status,
+        TaskStatus::AwaitingReview
+    );
+    s.connection()
+        .execute_batch("DROP TRIGGER reject_park")
+        .unwrap();
+    assert_eq!(
+        s.park_revision_limit(task, &project).unwrap().status,
+        TaskStatus::NeedsUser
+    );
+    assert!(s.park_revision_limit(task, &project).is_err());
+    assert_eq!(
+        s.connection()
+            .query_row("SELECT COUNT(*) FROM rounds", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        s.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE message='revision limit reached'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}

@@ -2,6 +2,37 @@
 use super::*;
 
 impl StorageConnection {
+    /// Parks a review task at its revision limit. Caller holds review fences;
+    /// status and event commit together, with no new round or outbound attempt.
+    pub fn park_revision_limit(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+    ) -> Result<Task, RoundUpdateError> {
+        let now = utc_now_rfc3339_millis();
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(RoundUpdateError::Database)?;
+        let task = load_task_for_update(&tx, id)?;
+        if &task.project_id != project {
+            return Err(RoundUpdateError::ProjectMismatch);
+        }
+        if task.status != TaskStatus::AwaitingReview || task.close_requested_at.is_some() {
+            return Err(RoundUpdateError::InvalidTaskTransition);
+        }
+        tx.execute(
+            "UPDATE tasks SET status='needs_user',updated_at=?1 WHERE task_id=?2",
+            params![now, id.to_string()],
+        )
+        .map_err(RoundUpdateError::Database)?;
+        tx.execute("INSERT INTO events(task_id,round_number,kind,message,created_at) VALUES (?1,NULL,'needs_user','revision limit reached',?2)",params![id.to_string(),now])
+            .map_err(RoundUpdateError::Database)?;
+        let task = load_task_for_update(&tx, id)?;
+        tx.commit().map_err(RoundUpdateError::Database)?;
+        Ok(task)
+    }
+
     /// Caller holds task/review fences and proved the server turn idle. Frozen
     /// manual delivery only; accept/event/reservation release commit together.
     pub fn accept_manual_task(

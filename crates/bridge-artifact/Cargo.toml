@@ -1,17 +1,13 @@
 [package]
-name = "bridge-delivery"
+name = "bridge-artifact"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 [lints]
 workspace = true
 [dependencies]
-bridge-artifact.workspace = true
-bridge-config.workspace = true
 bridge-domain.workspace = true
 bridge-git.workspace = true
-bridge-storage.workspace = true
-bridge-worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

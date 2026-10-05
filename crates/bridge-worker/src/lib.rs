@@ -105,6 +105,7 @@ pub mod usage;
 mod blockers;
 mod completion;
 pub mod execution;
+pub mod inheritance;
 pub mod lifecycle;
 pub mod observation;
 pub mod observation_loop;

@@ -211,6 +211,13 @@ fn git_rules(snapshot: Option<&Value>) -> (String, String) {
          затронутом репозитории."
             .to_owned()
     };
+    let baseline_rule = if snapshot.is_some_and(|s| s.get("automation_parent").is_some()) {
+        format!(
+            "{baseline_rule} Сохрани принятые унаследованные файлы; меняй только scope текущего approved step, остальные inherited files должны остаться byte-identical."
+        )
+    } else {
+        baseline_rule
+    };
     (baseline_rule, git_rule)
 }
 

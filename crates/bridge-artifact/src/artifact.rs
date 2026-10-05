@@ -35,12 +35,12 @@ pub struct Artifact {
     pub entries: Vec<Entry>,
 }
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Object {
+pub struct Object {
     pub kind: String,
     pub mode: u32,
     pub data: Vec<u8>,
 }
-pub(crate) fn digest(data: &[u8]) -> String {
+pub fn digest(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 fn hex(value: &str, len: usize) -> bool {
@@ -49,7 +49,7 @@ fn hex(value: &str, len: usize) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-pub(crate) fn safe_path(path: &str) -> Result<()> {
+pub fn safe_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.contains(['\0', '\\'])
         || Path::new(path).is_absolute()
@@ -61,7 +61,7 @@ pub(crate) fn safe_path(path: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn parents(root: &Path, path: &str) -> Result<()> {
+pub fn parents(root: &Path, path: &str) -> Result<()> {
     safe_path(path)?;
     let parent = Path::new(path)
         .parent()
@@ -81,7 +81,7 @@ pub(crate) fn parents(root: &Path, path: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn read_object(root: &Path, path: &str) -> Result<Option<Object>> {
+pub fn read_object(root: &Path, path: &str) -> Result<Option<Object>> {
     parents(root, path)?;
     let target = root.join(path);
     let meta = match fs::symlink_metadata(&target) {
@@ -125,7 +125,7 @@ pub(crate) fn read_object(root: &Path, path: &str) -> Result<Option<Object>> {
     }))
 }
 impl Entry {
-    pub(crate) fn matches_base(&self, obj: Option<&Object>) -> bool {
+    pub fn matches_base(&self, obj: Option<&Object>) -> bool {
         if self.op == "add" {
             return obj.is_none();
         }
@@ -135,7 +135,7 @@ impl Entry {
                 && Some(digest(&o.data)) == self.base_sha256
         })
     }
-    pub(crate) fn matches_artifact(&self, obj: Option<&Object>) -> bool {
+    pub fn matches_artifact(&self, obj: Option<&Object>) -> bool {
         if self.op == "delete" {
             return obj.is_none();
         }
@@ -262,7 +262,7 @@ pub fn build_entries(
         blobs,
     ))
 }
-pub(crate) fn private_dir(path: &Path) -> Result<()> {
+pub fn private_dir(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -279,12 +279,12 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .map_err(|_| DeliveryError::new("artifact_unwritable"))
 }
-pub(crate) fn sync_dir(path: &Path) -> Result<()> {
+pub fn sync_dir(path: &Path) -> Result<()> {
     std::fs::File::open(path)
         .and_then(|f| f.sync_all())
         .map_err(|_| DeliveryError::new("fsync_failed"))
 }
-pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> Result<()> {
+pub fn atomic_write(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .ok_or(DeliveryError::new("artifact_unwritable"))?;
@@ -311,7 +311,7 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     }
     result
 }
-pub(crate) fn write_artifact(dest: &Path, artifact: &Artifact, blobs: &Blobs) -> Result<()> {
+pub fn write_artifact(dest: &Path, artifact: &Artifact, blobs: &Blobs) -> Result<()> {
     private_dir(dest)?;
     private_dir(&dest.join("blobs"))?;
     for (hash, bytes) in blobs {
@@ -326,7 +326,7 @@ pub(crate) fn write_artifact(dest: &Path, artifact: &Artifact, blobs: &Blobs) ->
         0o600,
     )
 }
-pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
+pub fn read_file(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut f = OpenOptions::new()
         .read(true)

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/bridge-artifact",
     "crates/bridge-automation",
     "crates/agent-bridge-cli",
     "crates/bridge-command-policy",
@@ -24,6 +25,7 @@ edition = "2024"
 rust-version = "1.98"
 
 [workspace.dependencies]
+bridge-artifact = { path = "crates/bridge-artifact" }
 bridge-command-policy = { path = "crates/bridge-command-policy" }
 bridge-config = { path = "crates/bridge-config" }
 bridge-domain = { path = "crates/bridge-domain" }

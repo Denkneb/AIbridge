@@ -49,6 +49,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-artifact"
+version = "0.1.0"
+dependencies = [
+ "bridge-domain",
+ "bridge-git",
+ "nix 0.27.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "bridge-automation"
 version = "0.1.0"
 dependencies = [
@@ -87,6 +100,7 @@ dependencies = [
 name = "bridge-delivery"
 version = "0.1.0"
 dependencies = [
+ "bridge-artifact",
  "bridge-config",
  "bridge-domain",
  "bridge-git",
@@ -207,6 +221,7 @@ dependencies = [
 name = "bridge-worker"
 version = "0.1.0"
 dependencies = [
+ "bridge-artifact",
  "bridge-command-policy",
  "bridge-config",
  "bridge-domain",

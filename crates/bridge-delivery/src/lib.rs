@@ -1,40 +1,15 @@
 //! Byte-complete accepted checkout delivery. All diagnostics use fixed codes.
-mod artifact;
+use bridge_artifact::artifact;
 mod materialize;
 pub use artifact::{Artifact, Entry, build_entries, load_artifact};
+pub use bridge_artifact::{DeliveryError, Result};
 use bridge_config::ProjectEntry;
 use bridge_domain::{TaskId, TaskStatus};
 use bridge_storage::{RustStateLayout, Task, WorktreeRecord};
 use bridge_storage::{WorktreeDeliveryState, WorktreeStatus};
 use bridge_worker::{WorkerLock, WorkerLockOutcome};
 use serde_json::{Value, json};
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-};
-type Result<T> = std::result::Result<T, DeliveryError>;
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryError {
-    pub code: &'static str,
-    pub paths: Vec<String>,
-}
-impl DeliveryError {
-    pub(crate) fn new(code: &'static str) -> Self {
-        Self {
-            code,
-            paths: vec![],
-        }
-    }
-    pub(crate) fn paths(code: &'static str, paths: Vec<String>) -> Self {
-        Self { code, paths }
-    }
-}
-impl fmt::Display for DeliveryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.code)
-    }
-}
-impl std::error::Error for DeliveryError {}
+use std::path::{Path, PathBuf};
 struct Context {
     task: Task,
     record: WorktreeRecord,
@@ -90,13 +65,25 @@ fn context(layout: &RustStateLayout, project: &ProjectEntry, id: TaskId) -> Resu
     })
 }
 fn derive(ctx: &Context) -> Result<(Artifact, std::collections::BTreeMap<String, Vec<u8>>)> {
-    let baseline: Value = serde_json::from_str(
-        ctx.record
-            .baseline_json
-            .as_deref()
-            .ok_or(DeliveryError::new("baseline_missing"))?,
-    )
-    .map_err(|_| DeliveryError::new("baseline_corrupt"))?;
+    let baseline: Value = if ctx
+        .task
+        .snapshot
+        .as_ref()
+        .is_some_and(|s| s.get("automation_run_id").is_some())
+    {
+        ctx.task
+            .snapshot
+            .clone()
+            .ok_or(DeliveryError::new("baseline_missing"))?
+    } else {
+        serde_json::from_str(
+            ctx.record
+                .baseline_json
+                .as_deref()
+                .ok_or(DeliveryError::new("baseline_missing"))?,
+        )
+        .map_err(|_| DeliveryError::new("baseline_corrupt"))?
+    };
     let baseline = bridge_git::RepositorySnapshot::from_json(&baseline)
         .map_err(|_| DeliveryError::new("baseline_corrupt"))?;
     build_entries(

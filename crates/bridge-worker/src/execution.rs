@@ -523,10 +523,6 @@ pub fn prepare_round_execution(
             .as_ref()
             .and_then(|s| s.get("external_repositories"))
             .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
-        || task
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.get("automation_parent").is_some())
     {
         return Err(ExecutionError::Unsupported);
     }
@@ -578,6 +574,13 @@ pub fn prepare_round_execution(
                 base,
             )
             .map_err(|_| ExecutionError::Git)?;
+            if task
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.get("automation_parent").is_some())
+            {
+                crate::inheritance::inherit_checkout(&storage, layout, &task, &paths.checkout)?;
+            }
             let baseline =
                 bridge_git::take_snapshot(&paths.checkout).map_err(|_| ExecutionError::Git)?;
             storage

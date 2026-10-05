@@ -4248,7 +4248,7 @@ limits не расширяются по модельному ответу. Ав�
   results, descendant cleanup и bounded log flood на subprocess doubles.
   Реальные model calls в тестах не выполняются.
 
-### 16.4. Inherited accepted checkout
+### 16.4. Inherited accepted checkout (завершено)
 
 - **Контракт:** parent accepted + same workflow/base/common repo; artifact
   owner/entries/fingerprint проверяются до/после inheritance. Symlink
@@ -4260,6 +4260,17 @@ limits не расширяются по модельному ответу. Ав�
   `worker._resolve_worktree_context`, `prompts._git_rules`, `delivery.run_delivery`.
 - **Checks:** inherited files/tampering/scope/Git baseline tests. Depends on
   7.16c, 9.18a/c, 0B.5.
+
+- **Реализовано:** shared `bridge-artifact` (прежние byte-complete artifact и
+  materializer primitives без lifecycle dependency), worker inheritance до
+  baseline capture, accepted/project/workflow/base/common-dir proofs,
+  pinned fingerprint/artifact owner/entries/blobs checks до/после копирования,
+  scope/target/symlink refusal. Delivery для managed tasks строит cumulative
+  artifact от original main snapshot; worker baseline остаётся post-inheritance.
+  Delivery/inheritance tests и полный bridge-worker suite прошли; loopback
+  integration tests запускались с разрешённым локальным networking. Targeted
+  all-targets Clippy чист. Тесты покрывают binary/delete/mode/symlink и восемь
+  вариантов tampering/refusal, cumulative delivery и отдельный current-step scope.
 
 ### 16.5. Detached coordinator lifecycle
 

@@ -7,15 +7,7 @@ use bridge_config::ProjectEntry;
 use bridge_storage::{RustStateLayout, WorktreeDeliveryState};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    fs,
-    os::unix::{
-        ffi::OsStringExt,
-        fs::{DirBuilderExt, symlink},
-    },
-    path::Path,
-};
+use std::{collections::BTreeSet, path::Path};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Operation {
@@ -109,64 +101,6 @@ fn journal(ctx: &Context, project: &ProjectEntry, artifact: &Artifact) -> Result
         return Err(DeliveryError::new("needs_manual_recovery"));
     }
     Ok(j)
-}
-fn ensure_parents(root: &Path, path: &str) -> Result<()> {
-    artifact::parents(root, path)?;
-    let mut current = root.to_path_buf();
-    for component in Path::new(path)
-        .parent()
-        .ok_or(DeliveryError::new("unsafe_artifact_path"))?
-        .components()
-    {
-        current.push(component);
-        if !current.exists() {
-            fs::DirBuilder::new()
-                .mode(0o755)
-                .create(&current)
-                .map_err(|_| DeliveryError::new("target_unwritable"))?;
-            artifact::sync_dir(current.parent().unwrap())?;
-        }
-    }
-    Ok(())
-}
-fn execute(ctx: &Context, workspace: &Path, entry: &Entry) -> Result<()> {
-    artifact::parents(workspace, &entry.path)?;
-    let target = workspace.join(&entry.path);
-    if entry.op == "delete" {
-        fs::remove_file(&target).map_err(|_| DeliveryError::new("target_unwritable"))?;
-        return artifact::sync_dir(target.parent().unwrap());
-    }
-    let hash = entry
-        .blob_sha256
-        .as_deref()
-        .ok_or(DeliveryError::new("artifact_corrupt"))?;
-    let data = artifact::read_file(&ctx.runtime.join("artifact/blobs").join(hash))?;
-    if artifact::digest(&data) != hash || Some(data.len() as u64) != entry.size {
-        return Err(DeliveryError::new("artifact_corrupt"));
-    }
-    ensure_parents(workspace, &entry.path)?;
-    if entry.kind == "regular" {
-        artifact::atomic_write(&target, &data, entry.mode).map_err(|e| {
-            DeliveryError::new(if e.code == "fsync_failed" {
-                e.code
-            } else {
-                "target_unwritable"
-            })
-        })
-    } else {
-        let parent = target.parent().unwrap();
-        let temp = parent.join(format!(".ab-{}", uuid::Uuid::new_v4()));
-        let result = (|| {
-            symlink(std::ffi::OsString::from_vec(data), &temp)
-                .map_err(|_| DeliveryError::new("target_unwritable"))?;
-            fs::rename(&temp, &target).map_err(|_| DeliveryError::new("target_unwritable"))?;
-            artifact::sync_dir(parent)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp);
-        }
-        result
-    }
 }
 fn post_verify(project: &ProjectEntry, artifact: &Artifact, journal: &Journal) -> Result<()> {
     for e in &artifact.entries {
@@ -265,7 +199,11 @@ pub(super) fn run(
                     vec![entry.path.clone()],
                 ));
             }
-            execute(ctx, project.workspace(), entry)?;
+            bridge_artifact::materialize::execute(
+                &ctx.runtime.join("artifact"),
+                project.workspace(),
+                entry,
+            )?;
             fault(hook, &format!("after_op:{i}"))?;
         }
         // Always sync the directory again: an earlier rename may have reached

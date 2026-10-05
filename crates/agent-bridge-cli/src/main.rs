@@ -1,4 +1,5 @@
 //! Runtime CLI. Implemented commands require explicit Rust configuration/state.
+mod automation;
 use bridge_config::load_config_with_state_root;
 use bridge_domain::TaskId;
 use bridge_runtime::controller::{ControllerCommand, launch_controller};
@@ -10,6 +11,9 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  launch-codex      Launch Codex; --auto --plan PATH starts an approved workflow
+  automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
+  automation-worker  Private detached workflow supervisor (--run UUID required)
   deliver-task      Build, validate or apply accepted worktree changes (--task ID)
   worker            Run an existing task round (--task ID --round N required)
   launch-opencode   Launch an OpenCode controller using local or HTTP MCP servers
@@ -45,6 +49,7 @@ enum Action {
     ServeMcp(LaunchArgs),
     Worker(LaunchArgs, TaskId, u32),
     Deliver(LaunchArgs, TaskId, DeliveryAction),
+    Automation(LaunchArgs, automation::Action),
 }
 
 #[derive(Clone, Copy)]
@@ -77,12 +82,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         && command != "serve-mcp"
         && command != "worker"
         && command != "deliver-task"
+        && !automation::is_command(&command)
     {
         return Err("unsupported command; use --help");
     }
     let (mut project, mut config, mut state_root, mut task, mut round) =
         (None, None, None, None, None);
     let mut delivery_mode = None;
+    let (mut run, mut plan) = (None, None);
+    let mut auto = false;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             return Ok(Action::Help);
@@ -107,7 +115,16 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             });
             continue;
         }
+        if flag == "--auto" && command == "launch-codex" {
+            if auto || inline.is_some() {
+                return Err("duplicate or invalid --auto");
+            }
+            auto = true;
+            continue;
+        }
         let slot = match flag {
+            "--run" if automation::is_command(&command) && command != "launch-codex" => &mut run,
+            "--plan" if command == "launch-codex" => &mut plan,
             "--project" => &mut project,
             "--config" => &mut config,
             "--state-root" => &mut state_root,
@@ -141,7 +158,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         config,
         state_root,
     };
-    Ok(if command == "worker" {
+    Ok(if automation::is_command(&command) {
+        Action::Automation(common, automation::parse(&command, auto, plan, run)?)
+    } else if command == "worker" {
         let task = task
             .ok_or("--task required")?
             .into_string()
@@ -207,8 +226,29 @@ fn mcp(args: LaunchArgs, http: bool) -> Result<ExitCode, String> {
         .ok_or("project not configured")?;
     let layout =
         RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    let spawner = worker_spawner(project, &layout, &config_path)?;
+    let registry = config.projects().values().cloned().collect();
+    if http {
+        bridge_mcp::http::HttpServer::bind_with_workers(project.clone(), layout, spawner, registry)
+            .and_then(|server| server.run())
+            .map_err(|e| e.to_string())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let server = bridge_mcp::McpServer::open(project.clone(), layout)
+        .and_then(|server| server.with_workers(spawner, registry))
+        .map_err(|e| e.to_string())?;
+    bridge_mcp::stdio::run(&server, std::io::stdin().lock(), std::io::stdout().lock())
+        .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+fn worker_spawner(
+    project: &bridge_config::ProjectEntry,
+    layout: &RustStateLayout,
+    config_path: &std::path::Path,
+) -> Result<bridge_mcp::WorkerSpawner, String> {
     let executable = env::current_exe().map_err(|_| "bridge executable unavailable")?;
     let worker_layout = layout.clone();
+    let config_path = config_path.to_owned();
     let workspace = project.workspace().to_owned();
     let worker_project = project.id().clone();
     let spawner: bridge_mcp::WorkerSpawner = std::sync::Arc::new(move |round| {
@@ -241,19 +281,7 @@ fn mcp(args: LaunchArgs, http: bool) -> Result<ExitCode, String> {
         rx.recv().map_err(|_| ())??;
         Ok(())
     });
-    let registry = config.projects().values().cloned().collect();
-    if http {
-        bridge_mcp::http::HttpServer::bind_with_workers(project.clone(), layout, spawner, registry)
-            .and_then(|server| server.run())
-            .map_err(|e| e.to_string())?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    let server = bridge_mcp::McpServer::open(project.clone(), layout)
-        .and_then(|server| server.with_workers(spawner, registry))
-        .map_err(|e| e.to_string())?;
-    bridge_mcp::stdio::run(&server, std::io::stdin().lock(), std::io::stdout().lock())
-        .map_err(|e| e.to_string())?;
-    Ok(ExitCode::SUCCESS)
+    Ok(spawner)
 }
 fn worker(args: LaunchArgs, task_id: TaskId, round_number: u32) -> Result<ExitCode, String> {
     let config_path = std::fs::canonicalize(&args.config).map_err(|_| "config unavailable")?;
@@ -340,6 +368,7 @@ fn main() -> ExitCode {
         Ok(Action::ServeMcp(args)) => finish(mcp(args, true)),
         Ok(Action::Worker(args, task, round)) => finish(worker(args, task, round)),
         Ok(Action::Deliver(args, task, mode)) => finish(deliver(args, task, mode)),
+        Ok(Action::Automation(args, action)) => finish(automation::run(args, action)),
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)

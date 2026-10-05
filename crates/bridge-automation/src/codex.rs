@@ -123,7 +123,7 @@ pub(crate) fn private_file(path: &Path) -> Result<File, CodexError> {
         .open(path)
         .map_err(|_| CodexError::Io)
 }
-pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, CodexError> {
+pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, CodexError> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)

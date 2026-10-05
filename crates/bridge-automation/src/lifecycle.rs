@@ -156,6 +156,34 @@ pub fn launch_command(
     prefix: Vec<OsString>,
     resume: bool,
 ) -> Result<Value, Error> {
+    launch_command_mode(
+        layout,
+        project,
+        id,
+        executable,
+        prefix,
+        if resume {
+            LaunchMode::Resume
+        } else {
+            LaunchMode::Start
+        },
+    )
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMode {
+    Start,
+    Resume,
+    Stop,
+}
+/// Stop starts cleanup without changing the durable stop control back to run.
+pub fn launch_command_mode(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: RunId,
+    executable: &Path,
+    prefix: Vec<OsString>,
+    mode: LaunchMode,
+) -> Result<Value, Error> {
     if !executable.is_absolute() || !executable.is_file() {
         return Err(Error::State);
     }
@@ -163,7 +191,9 @@ pub fn launch_command(
     let store = AutomationRunStore::new(layout.clone());
     let run = store.load(Some(id)).map_err(|_| Error::State)?;
     if run.status().is_terminal()
-        || (!resume && (run.status() != RunStatus::Running || run.control() != RunControl::Run))
+        || (mode == LaunchMode::Start
+            && (run.status() != RunStatus::Running || run.control() != RunControl::Run))
+        || (mode == LaunchMode::Stop && run.control() != RunControl::Stop)
     {
         return Err(Error::State);
     }
@@ -172,7 +202,14 @@ pub fn launch_command(
     }
     // Partial main delivery is checked by the journal, rather than clean-main
     // origin checks. All other phases require the original main binding.
-    if run.document()["phase"] == "deliver" {
+    if mode == LaunchMode::Stop {
+        // Cleanup uses bound task records even after an origin/config drift blocker.
+        if layout.project_id() != project.id()
+            || run.document()["binding"]["workspace"] != json!(project.workspace())
+        {
+            return Err(Error::Binding);
+        }
+    } else if run.document()["phase"] == "deliver" {
         check_config_binding(project, layout, &run)?;
     } else {
         check_binding(project, layout, &run)?;
@@ -227,7 +264,7 @@ pub fn launch_command(
         0o600,
     )
     .map_err(|_| Error::State)?;
-    if resume {
+    if mode == LaunchMode::Resume {
         // This happens only after successful spawn and record publication.
         store
             .set_control(id, RunControl::Run)

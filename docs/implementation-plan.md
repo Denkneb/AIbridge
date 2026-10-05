@@ -4356,7 +4356,7 @@ limits не расширяются по модельному ответу. Ав�
   Два новых tests покрывают 12 invalid evidence/control вариантов и idempotent
   success с реальным verifier; storage/manual/on_accept regressions и Clippy прошли.
 
-### 16.9. CLI controls и recovery
+### 16.9. CLI controls и recovery (завершено)
 
 - **Контракт:** launch-codex --auto --plan, automation-status/pause/resume/stop,
   private automation-worker. Plan file bounded 1MB; --plan требует --auto.
@@ -4366,6 +4366,15 @@ limits не расширяются по модельному ответу. Ав�
 - **Source:** `cli.py:575-591,1452-1526`, `Coordinator.tick/run`.
 - **Checks:** detached terminal exit, control during review/startup, stop
   paused/blocked run, cooperative task close. Depends on 16.5, 16.7, 7.12.
+
+- **Реализовано:** CLI `launch-codex --auto --plan`, metadata-only status,
+  pause/resume/stop с optional exact run UUID, private automation-worker и
+  повторно используемый detached worker spawner. Bounded no-follow plan reader
+  не создаёт state при invalid input. Stop запускает cleanup supervisor для
+  paused/blocked run, сохраняя stop control, и закрывает orphan submission intent.
+  CLI tests проверяют flags, 1MB bound, readonly status, private worker identity,
+  detached stop и terminal controls; coordinator tests — cancellation во время
+  model call и cooperative orphan close. Реальный Codex в тестах не вызывается.
 
 ### 16.10. Final verification/delivery
 

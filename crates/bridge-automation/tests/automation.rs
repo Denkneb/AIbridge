@@ -1178,3 +1178,66 @@ fn coordinator_bounds_model_retries_and_obeys_pause_stop_budget() {
         );
     }
 }
+
+#[test]
+fn stopped_coordinator_closes_submission_even_before_task_id_save() {
+    let f = Fixture::new();
+    f.repo();
+    let (run, args, server) = submit_intent(&f);
+    let response = server.call_automation("submit_task", &args, run.id());
+    let id: bridge_domain::TaskId = response["task_id"].as_str().unwrap().parse().unwrap();
+    AutomationRunStore::new(f.layout.clone())
+        .set_control(run.id(), RunControl::Stop)
+        .unwrap();
+    let mut c = coordinator(&f, run.id(), Value::Null, Arc::new(AtomicU64::new(0)));
+    assert_eq!(c.tick().unwrap(), Tick::Stopped);
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        bridge_domain::TaskStatus::Closed
+    );
+}
+struct PausingModel {
+    store: AutomationRunStore,
+    id: bridge_storage::automation::RunId,
+}
+impl ReviewClient for PausingModel {
+    fn call(
+        &mut self,
+        _: Operation,
+        _: &std::path::Path,
+        _: &Value,
+        _: std::time::Duration,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Value, CodexError> {
+        self.store.set_control(self.id, RunControl::Pause).unwrap();
+        assert!(cancelled());
+        Ok(json!({"task":"Late answer must not be used"}))
+    }
+}
+#[test]
+fn pause_during_model_call_discards_answer_and_preserves_phase() {
+    let f = Fixture::new();
+    f.repo();
+    let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+    let mut c = Coordinator::open(
+        f.project.clone(),
+        f.layout.clone(),
+        run.id(),
+        Arc::new(|_| Ok(())),
+        vec![f.project.clone()],
+        PausingModel {
+            store: AutomationRunStore::new(f.layout.clone()),
+            id: run.id(),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.tick().unwrap(), Tick::Paused);
+    assert_eq!(c.document()["steps"][0]["phase"], "prepare");
+    assert!(c.document()["steps"][0]["prepared_task"].is_null());
+}

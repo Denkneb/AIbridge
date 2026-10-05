@@ -86,7 +86,7 @@ impl Protocol {
                     .unwrap_or(PROTOCOL_VERSION);
                 json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},
                     "serverInfo":{"name":"agent-bridge","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":if server.delegated_tools_enabled() { "Standalone delegated tasks support manual review. Workflow metadata and on_accept delivery are unavailable." } else { "Rust MCP exposes project_info only without a worker launcher." }})
+                    "instructions":if server.delegated_tools_enabled() { "Delegated tasks support review, workflow dependencies and frozen on_accept delivery. Waiting tasks activate through explicit task_status; delivery failures can be retried by accepting the accepted task again." } else { "Rust MCP exposes project_info only without a worker launcher." }})
             }
             "ping" => json!({}),
             _ if self.phase != Phase::Ready => {

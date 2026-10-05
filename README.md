@@ -41,21 +41,25 @@ checkpoint для каждого repo. Baseline/scope заморожены, по
 для standalone задач с manual review (**9.5c1**). Startup recovery **8.11a** подключён к stdio/HTTP в фоне: writer ledger,
 orphan quarantine, deferred close, implementing/revising и needs_user с blocker
 gate; delivery_unknown восстанавливается после saved endpoint probe (**8.11b**).
-Handshake не ждёт recovery. Полная source error-policy
-parity, workflow metadata и on_accept delivery остаются
-открыты; live OpenCode/provider smoke ещё не выполнен.
+Handshake не ждёт recovery. Workflow/dependencies и frozen on_accept delivery
+подключены; 21 frozen status case и 29 validation envelopes проходят без skips.
+Transport/infrastructure errors сохраняют безопасные redacted labels вместо
+сырых Python exceptions; полной идентичности всех error strings не заявляем.
+Реальный OpenCode/provider smoke прошёл весь путь до доставки и повторного
+принятия: [результаты](docs/live-smoke.md).
 
-Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
-7.17d ждёт 9.18a, live parallel smoke остаётся 15.3. Также завершены domain
+7.16, services 7.17a–c, delivery gate 7.17d и delivery 9.18a–e завершены;
+live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Coordinator и вызовы моделей впереди. MCP stdio/HTTP и standalone delegated
+3.14 добавляет guarded automation run storage. Automatic plan coordinator и его вызовы моделей впереди. MCP stdio/HTTP и standalone delegated
 handlers готовы; остальные CLI commands и полная error-policy parity worker
 ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
 сессии. Permission generator 7.8b подключён к HTTP controller launch service 9.13a;
-CLI consumer 9.13b готов; local controller delegation 9.13c ждёт 9.5c.
-Worktree runner/observer/close подключены; live OpenCode/provider smoke остаётся открытым.
+CLI consumer 9.13b и local controller delegation 9.13c готовы.
+Worktree runner/observer/close подключены; реальный smoke подтверждает
+worktree → verifier → review → on_accept delivery.
 Worker вызывается для уже созданной задачи в initialized Rust state:
 
 ```sh
@@ -98,8 +102,9 @@ needs_user recovery. Workflow/dependencies сохраняются атомарн
 после отказа; статус показывает фактическое состояние доставки. Автосканирование при старте MCP и delivery_unknown recovery подключены;
 failed assistant recovery доступен только explicit task_status с positive wait
 (**8.20b**), без повторного prompt.
-Controller local argv проверен с настоящим Rust stdio MCP child; real-provider
-smoke фиксируется отдельно от offline fixture checks.
+Controller local argv проверен с настоящим Rust stdio MCP child и реальным
+OpenCode 1.18.34; provider smoke с `opencode-go/minimax-m2.7`
+зафиксирован отдельно от offline fixtures в [отчёте](docs/live-smoke.md).
 
 `deliver-task --task UUID [--build|--dry-run|--apply]` использует те же
 `--project`, `--config`, `--state-root`. По умолчанию — dry-run. Применение

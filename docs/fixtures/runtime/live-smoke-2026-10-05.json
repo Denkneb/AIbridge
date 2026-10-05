@@ -1,0 +1,45 @@
+{
+  "opencode_version": "1.18.34",
+  "provider": "opencode-go",
+  "model": "minimax-m2.7",
+  "project": "disposable worktree",
+  "phases": [
+    "real stdio MCP initialized",
+    "task submitted",
+    "provider wrote file and verifier passed",
+    "on_accept delivered exact bytes",
+    "delivered repeat idempotent"
+  ],
+  "review_verification": {
+    "status": "passed",
+    "commands": [
+      {
+        "command": "python3 verify.py",
+        "duration": 0.047344292,
+        "exit_code": 0
+      }
+    ],
+    "before": {
+      "head": "e8df8553ef2e4944b63101ba8853dba5d0ea57c5",
+      "index_fingerprint": "d0a42ace9dd0e9109f796ec1ec404ef0bb0623012fa27c8068d1a315c7c012e4",
+      "worktree_fingerprint": "972334ae794dd572833fbb1cbe2376d09b133be8c1de262491f7314681381cd1"
+    },
+    "after": {
+      "head": "e8df8553ef2e4944b63101ba8853dba5d0ea57c5",
+      "index_fingerprint": "d0a42ace9dd0e9109f796ec1ec404ef0bb0623012fa27c8068d1a315c7c012e4",
+      "worktree_fingerprint": "972334ae794dd572833fbb1cbe2376d09b133be8c1de262491f7314681381cd1"
+    }
+  },
+  "rounds": 1,
+  "attempted": 1,
+  "delivery_state": "delivered",
+  "outcome": "passed",
+  "date": "2026-10-05",
+  "controller": {
+    "opencode_version": "1.18.34",
+    "operation": "launch-opencode generated local config -> real opencode mcp list",
+    "exit_code": 0,
+    "local_bridge_connected": true
+  },
+  "scope": "one standalone worktree task; not the complete 15.x live matrix"
+}

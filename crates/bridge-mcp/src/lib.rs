@@ -1,5 +1,5 @@
 //! MCP transports and standalone delegated task adapters.
-//! Delegation requires an injected worker launcher; manual delivery only.
+//! Delegation requires an injected worker launcher; supports workflows and frozen delivery policy.
 mod delivery;
 mod errors;
 pub mod http;

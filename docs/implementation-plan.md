@@ -59,11 +59,13 @@ Targeted checks:
   historical fixture pins не переписаны.
   Эти этапы остаются честно завершённым **foundation v6**, а не паритетом с
   современным Python; их исторические описания сохраняются без переписывания.
-- Современный Python/Rust parity не заявлен. Все возможности Python после v6
-  (structured findings, budgets, workflow/dependencies, checkpoints,
-  worktree execution, executor profiles, parallel writers, quarantine,
-  delivery, diagnostics/hook, config migration, on_accept и automatic plan
-  execution) в Rust **не завершены end-to-end**; готовые application services указаны ниже.
+- Современный Python/Rust parity целиком не заявлен. Standalone MCP поддерживает
+  structured findings, budgets, workflow/dependencies, checkpoints, worktree
+  execution, executor profiles, recovery и frozen on_accept delivery. Local
+  controller и реальный provider/worktree/verifier/delivery smoke проверены
+  2026-10-05; [отчёт](live-smoke.md). Parallel services покрыты fixtures,
+  live parallel matrix 15.3 остаётся открытой. Diagnostics/hook, config migration,
+  automatic plan coordinator и GUI остаются отдельными незавершёнными потоками.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
@@ -85,7 +87,7 @@ Targeted checks:
   **7.17a завершён** (B1 admission/activation services).
   **7.17b services завершены**, live-model smoke остаётся в 15.3.
   **7.17c service завершён**.
-  Delivery gate 7.17d ждёт 9.18a.
+  **Delivery gate 7.17d и 9.18a–e завершены**; CLI и MCP on_accept подключены.
   **1.8, 2.13, 2.14, 3.15, question blocker 7.7 и recovery services 7.10a/b завершены**;
   schema target v17; 3.13a–c и automation run storage 3.14 завершены; полный worker FSM,
   CLI/MCP adapters и новые v16/v17 задачи идут по зависимостям.
@@ -3380,8 +3382,8 @@ project_info cases проверены (legacy fields + additive v17 surface).
 - **8.6a. Standalone adapter (завершён).** Secret/structured scope/idempotency,
   review fences, saved budget gate/explicit override, automation ownership,
   idle-session proof и atomic revision перед worker spawn. Max revision
-  guard сейчас сохраняет review и возвращает revision_limit; source needs_user
-  transition/detail parity ещё не завершён.
+  guard атомарно переводит задачу в needs_user и возвращает revision_limit
+  с безопасным detail (9.5c3).
 
 ### 8.7. `accept_task`
 
@@ -3399,7 +3401,7 @@ project_info cases проверены (legacy fields + additive v17 surface).
 
 - **8.7b. Manual adapter (завершён).** Under review fences proves saved session
   idle; stops owned worktree server before atomic accept, retains checkout.
-  Repeated accept read-only; frozen on_accept returns explicit unavailable.
+  Repeated manual accept read-only; frozen on_accept подключён в 8.19.
 
 ### 8.8. `close_task`
 
@@ -3482,7 +3484,7 @@ Source: `mcp_http.py` v17 и
   для gate, corrupt fail closed, не realtime kill/billing. Depends on 7.14.
 - **Targeted checks:** MCP budget cases.
 
-### 8.14. Workflow/dependency metadata и gate (v9 + v11, не завершено)
+### 8.14. Workflow/dependency metadata и gate (v9 + v11, завершено)
 
 - **Цель:** `workflow_id`/`depends_on` metadata/graph и `waiting_dependencies`
   gate.
@@ -3549,7 +3551,7 @@ Source: `mcp_http.py` v17 и
 
 Одна tool-задача содержит только один handler и его contract fixtures.
 
-### 8.19. On-accept delivery MCP (v16, не завершено)
+### 8.19. On-accept delivery MCP (v16, завершено)
 
 - **8.19a. Accept orchestration.** Task-frozen on_accept policy. Lock order:
   project worker → task lifecycle → admission; admission берётся до server stop
@@ -3570,7 +3572,7 @@ Source: `mcp_http.py` v17 и
   partial apply, stale refusal, state read failure и redaction. Depends on
   8.19a. Opens 12.16.
 
-### 8.20. task_status explicit recovery (не завершено)
+### 8.20. task_status explicit recovery (завершено)
 
 - **Цель:** wait_seconds=0 делает один needs_user recovery attempt и возвращает
   фактический persisted implementing/revising/awaiting_review/needs_user status.
@@ -3738,13 +3740,13 @@ Delta v17: вывод execution/delivery modes из validated config
   Full workspace run после CLI wiring: 1173 tests passed. После финального
   NUL/umask hardening повторно пройдены 20 targeted CLI/controller/permission
   tests и workspace all-targets clippy.
-- **9.13c. Local stdio MCP transport (открыт; depends on 9.5c).**
-  Generator уже строит explicit absolute Rust `mcp --project --config
-  --state-root` argv. Rust mcp standalone handlers подключены в 9.5c1;
-  controller consumer пока не включён, фактический launch любого
-  primary/linked stdio проекта отклоняется до state writes/spawn.
+- **9.13c. Local stdio MCP transport (завершён).**
+  Controller запускает primary/linked local entries через absolute Rust
+  `mcp --project --config --state-root` argv. Remote entries получают
+  собственные bearer tokens; local entries не требуют HTTP token.
   HTTP endpoints должны быть запущены заранее: launch не запускает servers.
-  Live OpenCode/provider smoke остаётся отдельной проверкой 15.x.
+  Реальный OpenCode 1.18.34 подключился через generated config;
+  [live smoke](live-smoke.md) отделён от offline fixture evidence.
 
 ### 9.14. Linked-project routing
 
@@ -3782,9 +3784,10 @@ Delta v17: вывод execution/delivery modes из validated config
 - **Targeted checks:** quarantine crash-resume/snapshot tests.
 - **Зависит от:** 3.12e, 7.16d.
 
-### 9.18. `deliver-task` (не завершено)
+### 9.18. `deliver-task` (завершено)
 
-Не завершено. Разбито на малые подзадачи; CLI, **НЕ** новый MCP tool.
+9.18a–e подключены; проверки и ограничения записаны в итоговом ledger ниже.
+Это CLI command, **НЕ** новый MCP tool.
 `deliver-task --task T [--build|--dry-run|--apply]` только `accepted`; **no**
 git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 Глобальной atomic multi-file транзакции нет (см. 9.18b/c).
@@ -3830,7 +3833,7 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
   - **Targeted checks:** delivery writer-gate tests.
   - **Зависит от:** 7.17d, 9.18a.
 
-- **9.18e. Automatic build/apply wrapper (не завершено).** Reuse существующего
+- **9.18e. Automatic build/apply wrapper (завершено).** Reuse существующего
   materializer: none — build artifact if missing + apply, applying — resume
   journal без rebuild, delivered — no-op. Accepted task/artifact/checkout
   остаются доступны после отказа, partial apply без rollback. Helper сам не
@@ -4412,3 +4415,23 @@ improvement**. Limitation не выдаётся за реализованное 
 ### 9.18c follow-up: byte-exact Git index preservation
 
 Read-only Git runner disables optional Git locks so `status` cannot rewrite the index stat cache. Delivery crash/resume checks now compare raw `.git/index` bytes as well as HEAD/index fingerprints. Six delivery scenarios (including all thirteen crash boundaries) and four bounded-runner checks passed.
+
+### Итог согласованного блока — 2026-10-05
+
+Recovery delivery_unknown/failed assistant, frozen status/error envelopes,
+workflow/dependency activation, delivery artifacts/preflight/materializer/CLI,
+on_accept и local stdio controller завершены и закоммичены по этапам. Исторические
+записи «Remaining» в ledger описывают состояние на момент соответствующего
+коммита; последующие записи закрывают эти зависимости.
+
+Полный `cargo test --workspace` прошёл; после byte-exact index hardening
+повторно прошли шесть delivery и четыре bounded Git runner checks. Targeted
+all-targets Clippy чист. Реальный OpenCode/provider smoke прошёл один attempted
+round, verifier, on_accept delivery и idempotent repeat; реальный OpenCode
+подключился к local Rust MCP из generated controller config.
+Подробные условия и границы evidence: [live-smoke.md](live-smoke.md).
+
+Оставшиеся независимые потоки: расширенная live matrix 15.x (parallel, linked
+projects, recovery/crash), runtime diagnostics/maintenance CLI 9.15–9.20,
+automatic plan coordinator 16.x и GUI. Smoke одного worktree task не закрывает
+эту матрицу и не доказывает полную parity со всем Python runtime.

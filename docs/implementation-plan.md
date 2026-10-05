@@ -3659,7 +3659,21 @@ Delta v17: вывод execution/delivery modes из validated config
   Реальный CLI MCP → child worker → awaiting_review → manual accept проверен
   на loopback OpenCode mock, один prompt и reservation release.
   Full workspace: 1268 tests passed; fmt/diff-check и all-target Clippy чисты.
-- **9.5c. Full handlers/startup recovery (открыт).** Remaining: complete frozen envelope parity,
+- **9.5c2. Status payloads + verifier progress (завершён).** Новый status
+  adapter разделяет compact/review/verbose, возвращает response как result,
+  saved usage/models/repository views, baseline fallback и session-aware
+  user_action. Worktree status использует worktree_state/delivery_mode без
+  private runtime paths; checkout виден только в review/verbose. Task без round
+  возвращает round_number=null. Corrupt budget читается только diagnostic
+  mapper (lifecycle mapping остаётся strict), status не раскрывает malformed
+  budget. Verifier сохраняет command_index/count перед командой; progress write
+  failure запрещает запуск команды и публикацию completion. Done result
+  неизменяем, corrupt progress counters очищаются до fixed shape.
+  Проверки: 21 frozen payload case без skips, 27 MCP regression cases,
+  294 storage regressions + progress guards, 71 verifier regressions +
+  progress-write-failure test, 5 real CLI worker tests и targeted Clippy.
+  Full error envelopes/workflow/on_accept остаются отдельными consumers.
+- **9.5c. Full handlers/startup recovery (открыт).** Remaining: full error envelope parity,
   workflow metadata/activation и on_accept delivery. Local controller
   consumer 9.13c и live provider smoke остаются отдельными этапами.
 

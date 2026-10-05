@@ -669,8 +669,23 @@ fn run_commands_stopping_at_first_failure(
     timeout: Duration,
     tail_bytes: usize,
 ) -> (TestCommandSequenceOutcome, Option<(usize, CommandRunError)>) {
+    run_commands_with_progress(workspace, commands, timeout, tail_bytes, &mut |_| true)
+}
+fn run_commands_with_progress(
+    workspace: &Path,
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+    progress: &mut dyn FnMut(usize) -> bool,
+) -> (TestCommandSequenceOutcome, Option<(usize, CommandRunError)>) {
     let mut ran = Vec::with_capacity(commands.len());
     for (index, command) in commands.iter().enumerate() {
+        if !progress(index + 1) {
+            return (
+                TestCommandSequenceOutcome { commands: ran },
+                Some((index, CommandRunError::Wait)),
+            );
+        }
         match run_test_command(workspace, command, timeout, tail_bytes) {
             Ok(outcome) => {
                 let failed = !outcome.succeeded();
@@ -1174,6 +1189,23 @@ fn run_fingerprinted_repositories(
     timeout: Duration,
     tail_bytes: usize,
 ) -> Result<RepositoryRun, FingerprintedSequenceError> {
+    run_fingerprinted_with_progress(
+        workspace,
+        external_roots,
+        commands,
+        timeout,
+        tail_bytes,
+        &mut |_| true,
+    )
+}
+fn run_fingerprinted_with_progress(
+    workspace: &Path,
+    external_roots: &[&Path],
+    commands: &[&str],
+    timeout: Duration,
+    tail_bytes: usize,
+    progress: &mut dyn FnMut(usize) -> bool,
+) -> Result<RepositoryRun, FingerprintedSequenceError> {
     // The reference validates the entire list before the first fingerprint,
     // so a rejected command can never leave a captured fingerprint or a
     // partially run sequence behind.
@@ -1218,7 +1250,7 @@ fn run_fingerprinted_repositories(
     // command entry — the run and the typed failure are retained — and the
     // loop stops; the after fingerprint below is still captured.
     let (sequence, run_failure) =
-        run_commands_stopping_at_first_failure(workspace, commands, timeout, tail_bytes);
+        run_commands_with_progress(workspace, commands, timeout, tail_bytes, progress);
 
     // The after fingerprint is captured for every non-empty list, whatever
     // happened to the commands; a Git failure here keeps the run and
@@ -1682,12 +1714,25 @@ pub fn run_round_verification_persisted_with_repositories(
     // Run the existing fingerprinted flow and convert its outcome into the
     // compact persisted contract; verifier-level failures become the reference
     // `unsafe`/`error` verification variants instead of errors.
-    let verification = match run_fingerprinted_repositories(
+    storage
+        .save_verifier_progress(&round, 0, commands.len() as u64)
+        .map_err(map_storage_error)?;
+    let mut progress_failure = None;
+    let mut progress =
+        |index| match storage.save_verifier_progress(&round, index as u64, commands.len() as u64) {
+            Ok(()) => true,
+            Err(error) => {
+                progress_failure = Some(error);
+                false
+            }
+        };
+    let verification = match run_fingerprinted_with_progress(
         workspace,
         external_roots,
         commands,
         timeout,
         tail_bytes,
+        &mut progress,
     ) {
         Ok(run) => {
             let mut verification = verification_from_outcome(&run.outcome, commands, &round);
@@ -1715,6 +1760,9 @@ pub fn run_round_verification_persisted_with_repositories(
         Err(FingerprintedSequenceError::BeforeSnapshot) => error_verification(&round),
     };
 
+    if let Some(error) = progress_failure {
+        return Err(map_storage_error(error));
+    }
     // Persist exactly once; the storage rejects a conflicting result.
     let completed = storage
         .complete_verifier(CompleteVerifierInput {
@@ -1978,6 +2026,7 @@ mod tests {
 
     struct TempDir {
         path: PathBuf,
+        storage_root: Option<PathBuf>,
     }
 
     impl TempDir {
@@ -1989,7 +2038,10 @@ mod tests {
                 std::process::id()
             ));
             std::fs::create_dir_all(&path).expect("create temp dir");
-            Self { path }
+            Self {
+                path,
+                storage_root: None,
+            }
         }
 
         fn path(&self) -> &Path {
@@ -2000,6 +2052,9 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
+            if let Some(root) = &self.storage_root {
+                let _ = std::fs::remove_dir_all(root);
+            }
         }
     }
 
@@ -3547,8 +3602,11 @@ mod tests {
     }
 
     fn open_persist_storage(tag: &str) -> (TempDir, StorageConnection) {
-        let dir = TempDir::new(tag);
-        let path = dir.path().join("state.sqlite");
+        let mut dir = TempDir::new(tag);
+        let root = dir.path().with_extension("state");
+        std::fs::create_dir_all(&root).expect("create isolated fixture state");
+        let path = root.join("state.sqlite");
+        dir.storage_root = Some(root);
         bridge_storage::initialize(&path).expect("initialize schema v6");
         let storage = bridge_storage::connect(&path).expect("connect");
         (dir, storage)
@@ -3744,6 +3802,26 @@ mod tests {
             assert!(result.verification().before.is_none());
             assert!(result.verification().repositories.is_none());
         }
+    }
+
+    #[test]
+    fn failed_progress_write_prevents_command_execution_and_completion() {
+        let (dir, mut storage) = open_persist_storage("progress-write-failure");
+        init_repo(dir.path());
+        let round = create_persist_round(&mut storage, dir.path());
+        storage.connection().execute_batch("CREATE TRIGGER reject_progress BEFORE UPDATE OF verifier_json ON rounds WHEN json_extract(NEW.verifier_json,'$.command_index')=1 BEGIN SELECT RAISE(ABORT,'private-trigger'); END;").unwrap();
+        let error = persist_round(
+            &mut storage,
+            &round,
+            dir.path(),
+            &["touch should-not-run"],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(!dir.path().join("should-not-run").exists());
+        assert!(!format!("{error} {error:?}").contains("private-trigger"));
+        let progress = storage.verifier_progress(&round, 1).unwrap().unwrap();
+        assert_eq!(progress["command_index"], 0);
     }
 
     #[test]

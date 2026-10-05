@@ -242,7 +242,11 @@ fn recover_observation<T, E>(
     if !row.status.is_open() && parked != TaskStatus::Failed {
         return Ok(RecoverySpawnOutcome::Unchanged);
     }
-    if row.status != RoundStatus::Pending && row.session_id.is_none() {
+    if row.session_id.is_none()
+        && !(parked == TaskStatus::NeedsUser
+            && !row.attempted
+            && matches!(row.status, RoundStatus::Pending | RoundStatus::NeedsUser))
+    {
         return Err(RecoveryError::Round);
     }
     let view = saved_view(&storage, layout, project, &task)?;

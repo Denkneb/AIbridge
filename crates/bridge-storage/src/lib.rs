@@ -189,6 +189,7 @@ pub const RUST_SCHEMA_VERSION: i64 = 17;
 
 mod budgets;
 pub mod usage;
+mod verifier_progress;
 pub use budgets::{
     BUDGET_USAGE_FIELDS, BudgetReadError, BudgetValidationError, DEFAULT_BUDGET_WARNING_THRESHOLD,
     TaskBudget, normalize_persisted_budget, read_task_budget_readonly, validate_budget,
@@ -3436,6 +3437,14 @@ impl Task {
     /// (see [`TaskRowError`]). No error message contains row data, task text,
     /// workspace, paths, identifiers or JSON payloads.
     pub fn from_row(row: &Row<'_>) -> Result<Self, TaskRowError> {
+        Self::from_row_inner(row, false)
+    }
+    /// Read-only diagnostic mapping. Invalid budget is surfaced by the separate
+    /// budget decision; all other identity and row validation remains strict.
+    pub fn from_row_for_status(row: &Row<'_>) -> Result<Self, TaskRowError> {
+        Self::from_row_inner(row, true)
+    }
+    fn from_row_inner(row: &Row<'_>, diagnostic: bool) -> Result<Self, TaskRowError> {
         let task_id = TaskId::from_str(&read_typed::<String>(row, "task_id")?)
             .map_err(|_| TaskRowError::InvalidTaskId)?;
         let project_id = ProjectId::from_str(&read_typed::<String>(row, "project_id")?)
@@ -3459,10 +3468,17 @@ impl Task {
         let close_reason = read_typed::<Option<String>>(row, "close_reason")?;
         // v6 genuinely has no budget column. Modern production reads SELECT *.
         let budget = match row.as_ref().column_index("budget_json") {
-            Ok(_) => normalize_persisted_budget(
-                read_typed::<Option<String>>(row, "budget_json")?.as_deref(),
-            )
-            .map_err(|_| TaskRowError::InvalidBudget)?,
+            Ok(_) => {
+                let parsed = read_typed::<Option<String>>(row, "budget_json").and_then(|raw| {
+                    normalize_persisted_budget(raw.as_deref())
+                        .map_err(|_| TaskRowError::InvalidBudget)
+                });
+                match parsed {
+                    Ok(budget) => budget,
+                    Err(_) if diagnostic => None,
+                    Err(error) => return Err(error),
+                }
+            }
             Err(rusqlite::Error::InvalidColumnName(_)) => None,
             Err(error) => return Err(TaskRowError::Database(error)),
         };
@@ -3885,6 +3901,16 @@ fn read_verifier_json(row: &Row<'_>) -> Result<Option<Verification>, RoundRowErr
     if !value.is_object() {
         return Err(RoundRowError::WrongJsonShape { column: COLUMN });
     }
+    if row
+        .get::<_, Option<String>>("verifier_state")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("running")
+        && value.get("status").is_none()
+    {
+        return Ok(None);
+    }
     let verification: Verification = serde_json::from_value(value)
         .map_err(|_| RoundRowError::WrongJsonShape { column: COLUMN })?;
     Ok(Some(verification))
@@ -3912,6 +3938,7 @@ mod tests {
     mod recovery;
     mod schema16;
     mod schema17;
+    mod verifier_progress;
     mod worktrees;
     mod writer_indexes;
     mod writers;

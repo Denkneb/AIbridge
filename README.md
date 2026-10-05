@@ -67,6 +67,10 @@ agent-bridge worker --project PROJECT --config /path/projects.toml \
 `AB_HTTP_TIMEOUT`, `AB_STALE_BLOCKER_GRACE`. Parked задачи требуют explicit recovery
 claim; CLI их не активирует. Deferred cleanup сохраняет close marker для recovery.
 
+MCP status payloads **9.5c2** согласованы с 21 frozen case; verifier progress
+показывает только безопасные счётчики. Verbose result содержит saved response,
+usage/models и repository views; worktree_state скрывает private runtime paths.
+
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
 Для `launch-opencode` нужны настроенные и уже работающие HTTP MCP endpoints

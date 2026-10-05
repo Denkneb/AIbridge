@@ -538,6 +538,7 @@ impl fmt::Display for ProjectEnv {
 /// with immutable profile resolution and effective snapshot creation.
 #[derive(Clone)]
 pub struct ProjectEntry {
+    source_path: PathBuf,
     id: ProjectId,
     workspace: PathBuf,
     opencode_endpoint: Endpoint,
@@ -560,6 +561,10 @@ pub struct ProjectEntry {
 }
 
 impl ProjectEntry {
+    /// Configuration source for shell-quoted user action commands.
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
     /// Returns an execution view with the same credentials and policies, bound
     /// to an already proven task checkout and loopback runtime. No files change.
     /// # Errors
@@ -931,7 +936,11 @@ fn load_config_inner(path: &Path, state_root: Option<&Path>) -> Result<Config> {
     })?;
     let projects = parse_projects(&text)?;
     let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let config = validate_projects(projects, config_dir)?;
+    let mut config = validate_projects(projects, config_dir)?;
+    let source_path = std::fs::canonicalize(path).map_err(read_error)?;
+    for project in config.projects.values_mut() {
+        project.source_path = source_path.clone();
+    }
     if config
         .projects
         .values()
@@ -1043,6 +1052,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         projects.insert(
             raw_id,
             ProjectEntry {
+                source_path: config_dir.join("projects.toml"),
                 id,
                 workspace,
                 opencode_endpoint,

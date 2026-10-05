@@ -2,6 +2,7 @@
 //! Delegation requires an injected worker launcher; manual delivery only.
 pub mod http;
 pub mod protocol;
+mod status;
 pub mod stdio;
 mod tasks;
 mod tools;

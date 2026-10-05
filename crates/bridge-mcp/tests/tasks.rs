@@ -394,7 +394,7 @@ fn revision_replay_is_idempotent_and_review_status_keeps_verification() {
         json!({"task_id":id.to_string(),"wait_seconds":0,"verbose":true}),
     );
     assert_eq!(status["verification"]["passed"], false);
-    assert_eq!(status["response"], "review response");
+    assert_eq!(status["result"], "review response");
     let args = json!({"task_id":id.to_string(),"request_id":"revise","findings":"fix"});
     let revision = call(&server, "request_changes", args.clone());
     assert_eq!(revision["status"], "revising");
@@ -537,7 +537,7 @@ fn pending_worktree_submit_does_not_probe_static_server_and_close_cleans_row() {
     let result = f.submit(&server);
     let id = task_id(&result);
     assert_eq!(result["execution_mode"], "worktree");
-    assert_eq!(result["worktree"]["status"], "pending");
+    assert_eq!(result["worktree_state"]["status"], "pending");
     assert!(f.calls.lock().unwrap().is_empty());
     assert_eq!(
         call(
@@ -1297,5 +1297,127 @@ fn infrastructure_failure_does_not_reopen_or_probe_on_explicit_positive_wait() {
         );
         assert!(f.calls.lock().unwrap().is_empty());
         assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    }
+}
+
+fn contains_contract(actual: &Value, expected: &Value, case: &str) {
+    if let Some(object) = expected.as_object() {
+        for (key, v) in object {
+            assert!(actual.get(key).is_some(), "{case}: missing {key}: {actual}");
+            contains_contract(&actual[key], v, case);
+        }
+    } else {
+        assert_eq!(actual, expected, "{case}");
+    }
+}
+#[test]
+fn status_payloads_match_frozen_review_diagnostics_and_progress_corpus() {
+    let ids = [
+        "task-status-awaiting-review-baseline-omitted",
+        "task-status-awaiting-review-baseline-persisted",
+        "task-status-awaiting-review-baseline-snapshot-fallback",
+        "task-status-awaiting-review-external-scope-violation",
+        "task-status-awaiting-review-omit-repositories",
+        "task-status-awaiting-review-verification",
+        "task-status-compact-phase-agent",
+        "task-status-compact-phase-verifying",
+        "task-status-default-accepted",
+        "task-status-default-awaiting-review-minimal",
+        "task-status-default-closed",
+        "task-status-default-delivery-unknown",
+        "task-status-default-failed",
+        "task-status-default-needs-user",
+        "task-status-needs-user-no-session",
+        "task-status-verbose-external-git-policy-violation",
+        "task-status-verbose-full-contract",
+        "task-status-verbose-repositories-multi",
+        "task-status-verbose-repositories-single",
+        "task-status-budget-omitted-when-unconfigured-verbose",
+        "task-status-corrupt-budget-survives",
+    ];
+    let corpus: Value =
+        serde_json::from_str(include_str!("../../../docs/fixtures/mcp-cases.json")).unwrap();
+    for name in ids {
+        let case = corpus["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == name)
+            .unwrap();
+        let f = Fixture::new("");
+        let server = f.server();
+        let id = task_id(&f.submit(&server));
+        let setup = &case["setup"]["task"];
+        let row = &setup["rounds"][0];
+        let s = f.layout.open().unwrap();
+        let mut snapshot = setup.get("snapshot").cloned().unwrap_or(json!({}));
+        for key in ["allow_dirty", "allow_commit"] {
+            if let Some(v) = row["stored_result"].get(key) {
+                snapshot[key] = v.clone();
+            }
+        }
+        if let Some(dirty) = case["setup"].get("snapshot_dirty_paths") {
+            snapshot["dirty_paths"] = dirty.clone();
+        }
+        s.connection().execute("UPDATE tasks SET status=?1,session_id=?2,snapshot=?3,revision_count=?4,test_commands=?5",rusqlite::params![setup["status"].as_str().unwrap(),setup["session_id"].as_str(),snapshot.to_string(),setup["revision_count"].as_i64().unwrap_or(0),serde_json::to_string(&setup.get("test_commands").cloned().unwrap_or(json!([]))).unwrap()]).unwrap();
+        if setup.get("rounds").is_none() {
+            s.connection().execute("DELETE FROM rounds", []).unwrap();
+        } else {
+            s.connection().execute("UPDATE rounds SET status=?1,result_json=?2,response=?3,session_id=?4,worker_started_at=NULL,worker_deadline_at=NULL,verifier_state=?5,verifier_json=?6",rusqlite::params![row["status"].as_str().unwrap(),row.get("stored_result").map(Value::to_string),row["response"].as_str(),setup["session_id"].as_str(),row["verifier_state"].as_str(),row.get("verifier_json").or(row.get("verifier_progress")).map(|v|if let Some(s)=v.as_str(){s.to_owned()}else{v.to_string()})]).unwrap();
+        }
+        if let Some(raw) = setup["budget_raw"].as_str() {
+            s.connection()
+                .execute("UPDATE tasks SET budget_json=?1", [raw])
+                .unwrap();
+        }
+        *f.activity.lock().unwrap() = json!({"_health":false});
+        let admission = match bridge_worker::WorkerLock::try_acquire_admission(&f.layout).unwrap() {
+            bridge_worker::WorkerLockOutcome::Acquired(g) => g,
+            _ => panic!(),
+        };
+        let mut args = case["input"].clone();
+        args["task_id"] = json!(id.to_string());
+        args["wait_seconds"] = json!(0);
+        let mut actual = call(&server, "task_status", args);
+        actual["task_id"] = json!("${TASK_ID}");
+        actual["project_id"] = json!("${PROJECT_ID}");
+        if actual["user_action"].is_object() {
+            actual["user_action"]["command"] = json!("${CONSOLE_COMMAND}");
+            if !actual["user_action"]["fallback_command"].is_null() {
+                actual["user_action"]["fallback_command"] = json!("${ATTACH_COMMAND}");
+                actual["user_action"]["session_title"] = json!("${SESSION_TITLE}");
+            }
+        }
+        if let Some(repos) = actual.get_mut("repositories").and_then(Value::as_array_mut) {
+            for r in repos {
+                if r["root"] == json!(f.project.workspace()) {
+                    r["root"] = json!("${WORKSPACE}");
+                }
+            }
+        }
+        let expect = &case["expect"];
+        for key in expect["fields"].as_array().unwrap() {
+            assert!(
+                actual.get(key.as_str().unwrap()).is_some(),
+                "{name}: missing {key}: {actual}"
+            );
+        }
+        for key in expect["absent"].as_array().into_iter().flatten() {
+            assert!(
+                actual.get(key.as_str().unwrap()).is_none(),
+                "{name}: unexpected {key}: {actual}"
+            );
+        }
+        if expect["shape"] == "exact" {
+            assert_eq!(
+                actual.as_object().unwrap().len(),
+                expect["fields"].as_array().unwrap().len(),
+                "{name}: {actual}"
+            );
+        }
+        if let Some(values) = expect.get("values") {
+            contains_contract(&actual, values, name);
+        }
+        drop(admission);
     }
 }

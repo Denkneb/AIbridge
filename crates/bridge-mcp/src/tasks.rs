@@ -2,7 +2,7 @@
 use crate::{McpServer, check_layout};
 use bridge_domain::{
     DeliveryMode, ExecutionMode, ProfileDefinitionSource, RoundKind, TaskId, TaskStatus,
-    VerifierState, request_payload_hash,
+    request_payload_hash,
 };
 use bridge_storage::{
     CreateTaskError, CreateTaskInput, RoundRef, RoundRow, RustStateLayout, StorageConnection, Task,
@@ -208,7 +208,7 @@ impl McpServer {
             _ => Err("unknown_tool"),
         }
     }
-    fn storage(&self) -> Result<StorageConnection> {
+    pub(super) fn storage(&self) -> Result<StorageConnection> {
         self.layout.open().map_err(|_| "state_unavailable")
     }
     fn task(&self, id: TaskId) -> Result<Option<Task>> {
@@ -547,105 +547,7 @@ impl McpServer {
         self.maybe_spawn(task.task_id)?;
         self.result(&self.task(task.task_id)?.ok_or("state_unavailable")?, false)
     }
-    fn result(&self, task: &Task, verbose: bool) -> Result<Value> {
-        let mut storage = self.storage()?;
-        let row = round(&storage, task.task_id)?;
-        let stored = row.result_json.clone().unwrap_or(json!({}));
-        let mut result = json!({"task_id":task.task_id.to_string(),"project_id":task.project_id.as_str(),"status":task.status,"round_number":row.round_number,"revision_count":task.revision_count});
-        if let Some(session) = &task.session_id {
-            result["session_id"] = json!(session);
-        }
-        if matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising) {
-            result["created_at"] = json!(task.created_at);
-            result["updated_at"] = json!(task.updated_at);
-            result["session_id"] = json!(task.session_id);
-            result["close_requested"] = json!(task.close_requested_at.is_some());
-            result["close_requested_at"] = json!(task.close_requested_at);
-            result["phase"] = json!(if row.verifier_state == Some(VerifierState::Running) {
-                "verifying"
-            } else {
-                "agent"
-            });
-            result["worker"] = json!({"running":task_worker_running(&self.layout,task.task_id).map_err(|_|"state_unavailable")?,"started_at":row.worker_started_at,"deadline_at":row.worker_deadline_at});
-        } else if !matches!(task.status, TaskStatus::Accepted | TaskStatus::Closed) {
-            for key in [
-                "changed_paths",
-                "task_changed_paths",
-                "committed_paths",
-                "scope_violations",
-                "git_policy_violations",
-                "blockers",
-                "tool_errors",
-                "verification",
-                "error",
-                "head_before",
-                "head_after",
-                "baseline_dirty_paths",
-                "repositories",
-            ] {
-                if let Some(v) = stored.get(key).filter(|v| !v.is_null() && v != &&json!([])) {
-                    result[key] = v.clone();
-                }
-            }
-            if let Some(code) = &row.error_code {
-                result["error_code"] = json!(code);
-            }
-            if task.status == TaskStatus::AwaitingReview {
-                result["allow_dirty"] = json!(
-                    task.snapshot
-                        .as_ref()
-                        .is_some_and(|s| s["allow_dirty"] == true)
-                );
-                result["allow_commit"] = json!(
-                    task.snapshot
-                        .as_ref()
-                        .is_some_and(|s| s["allow_commit"] == true)
-                );
-            }
-        }
-        if let Some(profile) = storage
-            .get_task_profile(task.task_id, self.project.id())
-            .map_err(|_| "profile_snapshot_corrupt")?
-            && (profile.source != ProfileDefinitionSource::Builtin || profile.id != "implementer")
-        {
-            result["profile"] = json!(profile.id);
-            result["profile_source"] = json!(profile.source);
-        }
-        if task.status == TaskStatus::AwaitingReview {
-            let decision = storage
-                .revision_budget_decision(task.task_id, self.project.id(), false)
-                .map_err(|_| "state_unavailable")?;
-            if let Some(b) = decision.state {
-                result["budget"] = b;
-            }
-        }
-        if self.execution_mode(task.task_id)? == ExecutionMode::Worktree {
-            let record = storage
-                .get_worktree(task.task_id, self.project.id())
-                .map_err(|_| "state_unavailable")?
-                .ok_or("worktree_row_missing")?;
-            result["execution_mode"] = json!("worktree");
-            result["worktree"] = json!({"status":record.status.as_str(),"path":record.path,"server_port":record.server_port.map(|p|p.get()),"server_endpoint":record.server_endpoint});
-        }
-        if verbose && !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising) {
-            result["task"] = json!(task.text);
-            result["allowed_paths"] = json!(task.allowed_paths);
-            result["test_commands"] = json!(task.test_commands);
-            result["result"] = stored;
-            result["response"] = json!(row.response);
-            result["worker_started_at"] = json!(row.worker_started_at);
-            result["worker_deadline_at"] = json!(row.worker_deadline_at);
-            result["created_at"] = json!(task.created_at);
-            result["updated_at"] = json!(task.updated_at);
-            result["checkpoint"] = storage
-                .get_round_checkpoint(&reference(task, &row))
-                .map_err(|_| "state_unavailable")?
-                .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
-                .unwrap_or(Value::Null);
-        }
-        Ok(result)
-    }
-    fn execution_mode(&self, id: TaskId) -> Result<ExecutionMode> {
+    pub(super) fn execution_mode(&self, id: TaskId) -> Result<ExecutionMode> {
         let raw: String = self
             .storage()?
             .connection()
@@ -688,15 +590,16 @@ impl McpServer {
                 }
             }
         };
-        let Some(task) = self.task(id)? else {
+        let Some(task) = self.status_task(id)? else {
             return Ok(json!({"status":"unknown_task"}));
         };
         let layouts = self.layouts()?;
         let refs = layouts.iter().collect::<Vec<_>>();
         let mut failed_recovery_busy = false;
+        let budget_valid = self.task(id).is_ok();
         if task.close_requested_at.is_some() {
             self.finish_close(&task)?;
-        } else if task.status == TaskStatus::Failed && explicit && wait > 0 {
+        } else if task.status == TaskStatus::Failed && explicit && wait > 0 && budget_valid {
             let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
             let outcome = bridge_worker::recovery::recover_failed_assistant(
                 &self.layout,
@@ -715,7 +618,7 @@ impl McpServer {
             ) {
                 return Err("worker_spawn_failed");
             }
-        } else if task.status == TaskStatus::NeedsUser && explicit {
+        } else if task.status == TaskStatus::NeedsUser && explicit && budget_valid {
             let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
             let outcome = bridge_worker::recovery::recover_needs_user(
                 &self.layout,
@@ -733,12 +636,12 @@ impl McpServer {
             ) {
                 return Err("worker_spawn_failed");
             }
-        } else {
+        } else if budget_valid {
             self.maybe_spawn(id)?;
         }
         let start = Instant::now();
         loop {
-            let task = self.task(id)?.ok_or("state_unavailable")?;
+            let task = self.status_task(id)?.ok_or("state_unavailable")?;
             let result = self.result(&task, verbose)?;
             if task.status == TaskStatus::Failed
                 && failed_recovery_busy

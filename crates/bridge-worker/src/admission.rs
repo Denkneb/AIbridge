@@ -439,3 +439,27 @@ fn activate_task(
         Ok(ActivationOutcome::Busy)
     }
 }
+
+/// On-accept lock order: project worker then task lifecycle; caller next takes
+/// admission and holds all three across stop, accept and materialization.
+pub fn try_on_accept_fences(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+) -> Result<Option<WorkerFences>, AdmissionError> {
+    let storage = layout.open().map_err(|_| AdmissionError::Ownership)?;
+    bound_task(&storage, layout, project, task_id)?;
+    let project_guard = match WorkerLock::try_acquire(layout).map_err(|_| AdmissionError::Lock)? {
+        WorkerLockOutcome::Busy => return Ok(None),
+        WorkerLockOutcome::Acquired(g) => g,
+    };
+    let task_guard =
+        match WorkerLock::try_acquire_task(layout, task_id).map_err(|_| AdmissionError::Lock)? {
+            WorkerLockOutcome::Busy => return Ok(None),
+            WorkerLockOutcome::Acquired(g) => g,
+        };
+    Ok(Some(WorkerFences {
+        _project: Some(project_guard),
+        _task: task_guard,
+    }))
+}

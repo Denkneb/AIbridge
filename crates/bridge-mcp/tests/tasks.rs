@@ -427,7 +427,7 @@ fn close_while_worker_fenced_is_deferred_then_status_finishes() {
     assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
 }
 #[test]
-fn frozen_on_accept_delivery_is_explicitly_unavailable() {
+fn corrupt_direct_on_accept_binding_is_refused() {
     let f = Fixture::new("");
     let server = f.server();
     let id = task_id(&f.submit(&server));
@@ -440,7 +440,7 @@ fn frozen_on_accept_delivery_is_explicitly_unavailable() {
         .unwrap();
     assert_eq!(
         call(&server, "accept_task", json!({"task_id":id.to_string()}))["error"],
-        "on_accept_delivery_unavailable"
+        "delivery_binding_invalid"
     );
     assert_eq!(
         f.layout

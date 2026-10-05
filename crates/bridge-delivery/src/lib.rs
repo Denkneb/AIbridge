@@ -224,3 +224,32 @@ fn initial_preflight(project: &ProjectEntry, artifact: &Artifact) -> Result<()> 
     }
     Ok(())
 }
+/// Automatic build-if-missing/apply/resume. Caller holds lifecycle and admission
+/// fences across the accepted transition and this operation.
+pub fn automatic_admitted(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+) -> Result<Value> {
+    if let Some(record) = layout
+        .open()
+        .map_err(|_| DeliveryError::new("state_unavailable"))?
+        .get_worktree(id, project.id())
+        .map_err(|_| DeliveryError::new("state_unavailable"))?
+        && (record.delivery_state == Some(WorktreeDeliveryState::Delivered)
+            || record.delivered_at.is_some())
+    {
+        return Ok(json!({"mode":"auto","status":"delivered","delivery_state":"delivered"}));
+    }
+    let ctx = context(layout, project, id)?;
+    if ctx
+        .record
+        .delivery_state
+        .unwrap_or(WorktreeDeliveryState::None)
+        == WorktreeDeliveryState::None
+        && !ctx.runtime.join("artifact/manifest.json").exists()
+    {
+        build_admitted(layout, project, id)?;
+    }
+    materialize::run(&ctx, layout, project, true, &mut |_| false)
+}

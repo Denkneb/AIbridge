@@ -21,3 +21,5 @@ bridge-opencode.workspace = true
 bridge-runtime.workspace = true
 rusqlite.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+bridge-delivery.workspace = true

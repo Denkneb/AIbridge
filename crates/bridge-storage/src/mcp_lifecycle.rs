@@ -40,6 +40,23 @@ impl StorageConnection {
         id: TaskId,
         project: &ProjectId,
     ) -> Result<Task, RoundUpdateError> {
+        self.accept_review_inner(id, project, true)
+    }
+    /// Accepts either frozen delivery policy; delivery orchestration belongs to
+    /// the fenced caller and never participates in this terminal transaction.
+    pub fn accept_review_task(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+    ) -> Result<Task, RoundUpdateError> {
+        self.accept_review_inner(id, project, false)
+    }
+    fn accept_review_inner(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+        manual_only: bool,
+    ) -> Result<Task, RoundUpdateError> {
         let now = utc_now_rfc3339_millis();
         let tx = self
             .connection
@@ -49,7 +66,7 @@ impl StorageConnection {
         if &task.project_id != project {
             return Err(RoundUpdateError::ProjectMismatch);
         }
-        if task.delivery_mode != bridge_domain::DeliveryMode::Manual
+        if (manual_only && task.delivery_mode != bridge_domain::DeliveryMode::Manual)
             || task.close_requested_at.is_some()
         {
             return Err(RoundUpdateError::InvalidTaskTransition);

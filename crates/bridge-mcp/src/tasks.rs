@@ -221,7 +221,7 @@ impl McpServer {
     pub(super) fn storage(&self) -> Result<StorageConnection> {
         self.layout.open().map_err(|_| "state_unavailable")
     }
-    fn task(&self, id: TaskId) -> Result<Option<Task>> {
+    pub(super) fn task(&self, id: TaskId) -> Result<Option<Task>> {
         let task = self
             .storage()?
             .get_task(id)
@@ -234,7 +234,7 @@ impl McpServer {
         }
         Ok(task)
     }
-    fn layouts(&self) -> Result<Vec<RustStateLayout>> {
+    pub(super) fn layouts(&self) -> Result<Vec<RustStateLayout>> {
         self.registry
             .iter()
             .map(|p| {
@@ -247,7 +247,7 @@ impl McpServer {
         bridge_worker::recovery::task_execution_view(&self.layout, &self.project, task.task_id)
             .map_err(|_| "execution_binding_invalid")
     }
-    fn turn_idle(&self, task: &Task) -> Result<()> {
+    pub(super) fn turn_idle(&self, task: &Task) -> Result<()> {
         let Some(view) = self.view(task)? else {
             return Ok(());
         };
@@ -826,7 +826,7 @@ impl McpServer {
             return Ok(json!({"status":"unknown_task"}));
         };
         if task.delivery_mode != DeliveryMode::Manual {
-            return Err("on_accept_delivery_unavailable");
+            return self.accept_on_accept(&task);
         }
         if task.status == TaskStatus::Accepted {
             return Ok(json!({"task_id":id.to_string(),"status":"accepted"}));

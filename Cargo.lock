@@ -105,6 +105,7 @@ version = "0.1.0"
 dependencies = [
  "bridge-command-policy",
  "bridge-config",
+ "bridge-delivery",
  "bridge-domain",
  "bridge-git",
  "bridge-opencode",

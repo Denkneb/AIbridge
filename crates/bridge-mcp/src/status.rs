@@ -311,6 +311,9 @@ impl McpServer {
         if mode == ExecutionMode::Worktree {
             result["execution_mode"] = json!("worktree");
             result["delivery_mode"] = json!(task.delivery_mode);
+            if task.delivery_mode == bridge_domain::DeliveryMode::OnAccept {
+                result["delivery"] = self.delivery_summary(task.task_id);
+            }
             if let Some(record) = storage
                 .get_worktree(task.task_id, self.project.id())
                 .map_err(|_| "state_unavailable")?

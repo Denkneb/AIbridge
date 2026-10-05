@@ -1,4 +1,5 @@
 //! Approved plan validation and fenced run creation. No model or worker launch.
+pub mod codex;
 pub mod plan;
 pub mod run;
 

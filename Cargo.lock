@@ -60,6 +60,7 @@ dependencies = [
  "bridge-storage",
  "bridge-worker",
  "nix 0.27.1",
+ "process-wrap",
  "serde",
  "serde_json",
  "sha2",

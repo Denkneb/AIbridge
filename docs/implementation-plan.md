@@ -4227,7 +4227,7 @@ limits не расширяются по модельному ответу. Ав�
   pinned plan scenarios) и all-targets Clippy проходят. CLI launch/coordinator,
   модельные вызовы и inheritance остаются в 16.3–16.10.
 
-### 16.3. Read-only Codex process adapter
+### 16.3. Read-only Codex process adapter (завершено)
 
 - **Контракт:** prepare/review schema, `codex exec` read-only, ignore user
   config, multi_agent disabled; argv без shell, private schema/result/log,
@@ -4238,6 +4238,15 @@ limits не расширяются по модельному ответу. Ав�
   output не меняет scope/criteria/permissions и не считается trusted evidence.
 - **Checks:** subprocess doubles/structured output tests. Depends on 0B.5,
   process ownership primitives. No real model invocation в unit suite.
+
+- **Реализовано:** `bridge-automation::codex`; local CLI argv сверены с
+  `codex exec --help`, structured output — с official non-interactive docs.
+  Prepare/review schemas, ignore-user-config/read-only/multi_agent disabled,
+  private nofollow schema/result/log вне checkout, capped combined stdout/stderr
+  (8MB), bounded result (1MB), timeout/cancel и whole-session cleanup.
+  Проверены все 16 pinned answer cases, malformed/nonzero/oversized/symlink
+  results, descendant cleanup и bounded log flood на subprocess doubles.
+  Реальные model calls в тестах не выполняются.
 
 ### 16.4. Inherited accepted checkout
 

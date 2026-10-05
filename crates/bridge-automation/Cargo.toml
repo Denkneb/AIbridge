@@ -14,6 +14,7 @@ bridge-path-policy.workspace = true
 bridge-git.workspace = true
 bridge-storage.workspace = true
 bridge-worker.workspace = true
+process-wrap.workspace = true
 nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true

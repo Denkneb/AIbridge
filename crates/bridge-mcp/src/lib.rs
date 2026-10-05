@@ -117,6 +117,23 @@ impl McpServer {
     pub fn delegated_tools_enabled(&self) -> bool {
         self.spawner.is_some()
     }
+    /// Recovery runs beside the transport, while the MCP ownership lock remains
+    /// held. Shutdown drains recovery before releasing that lock.
+    pub(crate) fn with_startup_recovery<T>(&self, run: impl FnOnce() -> Result<T>) -> Result<T> {
+        std::thread::scope(|scope| {
+            if self.delegated_tools_enabled() {
+                std::thread::Builder::new()
+                    .name("bridge-mcp-recovery".into())
+                    .spawn_scoped(scope, || {
+                        if self.recover_startup().is_err() {
+                            eprintln!("warning: mcp_startup_recovery_failed");
+                        }
+                    })
+                    .map_err(|_| McpError::Io)?;
+            }
+            run()
+        })
+    }
     /// Reads config labels and one coherent active-set snapshot; no activation.
     /// # Errors
     /// Ownership/schema/corrupt activity errors are fixed, content-free labels.

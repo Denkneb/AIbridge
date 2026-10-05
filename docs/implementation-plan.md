@@ -3431,6 +3431,28 @@ Source: `mcp_http.py` v17 и
 
 ### 8.11. Startup recovery
 
+- **8.11a. Standalone startup scan (завершён).** Stdio/HTTP запускают recovery
+  в отдельном scoped thread одновременно с transport loop: handshake не ждёт
+  HTTP probes/spawn. MCP ownership lock удерживается до завершения recovery,
+  включая shutdown; ошибки выводятся только fixed warning в stderr.
+  Под admission fence сверяется writer ledger; orphan worktrees регистрируются
+  только в logical quarantine. Восстанавливается весь unfinished set:
+  implementing/revising — через existing lifecycle/spawn fences и persisted
+  startup lease, needs_user — через background blocker gate и atomic claim.
+  Deferred close завершается без нового prompt. Waiting/review/failed и
+  delivery_unknown не запускаются; read-only embedders без spawner инертны.
+  Ошибка одного spawn не останавливает остальных writers, failed spawn отпускает
+  собственный lease/claim. Saved attempted round/session/outbound и baseline
+  сохраняются; pending worktree передаётся worker без static endpoint probe.
+  **Граница:** delivery_unknown/failed assistant recovery остаются в 9.5c;
+  full source parity не заявлена. Targeted tests: 9 новых startup cases,
+  включая concurrent claims, live worker/lease, blocker gate/rollback,
+  parallel writers, deferred close/reconcile, orphan preservation и
+  stdio/authenticated HTTP handshake при blocked spawn.
+  Проверки: `cargo test --offline -p bridge-mcp -p agent-bridge-cli`;
+  targeted all-target Clippy, fmt и diff-check. MCP/CLI regressions: 57 tests
+  passed (24 task tests, включая 9 новых startup cases); warnings отсутствуют.
+
 ### 8.12. `request_changes` structured findings (v7, не завершено)
 
 - **Цель:** handler `request_changes` с optional `structured_findings` и
@@ -3618,8 +3640,7 @@ Delta v17: вывод execution/delivery modes из validated config
   Реальный CLI MCP → child worker → awaiting_review → manual accept проверен
   на loopback OpenCode mock, один prompt и reservation release.
   Full workspace: 1268 tests passed; fmt/diff-check и all-target Clippy чисты.
-- **9.5c. Full handlers/startup recovery (открыт).** Remaining: startup scan
-  8.11; failed assistant/delivery recovery, complete frozen envelope parity,
+- **9.5c. Full handlers/startup recovery (открыт).** Remaining: failed assistant/delivery recovery, complete frozen envelope parity,
   workflow metadata/activation и on_accept delivery. Local controller
   consumer 9.13c и live provider smoke остаются отдельными этапами.
 

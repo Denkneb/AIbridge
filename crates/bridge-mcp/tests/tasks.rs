@@ -22,6 +22,7 @@ struct Fixture {
     project: ProjectEntry,
     layout: RustStateLayout,
     activity: Arc<Mutex<Value>>,
+    blockers: Arc<Mutex<Value>>,
     calls: Arc<Mutex<Vec<String>>>,
     spawns: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
@@ -52,6 +53,7 @@ impl Fixture {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let activity = Arc::new(Mutex::new(json!({})));
+        let blockers = Arc::new(Mutex::new(json!({"permissions":[],"questions":[]})));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (a, c, end, directory) = (
@@ -60,6 +62,7 @@ impl Fixture {
             stop.clone(),
             workspace.clone(),
         );
+        let b = blockers.clone();
         let mock = thread::spawn(move || {
             while !end.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -89,7 +92,8 @@ impl Fixture {
                             "/global/health" => json!({"healthy":true}),
                             "/path" => json!({"directory":directory}),
                             "/session/status" => a.lock().unwrap().clone(),
-                            "/permission" | "/question" => json!([]),
+                            "/permission" => b.lock().unwrap()["permissions"].clone(),
+                            "/question" => b.lock().unwrap()["questions"].clone(),
                             _ => json!({}),
                         };
                         let body = value.to_string();
@@ -119,6 +123,7 @@ impl Fixture {
             project,
             layout,
             activity,
+            blockers,
             calls,
             spawns: Arc::new(AtomicUsize::new(0)),
             fail: Arc::new(AtomicBool::new(false)),
@@ -670,4 +675,456 @@ fn revision_budget_override_does_not_bypass_structured_scope_validation() {
         2
     );
     assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+}
+
+fn expire_spawn(f: &Fixture) {
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE rounds SET worker_started_at='2000-01-01T00:00:00Z',worker_deadline_at=NULL",
+            [],
+        )
+        .unwrap();
+}
+fn park(f: &Fixture, id: TaskId) {
+    let mut s = f.layout.open().unwrap();
+    let r = RoundRef {
+        task_id: id,
+        project_id: f.project.id().clone(),
+        round_number: 1,
+    };
+    s.prepare_round(r.clone(), "saved outbound".into()).unwrap();
+    s.bind_round_session(r.clone(), "session".into()).unwrap();
+    s.mark_round_sent(r.clone()).unwrap();
+    s.mark_round_observing(r.clone()).unwrap();
+    s.finish_round(FinishRoundInput {
+        round: r,
+        round_status: RoundStatus::NeedsUser,
+        task_status: TaskStatus::NeedsUser,
+        response_message_id: None,
+        response: None,
+        error_code: Some("permission_required".into()),
+        result_json: None,
+    })
+    .unwrap();
+}
+#[test]
+fn startup_resumes_saved_attempt_once_and_preserves_outbound_and_baseline() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    let mut s = f.layout.open().unwrap();
+    let r = RoundRef {
+        task_id: id,
+        project_id: f.project.id().clone(),
+        round_number: 1,
+    };
+    s.prepare_round(r.clone(), "saved outbound".into()).unwrap();
+    s.bind_round_session(r.clone(), "session".into()).unwrap();
+    s.mark_round_sent(r.clone()).unwrap();
+    let before = s.get_task(id).unwrap().unwrap().snapshot;
+    expire_spawn(&f);
+    drop(server);
+    let server = f.server();
+    thread::scope(|scope| {
+        let a = scope.spawn(|| server.recover_startup());
+        let b = scope.spawn(|| server.recover_startup());
+        a.join().unwrap().unwrap();
+        b.join().unwrap().unwrap();
+    });
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+    assert_eq!(s.get_task(id).unwrap().unwrap().snapshot, before);
+    let row = s.connection().query_row("SELECT attempted,outbound_message_id,session_id,round_number FROM rounds WHERE task_id=?1", [id.to_string()], |r| Ok((r.get::<_,bool>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?))).unwrap();
+    assert_eq!(row, (true, "saved outbound".into(), "session".into(), 1));
+}
+#[test]
+fn startup_respects_live_worker_and_spawn_lease_then_retries_failed_spawn() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    expire_spawn(&f);
+    let guard = match bridge_worker::WorkerLock::try_acquire_task(&f.layout, id).unwrap() {
+        bridge_worker::WorkerLockOutcome::Acquired(g) => g,
+        _ => panic!(),
+    };
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    drop(guard);
+    f.fail.store(true, Ordering::Relaxed);
+    assert!(server.recover_startup().is_err());
+    let stamp: Option<String> = f
+        .layout
+        .open()
+        .unwrap()
+        .connection()
+        .query_row("SELECT worker_started_at FROM rounds", [], |r| r.get(0))
+        .unwrap();
+    assert!(stamp.is_none());
+    f.fail.store(false, Ordering::Relaxed);
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 3);
+}
+#[test]
+fn startup_background_needs_user_keeps_blocker_gate_and_rolls_back_failed_spawn() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    park(&f, id);
+    // Both APIs reject malformed lists; neither may silently bypass a blocker.
+    for (n, blockers) in [
+        json!({"permissions":[{"id":"permission", "sessionID":"session", "permission":"bash", "patterns":[], "metadata":{}, "always":[]}],"questions":[]}),
+        json!({"permissions":[],"questions":[{"id":"question","sessionID":"session","questions":[]}]}),
+        json!({"permissions":{},"questions":[]}),
+    ].into_iter().enumerate() {
+        *f.blockers.lock().unwrap() = blockers;
+        let outcome = server.recover_startup();
+        if n < 2 { outcome.unwrap(); } else { assert!(outcome.is_err()); }
+        assert_eq!(
+            f.layout
+                .open()
+                .unwrap()
+                .get_task(id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::NeedsUser
+        );
+        assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    }
+    *f.blockers.lock().unwrap() = json!({"permissions":[],"questions":[]});
+    f.fail.store(true, Ordering::Relaxed);
+    assert!(server.recover_startup().is_err());
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::NeedsUser
+    );
+    f.fail.store(false, Ordering::Relaxed);
+    server.recover_startup().unwrap();
+    server.recover_startup().unwrap();
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 3);
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Implementing
+    );
+    assert!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.starts_with("GET "))
+    );
+}
+#[test]
+fn startup_leaves_review_failed_and_waiting_tasks_parked_and_readonly_is_inert() {
+    for status in [
+        "awaiting_review",
+        "failed",
+        "waiting_dependencies",
+        "delivery_unknown",
+    ] {
+        let f = Fixture::new("");
+        let server = f.server();
+        let id = task_id(&f.submit(&server));
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute("UPDATE tasks SET status=?1", [status])
+            .unwrap();
+        expire_spawn(&f);
+        f.calls.lock().unwrap().clear();
+        server.recover_startup().unwrap();
+        assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+        assert!(f.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            f.layout
+                .open()
+                .unwrap()
+                .get_task(id)
+                .unwrap()
+                .unwrap()
+                .status
+                .as_str(),
+            status
+        );
+        drop(server);
+        let readonly = McpServer::open(f.project.clone(), f.layout.clone()).unwrap();
+        readonly.recover_startup().unwrap();
+        assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    }
+}
+#[test]
+fn startup_completes_deferred_close_and_removes_stale_reservations() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    f.layout
+        .open()
+        .unwrap()
+        .request_task_close(id, "saved close")
+        .unwrap();
+    server.recover_startup().unwrap();
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Closed
+    );
+    assert!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_active_writers(f.project.id())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    // Simulate the crash window where a terminal task still has a reservation.
+    f.layout.open().unwrap().connection().execute("INSERT INTO active_writers(task_id,project_id,scopes_json,created_at,parallel) VALUES (?1,'proj','[\"src/\"]','old',0)", [id.to_string()]).unwrap();
+    server.recover_startup().unwrap();
+    assert!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_active_writers(f.project.id())
+            .unwrap()
+            .is_empty()
+    );
+}
+#[test]
+fn stdio_startup_recovery_does_not_block_handshake_and_retains_mcp_ownership() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixStream;
+    let f = Fixture::new("");
+    let server = f.server();
+    let _id = task_id(&f.submit(&server));
+    expire_spawn(&f);
+    drop(server);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release = Mutex::new(release_rx);
+    let server = McpServer::open(f.project.clone(), f.layout.clone())
+        .unwrap()
+        .with_workers(
+            Arc::new(move |_| {
+                entered_tx.send(()).unwrap();
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                Ok(())
+            }),
+            vec![f.project.clone()],
+        )
+        .unwrap();
+    let (transport, mut client) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    thread::scope(|scope| {
+        let h = scope.spawn(|| {
+            bridge_mcp::stdio::run(
+                &server,
+                BufReader::new(transport.try_clone().unwrap()),
+                transport,
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        writeln!(client,"{}",json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}})).unwrap();
+        let mut line = String::new();
+        BufReader::new(client.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 1);
+        assert!(matches!(
+            McpServer::open(f.project.clone(), f.layout.clone()),
+            Err(bridge_mcp::McpError::Busy)
+        ));
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(!h.is_finished());
+        assert!(matches!(
+            McpServer::open(f.project.clone(), f.layout.clone()),
+            Err(bridge_mcp::McpError::Busy)
+        ));
+        release_tx.send(()).unwrap();
+        h.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn startup_recovers_all_parallel_writers_even_after_one_spawn_fails() {
+    let f = Fixture::new(
+        "execution_mode=\"worktree\"\nallow_parallel_writers=true\nmax_active_tasks=3",
+    );
+    fs::write(f.project.workspace().join("seed"), "seed").unwrap();
+    for args in [
+        vec!["add", "seed"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "seed",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(f.project.workspace())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let server = f.server();
+    let mut ids = Vec::new();
+    for n in 0..3 {
+        let mut args = input();
+        args["request_id"] = json!(format!("submit-{n}"));
+        args["allowed_paths"] = json!([format!("src{n}/")]);
+        ids.push(task_id(&call(&server, "submit_task", args)));
+    }
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 3);
+    expire_spawn(&f);
+    drop(server);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let server = McpServer::open(f.project.clone(), f.layout.clone())
+        .unwrap()
+        .with_workers(
+            Arc::new(move |r| {
+                let mut seen = captured.lock().unwrap();
+                seen.push(r.task_id);
+                if seen.len() == 1 { Err(()) } else { Ok(()) }
+            }),
+            vec![f.project.clone()],
+        )
+        .unwrap();
+    assert!(server.recover_startup().is_err());
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    assert!(ids.iter().all(|id| seen.lock().unwrap().contains(id)));
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_active_writers(f.project.id())
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(f.calls.lock().unwrap().is_empty());
+}
+#[test]
+fn startup_quarantines_orphan_logically_without_changing_its_files() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let orphan = f.layout.project_dir().join("worktrees/orphan");
+    fs::create_dir_all(&orphan).unwrap();
+    fs::write(orphan.join("keep"), "untouched").unwrap();
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o750)).unwrap();
+    server.recover_startup().unwrap();
+    server.recover_startup().unwrap();
+    let entries = f.layout.open().unwrap().list_worktree_quarantine().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].original_path, orphan.to_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(orphan.join("keep")).unwrap(),
+        "untouched"
+    );
+    assert_eq!(
+        fs::metadata(&orphan).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 0);
+}
+#[test]
+fn http_transport_runs_startup_recovery_beside_authenticated_handshake() {
+    use std::net::TcpStream;
+    let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+    let f = Fixture::new(&format!(
+        "mcp_url=\"http://127.0.0.1:{port}/mcp\"\nmcp_token_file=\"mcp.token\""
+    ));
+    fs::write(f.root.join("mcp.token"), "fixture-token").unwrap();
+    fs::set_permissions(f.root.join("mcp.token"), fs::Permissions::from_mode(0o600)).unwrap();
+    let server = f.server();
+    let _id = task_id(&f.submit(&server));
+    expire_spawn(&f);
+    drop(server);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release = Mutex::new(release_rx);
+    let server = bridge_mcp::http::HttpServer::bind_with_workers(
+        f.project.clone(),
+        f.layout.clone(),
+        Arc::new(move |_| {
+            entered_tx.send(()).unwrap();
+            release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        }),
+        vec![f.project.clone()],
+    )
+    .unwrap();
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        struct StopOnDrop<'a>(&'a AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let h = scope.spawn(|| server.run_until(&stop));
+        let _stop_on_drop = StopOnDrop(&stop);
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let body=json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}).to_string();
+        write!(client,"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer fixture-token\r\nContent-Type: application/json\r\nAccept: application/json,text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert_eq!(
+            serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap()["id"],
+            1
+        );
+        assert!(matches!(
+            McpServer::open(f.project.clone(), f.layout.clone()),
+            Err(bridge_mcp::McpError::Busy)
+        ));
+        release_tx.send(()).unwrap();
+        stop.store(true, Ordering::Release);
+        h.join().unwrap().unwrap();
+    });
+    assert!(McpServer::open(f.project.clone(), f.layout.clone()).is_ok());
 }

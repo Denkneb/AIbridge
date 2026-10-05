@@ -6,6 +6,9 @@ pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 /// # Errors
 /// I/O errors and frames exceeding the limit terminate with a safe label.
 pub fn run(server: &McpServer, input: impl BufRead, mut output: impl Write) -> Result<()> {
+    server.with_startup_recovery(|| run_session(server, input, &mut output))
+}
+fn run_session(server: &McpServer, input: impl BufRead, mut output: impl Write) -> Result<()> {
     let mut input = input;
     let mut protocol = Protocol::default();
     loop {

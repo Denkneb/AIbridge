@@ -38,8 +38,10 @@ Message observer service **7.9a** завершён: delivery/assistant error/dea
 checkpoint для каждого repo. Baseline/scope заморожены, подменённые symlink roots
 отклоняются; исчезнувшие repo видны как `external_repo_missing`. Worktree tasks
 сохраняют ограничение на один checkout. Пять delegated MCP handlers подключены
-для standalone задач с manual review (**9.5c1**). Полная source error-policy
-parity, startup recovery, workflow metadata и on_accept delivery остаются
+для standalone задач с manual review (**9.5c1**). Startup recovery **8.11a** подключён к stdio/HTTP в фоне: writer ledger,
+orphan quarantine, deferred close, implementing/revising и needs_user с blocker
+gate; handshake не ждёт recovery. Полная source error-policy
+parity, workflow metadata и on_accept delivery остаются
 открыты; live OpenCode/provider smoke ещё не выполнен.
 
 Актуальное продолжение: 7.16 и services 7.17a–c завершены; delivery gate
@@ -86,10 +88,11 @@ Rust worker; request_id сохраняет idempotency, review/close прове�
 сохранённой session. `task_status` поддерживает wait_seconds 0..300 и explicit
 needs_user recovery. Workflow metadata возвращает `workflow_metadata_unavailable`,
 accept с frozen on_accept policy — `on_accept_delivery_unavailable` без смены
-статуса. Автосканирование задач при старте MCP ещё не подключено.
+статуса. Автосканирование при старте MCP подключено; failed assistant и
+delivery_unknown recovery остаются отдельными задачами.
 Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
 
-Read-only MCP stdio доступен через тот же explicit Rust state root:
+MCP stdio доступен через тот же explicit Rust state root:
 
 ```bash
 cargo run --offline -p agent-bridge-cli -- mcp \
@@ -97,11 +100,10 @@ cargo run --offline -p agent-bridge-cli -- mcp \
   --state-root /absolute/path/agent-bridge-rs
 ```
 
-Stdout этой команды занят JSON-RPC; banner/logs в него не пишутся. Пока в
-`tools/list` только `project_info`; остальные пять tools и startup recovery
-остаются в потоке 8/worker FSM.
+Stdout этой команды занят JSON-RPC; banner/logs в него не пишутся.
+`tools/list` объявляет шесть tools; startup recovery работает в фоне.
 
-`serve-mcp` запускает тот же read-only MCP по configured HTTP endpoint:
+`serve-mcp` запускает тот же MCP по configured HTTP endpoint:
 
 ```bash
 cargo run --offline -p agent-bridge-cli -- serve-mcp \
@@ -113,7 +115,7 @@ cargo run --offline -p agent-bridge-cli -- serve-mcp \
 127.0.0.1 и перечитывает Bearer token при каждом запросе; token rotation/отзыв
 не требуют restart. HTTP/stdio делят один lock проекта и одновременно не
 запускаются. Транспорт — sessionless JSON HTTP/1.1; GET/SSE отключён. В обоих
-транспортах пока доступен только `project_info`, задачи не запускаются.
+транспортах доступны шесть tools и запуск Rust workers для standalone задач.
 
 
 

@@ -100,6 +100,102 @@ fn reference(task: &Task, row: &RoundRow) -> RoundRef {
     }
 }
 impl McpServer {
+    /// Reconcile owned state and resume every eligible writer after a restart.
+    /// Parked tasks keep their blocker gate; waiting/review/failed tasks are
+    /// never activated. Each task is reread under the existing spawn fences.
+    /// # Errors
+    /// Invalid state fails closed. A per-task failure does not prevent recovery
+    /// of the other writers; diagnostics never include task or endpoint data.
+    pub fn recover_startup(&self) -> crate::Result<()> {
+        if self.spawner.is_none() {
+            return Ok(());
+        }
+        check_layout(&self.project, &self.layout)?;
+        let settings = bridge_storage::AdmissionSettings::new(
+            self.project.max_active_tasks(),
+            self.project.allow_parallel_writers(),
+            self.project.execution_mode(),
+        )
+        .map_err(|_| crate::McpError::State)?;
+        {
+            let _admission = match WorkerLock::try_acquire_admission(&self.layout)
+                .map_err(|_| crate::McpError::State)?
+            {
+                WorkerLockOutcome::Busy => return Ok(()),
+                WorkerLockOutcome::Acquired(g) => g,
+            };
+            self.layout
+                .open()
+                .map_err(|_| crate::McpError::State)?
+                .reconcile_active_writers(self.project.id(), &settings)
+                .map_err(|_| crate::McpError::State)?;
+        }
+        // A running direct worker can hold the scan fence. This is a deferred
+        // scan, not permission to bypass it or stop recovering other writers.
+        let mut failed =
+            match bridge_worker::lifecycle::quarantine_orphans(&self.layout, &self.project) {
+                Ok(_) | Err(bridge_worker::execution::ExecutionError::Round) => false,
+                Err(_) => true,
+            };
+        let active = self
+            .layout
+            .open()
+            .map_err(|_| crate::McpError::State)?
+            .active_set(self.project.id())
+            .map_err(|_| crate::McpError::State)?;
+        let layouts = self.layouts().map_err(|_| crate::McpError::State)?;
+        let refs = layouts.iter().collect::<Vec<_>>();
+        for summary in active.tasks {
+            let outcome = (|| -> Result<()> {
+                let Some(task) = self.task(summary.task_id)? else {
+                    return Ok(());
+                };
+                if task.close_requested_at.is_some() {
+                    return self.finish_close(&task);
+                }
+                let gate = bridge_worker::lifecycle::recover_worktree_task(
+                    &self.layout,
+                    &self.project,
+                    task.task_id,
+                    &refs,
+                )
+                .map_err(|_| "cleanup_failed")?;
+                match task.status {
+                    TaskStatus::Implementing | TaskStatus::Revising if gate.may_spawn() => {
+                        self.maybe_spawn(task.task_id)
+                    }
+                    TaskStatus::NeedsUser => {
+                        let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
+                        let outcome = bridge_worker::recovery::recover_needs_user(
+                            &self.layout,
+                            &self.project,
+                            task.task_id,
+                            false,
+                            &refs,
+                            PROBE,
+                            |r| spawn(r),
+                        )
+                        .map_err(|_| "recovery_failed")?;
+                        if matches!(
+                            outcome,
+                            bridge_worker::recovery::RecoverySpawnOutcome::SpawnFailed
+                        ) {
+                            return Err("worker_spawn_failed");
+                        }
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            })();
+            failed |= outcome.is_err();
+        }
+        if failed {
+            Err(crate::McpError::State)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn call_task(&self, name: &str, args: &Value) -> Result<Value> {
         check_layout(&self.project, &self.layout).map_err(|_| "mcp_state_unavailable")?;
         match name {

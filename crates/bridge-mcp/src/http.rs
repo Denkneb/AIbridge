@@ -72,6 +72,9 @@ impl HttpServer {
     /// # Errors
     /// Reports listener/thread failures with fixed safe labels.
     pub fn run_until(self, stop: &AtomicBool) -> Result<()> {
+        self.server.with_startup_recovery(|| self.serve_until(stop))
+    }
+    fn serve_until(&self, stop: &AtomicBool) -> Result<()> {
         let port = self.address()?.port();
         let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
         let result = (|| {

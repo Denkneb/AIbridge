@@ -301,3 +301,70 @@ fn delivery_claim_requires_attempted_identity_and_exact_release_preserves_delive
         assert_eq!(all_rows(&storage), before);
     }
 }
+
+#[test]
+fn failed_claim_only_reopens_assistant_error_and_restores_it_on_failed_spawn() {
+    for kind in [RoundKind::Implement, RoundKind::Revise] {
+        let (_root, layout, id, project) = state("failed-recovery", kind, RoundStatus::Failed);
+        let mut s = layout.open().unwrap();
+        s.connection()
+            .execute("UPDATE tasks SET status='failed'", [])
+            .unwrap();
+        for code in [
+            "workspace_mismatch",
+            "session_not_found",
+            "session_directory_mismatch",
+            "worker_error",
+        ] {
+            s.connection()
+                .execute("UPDATE rounds SET error_code=?1", [code])
+                .unwrap();
+            let before = all_rows(&s);
+            assert!(s.claim_failed_recovery(id, &project).unwrap().is_none());
+            assert_eq!(all_rows(&s), before);
+        }
+        s.connection()
+            .execute("UPDATE rounds SET error_code='assistant_error'", [])
+            .unwrap();
+        let c = s.claim_failed_recovery(id, &project).unwrap().unwrap();
+        assert_eq!(c.round().status, RoundStatus::Observing);
+        assert_eq!(c.round().error_code, None);
+        assert!(s.claim_failed_recovery(id, &project).unwrap().is_none());
+        assert!(s.release_observation_recovery(&c).unwrap());
+        assert_eq!(s.get_task(id).unwrap().unwrap().status, TaskStatus::Failed);
+        let row = s
+            .connection()
+            .query_row("SELECT * FROM rounds", [], |r| Ok(RoundRow::from_row(r)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, RoundStatus::Failed);
+        assert_eq!(row.error_code.as_deref(), Some("assistant_error"));
+        assert!(row.attempted);
+        let c = s.claim_failed_recovery(id, &project).unwrap().unwrap();
+        s.mark_worker_started(c.reference().clone(), 30.0).unwrap();
+        assert!(!s.release_observation_recovery(&c).unwrap());
+    }
+}
+#[test]
+fn recovery_kind_change_cannot_release_a_new_claim_with_the_same_timestamp() {
+    let (_root, layout, id, project) = state(
+        "cross-recovery",
+        RoundKind::Implement,
+        RoundStatus::DeliveryUnknown,
+    );
+    let mut s = layout.open().unwrap();
+    s.connection()
+        .execute("UPDATE tasks SET status='delivery_unknown'", [])
+        .unwrap();
+    let old = s.claim_delivery_recovery(id, &project).unwrap().unwrap();
+    s.connection().execute_batch("UPDATE tasks SET status='failed'; UPDATE rounds SET status='failed',error_code='assistant_error'").unwrap();
+    let current = s.claim_failed_recovery(id, &project).unwrap().unwrap();
+    s.connection()
+        .execute("UPDATE rounds SET worker_started_at=?1", [old.lease()])
+        .unwrap();
+    assert!(!s.release_observation_recovery(&old).unwrap());
+    s.connection()
+        .execute("UPDATE rounds SET worker_started_at=?1", [current.lease()])
+        .unwrap();
+    assert!(s.release_observation_recovery(&current).unwrap());
+}

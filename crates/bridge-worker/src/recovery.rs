@@ -180,6 +180,28 @@ pub fn recover_delivery_unknown<T, E>(
         spawn,
     )
 }
+/// Recover only the current assistant_error through its saved session.
+/// # Errors
+/// Remote identity, storage or lock failures preserve the parked task.
+pub fn recover_failed_assistant<T, E>(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+    layouts: &[&RustStateLayout],
+    timeout: Duration,
+    spawn: impl FnOnce(&RoundRef) -> Result<T, E>,
+) -> Result<RecoverySpawnOutcome<T>, RecoveryError> {
+    recover_observation(
+        layout,
+        project,
+        id,
+        TaskStatus::Failed,
+        true,
+        layouts,
+        timeout,
+        spawn,
+    )
+}
 #[allow(clippy::too_many_arguments)]
 fn recover_observation<T, E>(
     layout: &RustStateLayout,
@@ -208,7 +230,16 @@ fn recover_observation<T, E>(
         _ => return Ok(RecoverySpawnOutcome::Unchanged),
     }
     let row = saved_round(&storage, &task)?;
-    if !row.status.is_open() {
+    if parked == TaskStatus::Failed
+        && (row.status != RoundStatus::Failed
+            || row.error_code.as_deref() != Some("assistant_error")
+            || !row.attempted
+            || row.session_id.is_none()
+            || row.outbound_message_id.is_none())
+    {
+        return Ok(RecoverySpawnOutcome::Unchanged);
+    }
+    if !row.status.is_open() && parked != TaskStatus::Failed {
         return Ok(RecoverySpawnOutcome::Unchanged);
     }
     if row.status != RoundStatus::Pending && row.session_id.is_none() {
@@ -270,6 +301,7 @@ fn recover_observation<T, E>(
     let claim = match parked {
         TaskStatus::NeedsUser => storage.claim_needs_user_recovery(id, project.id()),
         TaskStatus::DeliveryUnknown => storage.claim_delivery_recovery(id, project.id()),
+        TaskStatus::Failed => storage.claim_failed_recovery(id, project.id()),
         _ => return Err(RecoveryError::Binding),
     }
     .map_err(|_| RecoveryError::Storage)?;

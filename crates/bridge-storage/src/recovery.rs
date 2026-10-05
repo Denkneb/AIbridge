@@ -61,6 +61,16 @@ impl StorageConnection {
     ) -> Result<Option<RecoveryClaim>, RoundUpdateError> {
         self.claim_observation_recovery(id, project, TaskStatus::DeliveryUnknown)
     }
+    /// Claims only the current attempted assistant_error, retaining its session.
+    /// # Errors
+    /// Corrupt persisted identities and write failures fail closed atomically.
+    pub fn claim_failed_recovery(
+        &mut self,
+        id: TaskId,
+        project: &ProjectId,
+    ) -> Result<Option<RecoveryClaim>, RoundUpdateError> {
+        self.claim_observation_recovery(id, project, TaskStatus::Failed)
+    }
     fn claim_observation_recovery(
         &mut self,
         id: TaskId,
@@ -70,6 +80,7 @@ impl StorageConnection {
         let event_kind = match parked {
             TaskStatus::NeedsUser => "needs_user_recovery",
             TaskStatus::DeliveryUnknown => "delivery_recovery",
+            TaskStatus::Failed => "reopened",
             _ => return Err(RoundUpdateError::InvalidPersistedState),
         };
         let now = utc_now_rfc3339_millis();
@@ -103,12 +114,21 @@ impl StorageConnection {
             round_number: number,
         };
         let (_, row) = validate_current_round(&tx, &reference)?;
-        if !row.status.is_open() {
+        if !row.status.is_open() && parked != TaskStatus::Failed {
             return Ok(None);
         }
         if parked == TaskStatus::DeliveryUnknown
             && (!row.attempted
                 || row.status != RoundStatus::DeliveryUnknown
+                || row.session_id.is_none()
+                || row.outbound_message_id.is_none())
+        {
+            return Ok(None);
+        }
+        if parked == TaskStatus::Failed
+            && (row.status != RoundStatus::Failed
+                || row.error_code.as_deref() != Some("assistant_error")
+                || !row.attempted
                 || row.session_id.is_none()
                 || row.outbound_message_id.is_none())
         {
@@ -127,7 +147,7 @@ impl StorageConnection {
         if changed != 1 {
             return Ok(None);
         }
-        let round_status = if parked == TaskStatus::DeliveryUnknown {
+        let round_status = if matches!(parked, TaskStatus::DeliveryUnknown | TaskStatus::Failed) {
             RoundStatus::Observing
         } else if row.status == RoundStatus::NeedsUser {
             if row.attempted {
@@ -138,7 +158,7 @@ impl StorageConnection {
         } else {
             row.status
         };
-        tx.execute("UPDATE rounds SET status=?1,error_code=CASE WHEN status IN ('needs_user','delivery_unknown') THEN NULL ELSE error_code END,worker_started_at=?2,updated_at=?2 WHERE task_id=?3 AND round_number=?4",
+        tx.execute("UPDATE rounds SET status=?1,error_code=CASE WHEN status IN ('needs_user','delivery_unknown','failed') THEN NULL ELSE error_code END,worker_started_at=?2,updated_at=?2 WHERE task_id=?3 AND round_number=?4",
             params![round_status.as_str(),now,id.to_string(),number]).map_err(RoundUpdateError::Database)?;
         tx.execute("INSERT INTO events(task_id,round_number,kind,message,created_at) VALUES (?1,?2,?3,'round claimed for observation recovery',?4)",params![id.to_string(),number,event_kind,now]).map_err(RoundUpdateError::Database)?;
         let event_id = tx.last_insert_rowid();
@@ -188,7 +208,7 @@ impl StorageConnection {
         };
         let latest: Option<i64> = tx
             .query_row(
-                "SELECT MAX(id) FROM events WHERE task_id=?1 AND round_number=?2 AND kind IN ('needs_user_recovery','delivery_recovery')",
+                "SELECT MAX(id) FROM events WHERE task_id=?1 AND round_number=?2 AND kind IN ('needs_user_recovery','delivery_recovery','reopened')",
                 params![
                     reference.task_id.to_string(),
                     reference.round_number
@@ -205,7 +225,7 @@ impl StorageConnection {
             return Ok(false);
         }
         let now = utc_now_rfc3339_millis();
-        let status = if claim.previous_task_status == TaskStatus::DeliveryUnknown {
+        let status = if claim.previous_task_status != TaskStatus::NeedsUser {
             claim.previous_status
         } else if claim.previous_status == RoundStatus::NeedsUser
             && (row.status == RoundStatus::Observing

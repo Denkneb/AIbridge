@@ -3454,7 +3454,7 @@ Source: `mcp_http.py` v17 и
   Ошибка одного spawn не останавливает остальных writers, failed spawn отпускает
   собственный lease/claim. Saved attempted round/session/outbound и baseline
   сохраняются; pending worktree передаётся worker без static endpoint probe.
-  **Граница:** failed assistant recovery остаётся в 9.5c;
+  **Граница:** full source error-policy parity остаётся в 9.5c;
   full source parity не заявлена. Targeted tests: 9 новых startup cases,
   включая concurrent claims, live worker/lease, blocker gate/rollback,
   parallel writers, deferred close/reconcile, orphan preservation и
@@ -3579,10 +3579,19 @@ Source: `mcp_http.py` v17 и
   spawn duplicate в lease window. Failed recovery требует positive wait;
   review/background opt out сохраняют gate. No prompt resend/auto permission.
 - **Проверки:** zero-wait/concurrent recovery MCP fixtures.
+- **8.20b. Failed assistant recovery (завершён).** Только explicit task_status
+  с positive wait восстанавливает attempted current failed/assistant_error.
+  Endpoint/root, round/session/outbound/error проверяются до и после HTTP;
+  atomic claim переводит тот же round в observing, сохраняя baseline/usage.
+  Admission losers перечитывают status и ждут в пределах positive window;
+  spawn-before-lock lease исключает дубли. Failed spawn возвращает исходные
+  failed/error_code, stale release другого recovery kind отклоняется.
+  Infrastructure errors и background/startup не reopening. Checks: storage
+  eligibility/revise/rollback/cross-kind fencing и concurrent MCP recovery.
 - **8.20a. needs_user adapter (завершён).** Explicit zero-wait invokes guarded
   service 7.10b, re-reads persisted status, failed spawn releases claim;
   implicit task selection не восстанавливает needs_user. Проверен no-resend/
-  one-claim lease. Failed assistant recovery/full source parity ещё открыт.
+  one-claim lease. Full source error-policy parity ещё открыт.
 - **Зависит от:** 7.10b, 0B.4.
 
 ## Поток 9. Runtime CLI
@@ -3650,7 +3659,7 @@ Delta v17: вывод execution/delivery modes из validated config
   Реальный CLI MCP → child worker → awaiting_review → manual accept проверен
   на loopback OpenCode mock, один prompt и reservation release.
   Full workspace: 1268 tests passed; fmt/diff-check и all-target Clippy чисты.
-- **9.5c. Full handlers/startup recovery (открыт).** Remaining: failed assistant/delivery recovery, complete frozen envelope parity,
+- **9.5c. Full handlers/startup recovery (открыт).** Remaining: complete frozen envelope parity,
   workflow metadata/activation и on_accept delivery. Local controller
   consumer 9.13c и live provider smoke остаются отдельными этапами.
 

@@ -1191,3 +1191,111 @@ fn ambiguous_delivery_recovery_probes_health_claims_once_and_never_posts() {
             .all(|c| c.starts_with("GET "))
     );
 }
+
+#[test]
+fn failed_assistant_recovery_requires_explicit_positive_wait_and_releases_failed_spawn() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    park(&f, id);
+    f.layout.open().unwrap().connection().execute_batch("UPDATE tasks SET status='failed'; UPDATE rounds SET status='failed',error_code='assistant_error'").unwrap();
+    server.recover_startup().unwrap();
+    assert_eq!(
+        call(
+            &server,
+            "task_status",
+            json!({"task_id":id.to_string(),"wait_seconds":0})
+        )["status"],
+        "failed"
+    );
+    assert_eq!(
+        call(&server, "task_status", json!({"wait_seconds":1}))["status"],
+        "failed"
+    );
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    f.fail.store(true, Ordering::Relaxed);
+    assert_eq!(
+        call(
+            &server,
+            "task_status",
+            json!({"task_id":id.to_string(),"wait_seconds":1})
+        )["error"],
+        "worker_spawn_failed"
+    );
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    f.fail.store(false, Ordering::Relaxed);
+    thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            handles.push(scope.spawn(|| {
+                call(
+                    &server,
+                    "task_status",
+                    json!({"task_id":id.to_string(),"wait_seconds":1}),
+                )
+            }));
+        }
+        for h in handles {
+            assert_eq!(h.join().unwrap()["status"], "implementing");
+        }
+    });
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 3);
+    assert!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.starts_with("GET "))
+    );
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .revision_count,
+        0
+    );
+}
+#[test]
+fn infrastructure_failure_does_not_reopen_or_probe_on_explicit_positive_wait() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    park(&f, id);
+    for code in ["workspace_mismatch", "session_not_found", "worker_error"] {
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute("UPDATE tasks SET status='failed'", [])
+            .unwrap();
+        f.layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute("UPDATE rounds SET status='failed',error_code=?1", [code])
+            .unwrap();
+        f.calls.lock().unwrap().clear();
+        assert_eq!(
+            call(
+                &server,
+                "task_status",
+                json!({"task_id":id.to_string(),"wait_seconds":1})
+            )["status"],
+            "failed"
+        );
+        assert!(f.calls.lock().unwrap().is_empty());
+        assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    }
+}

@@ -693,8 +693,28 @@ impl McpServer {
         };
         let layouts = self.layouts()?;
         let refs = layouts.iter().collect::<Vec<_>>();
+        let mut failed_recovery_busy = false;
         if task.close_requested_at.is_some() {
             self.finish_close(&task)?;
+        } else if task.status == TaskStatus::Failed && explicit && wait > 0 {
+            let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
+            let outcome = bridge_worker::recovery::recover_failed_assistant(
+                &self.layout,
+                &self.project,
+                id,
+                &refs,
+                PROBE,
+                |r| spawn(r),
+            )
+            .map_err(|_| "recovery_failed")?;
+            failed_recovery_busy =
+                matches!(outcome, bridge_worker::recovery::RecoverySpawnOutcome::Busy);
+            if matches!(
+                outcome,
+                bridge_worker::recovery::RecoverySpawnOutcome::SpawnFailed
+            ) {
+                return Err("worker_spawn_failed");
+            }
         } else if task.status == TaskStatus::NeedsUser && explicit {
             let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
             let outcome = bridge_worker::recovery::recover_needs_user(
@@ -720,6 +740,34 @@ impl McpServer {
         loop {
             let task = self.task(id)?.ok_or("state_unavailable")?;
             let result = self.result(&task, verbose)?;
+            if task.status == TaskStatus::Failed
+                && failed_recovery_busy
+                && start.elapsed() < Duration::from_secs(wait)
+            {
+                thread::sleep(
+                    Duration::from_millis(100)
+                        .min(Duration::from_secs(wait).saturating_sub(start.elapsed())),
+                );
+                let spawn = self.spawner.as_ref().ok_or("worker_unavailable")?;
+                let outcome = bridge_worker::recovery::recover_failed_assistant(
+                    &self.layout,
+                    &self.project,
+                    id,
+                    &refs,
+                    PROBE,
+                    |r| spawn(r),
+                )
+                .map_err(|_| "recovery_failed")?;
+                if matches!(
+                    outcome,
+                    bridge_worker::recovery::RecoverySpawnOutcome::SpawnFailed
+                ) {
+                    return Err("worker_spawn_failed");
+                }
+                failed_recovery_busy =
+                    matches!(outcome, bridge_worker::recovery::RecoverySpawnOutcome::Busy);
+                continue;
+            }
             if !matches!(task.status, TaskStatus::Implementing | TaskStatus::Revising)
                 || result["phase"] == "verifying"
                 || start.elapsed() >= Duration::from_secs(wait)

@@ -90,7 +90,8 @@ Rust worker; request_id сохраняет idempotency, review/close прове�
 needs_user recovery. Workflow metadata возвращает `workflow_metadata_unavailable`,
 accept с frozen on_accept policy — `on_accept_delivery_unavailable` без смены
 статуса. Автосканирование при старте MCP и delivery_unknown recovery подключены;
-failed assistant recovery остаётся отдельной задачей.
+failed assistant recovery доступен только explicit task_status с positive wait
+(**8.20b**), без повторного prompt.
 Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
 
 MCP stdio доступен через тот же explicit Rust state root:

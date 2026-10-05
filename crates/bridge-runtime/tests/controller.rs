@@ -153,7 +153,7 @@ fn generated_config_matches_controller_contract_and_contains_only_token_placehol
     assert!(!layout.state_root().exists());
 }
 #[test]
-fn stdio_config_uses_absolute_explicit_rust_paths_but_launch_refuses_until_mcp_exists() {
+fn stdio_config_uses_absolute_explicit_rust_paths_and_launches_controller() {
     let f = Fixture::new();
     let config = f.config(false, "");
     let layout = f.layout(&config);
@@ -178,11 +178,8 @@ fn stdio_config_uses_absolute_explicit_rust_paths_but_launch_refuses_until_mcp_e
             f.root.join("state")
         ])
     );
-    assert_eq!(
-        f.launch(&config).unwrap_err(),
-        ControllerError::LocalMcpUnavailable
-    );
-    assert!(!layout.state_root().exists());
+    assert_eq!(f.launch(&config).unwrap().code(), Some(17));
+    assert!(layout.project_dir().join(CONFIG_FILENAME).is_file());
 }
 #[test]
 fn conflict_and_invalid_config_fail_before_tokens_or_state_are_touched() {

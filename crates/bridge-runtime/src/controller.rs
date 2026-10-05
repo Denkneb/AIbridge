@@ -38,7 +38,6 @@ pub enum ControllerError {
     Busy,
     Io,
     Spawn,
-    LocalMcpUnavailable,
 }
 impl fmt::Display for ControllerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -53,7 +52,6 @@ impl fmt::Display for ControllerError {
             Self::Busy => "controller_already_running",
             Self::Io => "controller_io_error",
             Self::Spawn => "controller_spawn_failed",
-            Self::LocalMcpUnavailable => "controller_local_mcp_unavailable: Rust delegated MCP tools require stage 8 and worker FSM; configure HTTP MCP endpoints",
         })
     }
 }
@@ -126,7 +124,7 @@ fn check_bindings(
     Ok(())
 }
 
-/// Read-only generator supporting the frozen HTTP and future stdio wiring.
+/// Read-only generator supporting the frozen HTTP and stdio wiring.
 /// # Errors
 /// Rejects unsafe bindings, colliding token variables and unsafe permissions.
 pub fn build_controller_config(
@@ -325,6 +323,11 @@ fn controller_env(
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Result<BTreeMap<OsString, OsString>> {
     let mut env: BTreeMap<_, _> = inherited.into_iter().collect();
+    env.retain(|name, _| {
+        !name.to_str().is_some_and(|s| {
+            s == "AGENT_BRIDGE_MCP_TOKEN" || s.starts_with("AGENT_BRIDGE_MCP_TOKEN_")
+        })
+    });
     env.insert("OPENCODE_CONFIG".into(), config.as_os_str().to_owned());
     env.remove(OsStr::new("OPENCODE_SERVER_PASSWORD"));
     env.remove(OsStr::new("OPENCODE_SERVER_USERNAME"));
@@ -332,6 +335,9 @@ fn controller_env(
         .chain(linked.iter().copied())
         .enumerate()
     {
+        if project.mcp_endpoint().is_none() {
+            continue;
+        }
         let token = project
             .read_mcp_token()
             .map_err(|_| ControllerError::Credentials)?
@@ -439,7 +445,7 @@ fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path:
 /// Launches only controller TUI, in the project workspace with inherited stdio.
 /// HTTP servers must already be running; this does not start executor or MCP.
 /// # Errors
-/// All config/token checks and missing stdio support fail before state writes.
+/// All config/token checks fail before state writes. Local transports launch the Rust MCP command.
 /// Foreign Rust/Python state is never adopted. Runtime failures use safe labels.
 pub fn launch_controller(
     primary: &ProjectEntry,
@@ -451,12 +457,6 @@ pub fn launch_controller(
 ) -> Result<ExitStatus> {
     let payload = build_controller_config(primary, linked, layout, bridge_exe, config_path)?;
     check_workspace_config(primary, linked)?;
-    if std::iter::once(primary)
-        .chain(linked.iter().copied())
-        .any(|p| p.mcp_endpoint().is_none())
-    {
-        return Err(ControllerError::LocalMcpUnavailable);
-    }
     let path = layout.project_dir().join(CONFIG_FILENAME);
     let env = controller_env(primary, linked, &path, std::env::vars_os())?;
     let (_, _guard) = write_config(layout, &payload)?;

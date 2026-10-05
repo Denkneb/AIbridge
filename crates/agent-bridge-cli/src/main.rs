@@ -12,13 +12,13 @@ const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root
 Commands:
   deliver-task      Build, validate or apply accepted worktree changes (--task ID)
   worker            Run an existing task round (--task ID --round N required)
-  launch-opencode   Launch an OpenCode controller using existing HTTP MCP servers
+  launch-opencode   Launch an OpenCode controller using local or HTTP MCP servers
   mcp               Serve MCP over stdin/stdout
   serve-mcp         Serve authenticated MCP on the configured loopback HTTP endpoint
 
 Rust MCP exposes project_info and standalone delegated tasks with manual review.
 The state root must belong to Rust and be outside the bound project workspace.
-Local controller delegation is not yet enabled in launch-opencode.
+Local MCP entries launch this Rust binary with explicit config and state paths.
 
 Options:
   --project ID        Configured project id (required)

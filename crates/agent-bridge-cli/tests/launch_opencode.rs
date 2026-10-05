@@ -196,14 +196,7 @@ fn help_and_version_are_available_without_config_or_state() {
     assert!(!f.root.join("state").exists());
 }
 #[test]
-fn local_transport_conflict_and_missing_token_fail_before_launch_and_state() {
-    let f = Fixture::new(false);
-    f.script("printf 'must-not-launch\\n'");
-    let output = f.launch();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("controller_local_mcp_unavailable"));
-    assert!(!f.root.join("state").exists());
+fn workspace_conflict_and_missing_token_fail_before_launch_and_state() {
     let f = Fixture::new(true);
     f.script("printf 'must-not-launch\\n'");
     fs::remove_file(f.root.join("primary.token")).unwrap();
@@ -289,4 +282,41 @@ fn published_controller_config_keeps_owner_read_write_under_restrictive_umask() 
         fs::metadata(path).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+#[test]
+fn local_controller_config_starts_the_actual_rust_stdio_mcp() {
+    let f = Fixture::new(false);
+    f.script(r#"
+[ "${OPENCODE_SERVER_PASSWORD+x}" != x ] || exit 71
+[ "${AGENT_BRIDGE_MCP_TOKEN+x}" != x ] || exit 72
+/usr/bin/python3 - <<'PYTEST'
+import os,json,subprocess
+config=json.load(open(os.environ['OPENCODE_CONFIG']))
+entry=config['mcp']['agent_bridge']
+assert entry['type']=='local'
+p=subprocess.Popen(entry['command'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+try:
+ def call(method,params=None):
+  payload={'jsonrpc':'2.0','id':1,'method':method}
+  if params is not None:payload['params']=params
+  p.stdin.write(json.dumps(payload)+'\n');p.stdin.flush()
+  return json.loads(p.stdout.readline())
+ assert 'result' in call('initialize',{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'controller-fixture','version':'1'}})
+ p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'})+'\n');p.stdin.flush()
+ names={t['name'] for t in call('tools/list')['result']['tools']}
+ assert names=={'project_info','submit_task','task_status','request_changes','accept_task','close_task'},names
+ info=call('tools/call',{'name':'project_info','arguments':{}})
+ assert info['result']['structuredContent']['project_id']=='proj',info
+ print('local-mcp-fixture-ok')
+finally:
+ p.stdin.close()
+ try:p.wait(timeout=3)
+ except subprocess.TimeoutExpired:p.terminate();p.wait(timeout=3)
+PYTEST
+"#);
+    let output = f.launch();
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(output.stdout, b"local-mcp-fixture-ok\n");
+    assert!(output.stderr.is_empty());
 }

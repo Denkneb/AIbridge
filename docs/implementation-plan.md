@@ -4403,3 +4403,8 @@ improvement**. Limitation не выдаётся за реализованное 
 - Implemented safe structured-finding index/details, budget validation details, proven dirty/scope evidence and worktree absolute-path refusal fields. Budget error uses the source `budget` block. A corrupt budget blocks revision; explicit override records an exact current-revision audit in the same transaction as round creation. Only that audited round may execute with corrupt optional budget data; raw budget remains unchanged and the next revision is gated again. Other task fields remain strictly validated. Needs-user revision returns its persisted diagnostics.
 - Checks: 29 frozen source validation envelopes passed without skips; 33 MCP regressions and 296 storage checks passed; atomic audit rollback and current-round-only authorization checked separately; targeted Clippy clean.
 - Intentional security difference: transport/infrastructure errors retain fixed redacted labels instead of embedding Python's raw exception or foreign endpoint/path text. No source-wide error-string identity is claimed.
+
+### 9.13c. Local stdio controller delegation
+
+- Enabled controller local entries after standalone handlers/worker recovery/workflow/delivery integration. Absolute Rust executable/config/state argv is retained for primary and linked entries. Credentials are injected only for remote MCP entries; inherited MCP tokens and executor HTTP credentials are scrubbed while provider environment survives.
+- Checks: ten controller runtime checks passed; nine CLI launch checks passed, including generated local entry starting the actual Rust MCP, initialize/tools-list/project-info and six delegated tool schemas. No real provider evidence is inferred from these fixtures.

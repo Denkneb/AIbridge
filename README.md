@@ -73,9 +73,10 @@ usage/models и repository views; worktree_state скрывает private runtim
 
 Подробнее и targeted checks — [план](docs/implementation-plan.md).
 
-Для `launch-opencode` нужны настроенные и уже работающие HTTP MCP endpoints
-основного и связанных проектов, установленный `opencode` и явный отдельный
-Rust state root. Команда запускает controller TUI в workspace проекта:
+Для `launch-opencode` нужны установленный `opencode`, конфигурация проекта и
+явный отдельный Rust state root. Local MCP запускается через абсолютный argv
+этого Rust binary; для remote MCP нужны уже работающие HTTP endpoints.
+Команда запускает controller TUI в workspace проекта:
 
 ```bash
 cargo run --offline -p agent-bridge-cli -- launch-opencode \
@@ -85,18 +86,26 @@ cargo run --offline -p agent-bridge-cli -- launch-opencode \
 
 Generated config хранится в `<state-root>/<project>/controller-opencode.json`
 с правами 0600; bearer tokens передаются только в окружении TUI. Executor
-credentials удаляются, provider environment сохраняется. Local stdio MCP
-пока отклоняется до записи state: controller consumer 9.13c ещё не подключён.
+credentials и унаследованные MCP tokens удаляются, provider environment
+сохраняется. Remote bearer tokens добавляются только для remote entries.
 Rust `mcp` и `serve-mcp` уже обслуживают `project_info`, `submit_task`,
 `task_status`, `request_changes`, `accept_task`, `close_task`. Submit запускает
 Rust worker; request_id сохраняет idempotency, review/close проверяют активность
 сохранённой session. `task_status` поддерживает wait_seconds 0..300 и explicit
-needs_user recovery. Workflow metadata возвращает `workflow_metadata_unavailable`,
-accept с frozen on_accept policy — `on_accept_delivery_unavailable` без смены
-статуса. Автосканирование при старте MCP и delivery_unknown recovery подключены;
+needs_user recovery. Workflow/dependencies сохраняются атомарно; готовые
+зависимые задачи активируются только явным `task_status`. Frozen `on_accept`
+при принятии строит и применяет артефакт, повторное принятие возобновляет журнал
+после отказа; статус показывает фактическое состояние доставки. Автосканирование при старте MCP и delivery_unknown recovery подключены;
 failed assistant recovery доступен только explicit task_status с positive wait
 (**8.20b**), без повторного prompt.
-Live OpenCode/provider smoke не выполнен; проверен offline fixture child.
+Controller local argv проверен с настоящим Rust stdio MCP child; real-provider
+smoke фиксируется отдельно от offline fixture checks.
+
+`deliver-task --task UUID [--build|--dry-run|--apply]` использует те же
+`--project`, `--config`, `--state-root`. По умолчанию — dry-run. Применение
+пишет рабочие файлы с durable журналом и сохраняет Git HEAD/index; после
+прерывания возможна смесь исходных и итоговых файлов. Возобновление принимает
+только точное исходное/итоговое состояние, автоматического отката нет.
 
 MCP stdio доступен через тот же explicit Rust state root:
 

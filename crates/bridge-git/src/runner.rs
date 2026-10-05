@@ -54,6 +54,8 @@ pub(crate) fn run_bounded(
     let mut child = Command::new(program)
         .args(args)
         .current_dir(workspace)
+        // Read-only status must not refresh and rewrite the index stat cache.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

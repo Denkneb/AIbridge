@@ -130,6 +130,7 @@ fn apply_and_every_durable_boundary_resume_preserve_index_and_head() {
         bridge_delivery::build(&f.layout, &f.project, f.id).unwrap();
         let head = bridge_git::head(f.project.workspace()).unwrap();
         let index = bridge_git::index_fingerprint(f.project.workspace()).unwrap();
+        let index_bytes = fs::read(f.project.workspace().join(".git/index")).unwrap();
         assert_eq!(
             bridge_delivery::apply_with_fault(&f.layout, &f.project, f.id, |at| at == phase)
                 .unwrap_err()
@@ -163,6 +164,10 @@ fn apply_and_every_durable_boundary_resume_preserve_index_and_head() {
         assert_eq!(
             bridge_git::index_fingerprint(f.project.workspace()).unwrap(),
             index
+        );
+        assert_eq!(
+            fs::read(f.project.workspace().join(".git/index")).unwrap(),
+            index_bytes
         );
         assert_eq!(
             fs::read(f.project.workspace().join("src/a")).unwrap(),

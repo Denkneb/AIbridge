@@ -4408,3 +4408,7 @@ improvement**. Limitation не выдаётся за реализованное 
 
 - Enabled controller local entries after standalone handlers/worker recovery/workflow/delivery integration. Absolute Rust executable/config/state argv is retained for primary and linked entries. Credentials are injected only for remote MCP entries; inherited MCP tokens and executor HTTP credentials are scrubbed while provider environment survives.
 - Checks: ten controller runtime checks passed; nine CLI launch checks passed, including generated local entry starting the actual Rust MCP, initialize/tools-list/project-info and six delegated tool schemas. No real provider evidence is inferred from these fixtures.
+
+### 9.18c follow-up: byte-exact Git index preservation
+
+Read-only Git runner disables optional Git locks so `status` cannot rewrite the index stat cache. Delivery crash/resume checks now compare raw `.git/index` bytes as well as HEAD/index fingerprints. Six delivery scenarios (including all thirteen crash boundaries) and four bounded-runner checks passed.

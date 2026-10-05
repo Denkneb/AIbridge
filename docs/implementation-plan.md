@@ -4184,7 +4184,7 @@ limits не расширяются по модельному ответу. Ав�
 использует worktree + task delivery_mode=manual; plan delivery=apply|manual
 управляет только итоговой доставкой. Никакого auto commit/push/deploy.
 
-### 16.1. Approved plan validation
+### 16.1. Approved plan validation (завершено)
 
 - **Контракт:** version1/known keys, 1..100 safe unique steps, acyclic known
   dependencies, relative authorized scopes, безопасные nonempty step/final
@@ -4195,7 +4195,14 @@ limits не расширяются по модельному ответу. Ав�
   порядок детерминирован. Checks: invalid-plan fixtures. Depends on 0B.5,
   2.12, path/command policies.
 
-### 16.2. Run creation/binding
+- **Реализовано:** `bridge-automation::plan::validate_plan`; strict typed JSON,
+  known fields, bounded strings/lists/limits, relative symlink-aware scopes,
+  existing command policy, profile lookup и stable topological order. Invalid
+  input отвергается до initialization state. Все 30 plan cases из pinned
+  `runtime-automation-v17.json` проходят; отдельно проверены null/type/size
+  границы, reserved final id и symlink escape. Ошибки не раскрывают plan text.
+
+### 16.2. Run creation/binding (завершено)
 
 - **Контракт:** project/config hash/workspace/origin fingerprint фиксируются;
   clean main repo, no unfinished tasks и worktree repo support обязательны.
@@ -4205,6 +4212,20 @@ limits не расширяются по модельному ответу. Ав�
 - **Приёмка:** concurrent creation допускает один unfinished run; drift
   config/main блокирует дальнейшие шаги. Checks: create/binding/drift cases.
   Depends on 16.1, 3.14, 7.17a, 7.16a.
+
+- **Реализовано:** `bridge-automation::run::create_run`, `AutomationLock` и
+  read-only `check_binding`; order automation → admission, guarded Rust-owned
+  state и existing unique unfinished slot. Run фиксирует config SHA-256,
+  project/workspace, canonical main common dir и Rust repository snapshot
+  (HEAD/index/status/manifest); это Rust-owned document, не импорт Python run.
+  Final step получает sorted union scopes и approved final commands. Clean
+  supported main repo, отсутствие unfinished tasks, отсутствие nested/external
+  scope проверяются до insert; binding повторно проверяется перед записью.
+  Проверены concurrent creation, busy locks, stale config, main/index/content
+  drift, linked/nested repositories, foreign state и symlink lock refusal.
+  Targeted `cargo test --offline -p bridge-automation` (10 tests, включая 30
+  pinned plan scenarios) и all-targets Clippy проходят. CLI launch/coordinator,
+  модельные вызовы и inheritance остаются в 16.3–16.10.
 
 ### 16.3. Read-only Codex process adapter
 

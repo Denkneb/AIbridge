@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/bridge-automation",
     "crates/agent-bridge-cli",
     "crates/bridge-command-policy",
     "crates/bridge-config",

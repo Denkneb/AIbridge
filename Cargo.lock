@@ -49,6 +49,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-automation"
+version = "0.1.0"
+dependencies = [
+ "bridge-command-policy",
+ "bridge-config",
+ "bridge-domain",
+ "bridge-git",
+ "bridge-path-policy",
+ "bridge-storage",
+ "bridge-worker",
+ "nix 0.27.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "bridge-command-policy"
 version = "0.1.0"
 

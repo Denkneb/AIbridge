@@ -20,6 +20,13 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 ## Расхождение версий и ближайший шаг
 
+Этапы автоматизации **16.1–16.2** завершены как application services в
+`bridge-automation`: проверка утверждённого плана, создание одного unfinished
+run под automation/admission locks, final integration step и проверка
+config/Git binding. Проверены 30 pinned plan scenarios и создание/drift/lock
+cases. Следующий этап — **16.3**, read-only Codex process adapter; запуск
+автоматического координатора из CLI пока не подключён.
+
 Recovery context service **7.10c** готов: attempted round подключается к saved
 session/runtime без нового prompt, checkout или baseline. Identity-checked
 observation loop **7.9c** объединяет remote root/session probes, polling, grace

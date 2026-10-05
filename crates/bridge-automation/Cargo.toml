@@ -1,0 +1,24 @@
+[package]
+name = "bridge-automation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bridge-config.workspace = true
+bridge-command-policy.workspace = true
+bridge-path-policy.workspace = true
+bridge-git.workspace = true
+bridge-storage.workspace = true
+bridge-worker.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+bridge-domain.workspace = true

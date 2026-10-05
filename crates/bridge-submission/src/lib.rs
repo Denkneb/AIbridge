@@ -72,8 +72,25 @@ pub fn submit_task_with_profile(
 pub fn submit_task_with_profile_raw_paths(
     storage: &mut StorageConnection,
     project: &ProjectEntry,
+    input: ProfileSubmissionInput,
+    raw_paths: &[String],
+) -> Result<CreateTaskOutcome, SubmissionError> {
+    submit_task_with_workflow(
+        storage,
+        project,
+        input,
+        raw_paths,
+        &bridge_domain::WorkflowMetadata::default(),
+    )
+}
+
+/// Submission with structurally and referentially validated workflow metadata.
+pub fn submit_task_with_workflow(
+    storage: &mut StorageConnection,
+    project: &ProjectEntry,
     mut input: ProfileSubmissionInput,
     raw_paths: &[String],
+    workflow: &bridge_domain::WorkflowMetadata,
 ) -> Result<CreateTaskOutcome, SubmissionError> {
     if &input.task.project_id != project.id()
         || std::fs::canonicalize(&input.task.workspace).ok().as_deref() != Some(project.workspace())
@@ -98,6 +115,12 @@ pub fn submit_task_with_profile_raw_paths(
     }
     if profile.source != ProfileDefinitionSource::Builtin || profile.id != "implementer" {
         payload["profile"] = json!({"id":profile.id,"definition_hash":profile.definition_hash,"model":profile.model});
+    }
+    if workflow.workflow_id.is_some() {
+        payload["workflow_id"] = json!(workflow.workflow_id);
+    }
+    if !workflow.depends_on.is_empty() {
+        payload["depends_on"] = json!(workflow.depends_on);
     }
     input.task.payload_hash = request_payload_hash(&payload);
     let snapshot = input.task.snapshot.get_or_insert_with(|| json!({}));
@@ -199,23 +222,26 @@ pub fn submit_task_with_profile_raw_paths(
             base_head: base,
         };
         return storage
-            .create_task_with_profile_and_checkout(
+            .create_task_with_workflow(
                 input.task,
                 &settings,
                 input.initial_status,
                 input.budget.as_ref(),
                 &profile,
-                &checkout,
+                Some(&checkout),
+                workflow,
             )
             .map_err(SubmissionError::Storage);
     }
     storage
-        .create_task_with_profile(
+        .create_task_with_workflow(
             input.task,
             &settings,
             input.initial_status,
             input.budget.as_ref(),
             &profile,
+            None,
+            workflow,
         )
         .map_err(SubmissionError::Storage)
 }

@@ -4375,3 +4375,8 @@ improvement**. Limitation не выдаётся за реализованное 
 - Implemented: public validation categories for flags/request/text, command index/reason and deduplicated secret categories; review/budget error status context. Revision limit atomically parks in needs_user with one event and no new round.
 - Validation: 28 existing MCP regressions passed; new safe-error/limit scenario passed after fixture correction; four storage lifecycle checks including rollback on event failure passed.
 - Remaining error parity: structured findings details, dirty scope evidence and corrupt-budget revision handling.
+
+### 8.14a. Workflow submission and explicit activation
+
+- Implemented: structural workflow normalization, atomic task/round/profile/checkout metadata, request hash/replay before referential probes, owned mode=ro dependency reads, linked-root validation, bounded transitive cycle check, source-compatible workflow/workflow_gate status fields. Explicit task_status activates through admission/lifecycle fences; startup leaves waiting tasks parked.
+- Validation: full MCP 31 checks passed before final payload-key correction; three final workflow scenarios passed (local gate/replay/cycle + linked read-only/unlinked refusal); submission 13 and storage dependency 10 checks passed; targeted Clippy clean.

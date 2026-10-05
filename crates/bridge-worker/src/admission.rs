@@ -308,7 +308,9 @@ fn baseline(
             };
             let candidate = candidate.to_str().ok_or(AdmissionError::Baseline)?;
             if !repo.allowed_paths().iter().any(|scope| {
-                candidate == scope || (scope.ends_with('/') && candidate.starts_with(scope))
+                scope == "**"
+                    || candidate == scope
+                    || (scope.ends_with('/') && candidate.starts_with(scope))
             }) {
                 return Ok(Err(ActivationOutcome::OutsideScope));
             }
@@ -342,7 +344,7 @@ pub fn activate_direct_task(
     project: &ProjectEntry,
     task_id: TaskId,
 ) -> Result<ActivationOutcome, AdmissionError> {
-    activate_task(layout, project, task_id, true)
+    activate_task(layout, project, task_id, true, &[])
 }
 /// Explicit B1/B2 activation using saved execution mode; worktree base is frozen.
 /// # Errors
@@ -352,13 +354,23 @@ pub fn activate_waiting_task(
     project: &ProjectEntry,
     task_id: TaskId,
 ) -> Result<ActivationOutcome, AdmissionError> {
-    activate_task(layout, project, task_id, false)
+    activate_task(layout, project, task_id, false, &[])
+}
+/// Explicit activation resolving the configured linked projects read-only under admission.
+pub fn activate_waiting_task_with_registry(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    task_id: TaskId,
+    registry: &[ProjectEntry],
+) -> Result<ActivationOutcome, AdmissionError> {
+    activate_task(layout, project, task_id, false, registry)
 }
 fn activate_task(
     layout: &RustStateLayout,
     project: &ProjectEntry,
     task_id: TaskId,
     direct_only: bool,
+    registry: &[ProjectEntry],
 ) -> Result<ActivationOutcome, AdmissionError> {
     let _admission =
         match WorkerLock::try_acquire_admission(layout).map_err(|_| AdmissionError::Lock)? {
@@ -382,7 +394,13 @@ fn activate_task(
         Some(guards) => guards,
         None => return Ok(ActivationOutcome::Busy),
     };
-    if !dependencies_ready(&storage, &task)? {
+    if !(if registry.is_empty() {
+        dependencies_ready(&storage, &task)?
+    } else {
+        let metadata = crate::workflow::saved_metadata(layout, project, task_id)
+            .map_err(|_| AdmissionError::Metadata)?;
+        crate::workflow::gate(layout, project, registry, &metadata)["state"] == "ready"
+    }) {
         return Ok(ActivationOutcome::Waiting);
     }
     let refreshed = match if mode == ExecutionMode::Direct {

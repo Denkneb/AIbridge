@@ -20,7 +20,7 @@ pub(crate) fn definitions(server: &McpServer) -> Value {
     )];
     if server.delegated_tools_enabled() {
         tools.extend([
-            tool("submit_task","Create and start a task, idempotent by request_id. Workflow metadata is currently unavailable.",json!({
+            tool("submit_task","Create a task, idempotent by request_id. Dependencies wait for acceptance; explicit task_status activates ready tasks.",json!({
                 "request_id":{"type":"string"},"task":{"type":"string"},"allowed_paths":{"type":"array","items":{"type":"string"},"minItems":1},"test_commands":{"type":"array","items":{"type":"string"}},
                 "allow_dirty":{"type":"boolean","default":false},"allow_commit":{"type":"boolean","default":false},"allow_suspected_secrets":{"type":"boolean","default":false},
                 "budget":{"type":["object","null"]},"profile":{"type":["string","null"]},"workflow_id":{"type":["string","null"]},"depends_on":{"type":["array","null"]}

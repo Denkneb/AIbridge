@@ -357,13 +357,7 @@ impl McpServer {
         let allow_dirty = flag(args, "allow_dirty")?;
         let allow_commit = flag(args, "allow_commit")?;
         secret_gate(args)?;
-        if args.get("workflow_id").is_some_and(|v| !v.is_null())
-            || args
-                .get("depends_on")
-                .is_some_and(|v| !v.is_null() && v != &json!([]))
-        {
-            return Err("workflow_metadata_unavailable");
-        }
+        let workflow = bridge_worker::workflow::normalize(args)?;
         let profile_arg = args.get("profile").filter(|v| !v.is_null());
         let profile_id = profile_arg
             .map(|v| {
@@ -393,6 +387,12 @@ impl McpServer {
         if profile.source != ProfileDefinitionSource::Builtin || profile.id != "implementer" {
             payload["profile"] = json!({"id":profile.id,"definition_hash":profile.definition_hash,"model":profile.model});
         }
+        if workflow.workflow_id.is_some() {
+            payload["workflow_id"] = json!(workflow.workflow_id);
+        }
+        if !workflow.depends_on.is_empty() {
+            payload["depends_on"] = json!(workflow.depends_on);
+        }
         let hash = request_payload_hash(&payload);
         if let Some(existing) = request(&self.storage()?, self.project.id(), request_id)? {
             if existing.kind != RoundKind::Implement || existing.payload_hash != hash {
@@ -401,6 +401,24 @@ impl McpServer {
             let task = self.task(existing.task_id)?.ok_or("state_unavailable")?;
             return self.result(&task, false);
         }
+        bridge_worker::workflow::validate_references(
+            &self.layout,
+            &self.project,
+            &self.registry,
+            &workflow,
+        )?;
+        let initial_status = if bridge_worker::workflow::gate(
+            &self.layout,
+            &self.project,
+            &self.registry,
+            &workflow,
+        )["state"]
+            == "ready"
+        {
+            TaskStatus::Implementing
+        } else {
+            TaskStatus::WaitingDependencies
+        };
         if self.project.execution_mode() == ExecutionMode::Worktree
             && paths.iter().any(|p| Path::new(p).is_absolute())
         {
@@ -505,7 +523,7 @@ impl McpServer {
             }
         }
         let mut storage = self.storage()?;
-        let outcome = bridge_submission::submit_task_with_profile_raw_paths(
+        let outcome = bridge_submission::submit_task_with_workflow(
             &mut storage,
             &self.project,
             bridge_submission::ProfileSubmissionInput {
@@ -533,9 +551,10 @@ impl McpServer {
                 allow_dirty,
                 allow_commit,
                 budget,
-                initial_status: TaskStatus::Implementing,
+                initial_status,
             },
             &paths,
+            &workflow,
         )
         .map_err(|e| match e {
             bridge_submission::SubmissionError::Storage(CreateTaskError::ProjectBusy) => {
@@ -646,6 +665,15 @@ impl McpServer {
             ) {
                 return Err("worker_spawn_failed");
             }
+        } else if task.status == TaskStatus::WaitingDependencies && explicit && budget_valid {
+            bridge_worker::admission::activate_waiting_task_with_registry(
+                &self.layout,
+                &self.project,
+                id,
+                &self.registry,
+            )
+            .map_err(|_| "dependency_activation_failed")?;
+            self.maybe_spawn(id)?;
         } else if budget_valid {
             self.maybe_spawn(id)?;
         }

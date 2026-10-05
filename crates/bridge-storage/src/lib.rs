@@ -1363,7 +1363,15 @@ impl StorageConnection {
         initial_status: TaskStatus,
         budget: Option<&TaskBudget>,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
-        self.create_task_with_profile_inner(input, settings, initial_status, budget, None, None)
+        self.create_task_with_profile_inner(
+            input,
+            settings,
+            initial_status,
+            budget,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Pins every new task's effective profile, including the historical built-in
@@ -1387,6 +1395,7 @@ impl StorageConnection {
             initial_status,
             budget,
             Some(profile),
+            None,
             None,
         )
     }
@@ -1421,9 +1430,51 @@ impl StorageConnection {
             budget,
             Some(profile),
             Some(checkout),
+            None,
         )
     }
 
+    /// Atomically stores workflow metadata with task, profile, checkout and first round.
+    #[allow(clippy::too_many_arguments)] // Frozen creation inputs share one transaction.
+    pub fn create_task_with_workflow(
+        &mut self,
+        input: CreateTaskInput,
+        settings: &AdmissionSettings,
+        initial_status: TaskStatus,
+        budget: Option<&TaskBudget>,
+        profile: &bridge_domain::ProfileSnapshot,
+        checkout: Option<&PendingCheckout>,
+        workflow: &bridge_domain::WorkflowMetadata,
+    ) -> Result<CreateTaskOutcome, CreateTaskError> {
+        profile
+            .validate()
+            .map_err(|_| CreateTaskError::InvalidInput)?;
+        workflow
+            .validate()
+            .map_err(|_| CreateTaskError::InvalidInput)?;
+        if !workflow.depends_on.is_empty() && workflow.workflow_id.is_none() {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        if let Some(c) = checkout
+            && (settings.execution_mode() != bridge_domain::ExecutionMode::Worktree
+                || input.base_head.as_deref() != Some(&c.base_head)
+                || !Path::new(&c.path).is_absolute()
+                || !Path::new(&c.runtime_dir).is_absolute())
+        {
+            return Err(CreateTaskError::InvalidInput);
+        }
+        self.create_task_with_profile_inner(
+            input,
+            settings,
+            initial_status,
+            budget,
+            Some(profile),
+            checkout,
+            Some(workflow),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn create_task_with_profile_inner(
         &mut self,
         input: CreateTaskInput,
@@ -1432,6 +1483,7 @@ impl StorageConnection {
         budget: Option<&TaskBudget>,
         profile: Option<&bridge_domain::ProfileSnapshot>,
         checkout: Option<&PendingCheckout>,
+        workflow: Option<&bridge_domain::WorkflowMetadata>,
     ) -> Result<CreateTaskOutcome, CreateTaskError> {
         let profile_json = profile
             .map(|p| {
@@ -1470,7 +1522,8 @@ impl StorageConnection {
             && (*settings != AdmissionSettings::default()
                 || initial_status != TaskStatus::Implementing
                 || budget.is_some()
-                || profile.is_some())
+                || profile.is_some()
+                || workflow.is_some())
         {
             return Err(CreateTaskError::InvalidInput);
         }
@@ -1551,6 +1604,19 @@ impl StorageConnection {
                     ],
                 )
                 .map_err(CreateTaskError::Database)?;
+            if let Some(workflow) = workflow {
+                transaction
+                    .execute(
+                        "UPDATE tasks SET workflow_id=?1,depends_on=?2 WHERE task_id=?3",
+                        params![
+                            workflow.workflow_id.as_ref().map(|v| v.as_str()),
+                            serde_json::to_string(&workflow.depends_on)
+                                .map_err(|_| CreateTaskError::InvalidInput)?,
+                            prepared.task_id.to_string()
+                        ],
+                    )
+                    .map_err(CreateTaskError::Database)?;
+            }
             if let Some(profile) = profile {
                 transaction.execute("UPDATE tasks SET profile=?1,profile_json=?2,profile_hash=?3,profile_source=?4 WHERE task_id=?5", params![profile.id,profile_json,profile_hash,profile.origin.as_str(),prepared.task_id.to_string()]).map_err(CreateTaskError::Database)?;
             }
@@ -2889,6 +2955,18 @@ impl RustStateLayout {
     ///
     /// Returns a typed category (see [`RustStateError`]). No error message
     /// contains row data, ids, marker contents, SQL, secrets or paths.
+    /// Opens owned current state read-only; never initializes or migrates it.
+    pub fn open_readonly(&self) -> Result<StorageConnection, RustStateError> {
+        match read_owned_marker(&self.marker(), &self.project_id, &self.root) {
+            MarkerState::Owned => {}
+            MarkerState::Absent => return Err(RustStateError::MissingMarker),
+            MarkerState::Invalid(error) => return Err(error),
+        }
+        validate_rust_database(&self.database())?;
+        let connection = open_read_only_current(&self.database())?;
+        Ok(StorageConnection { connection })
+    }
+
     pub fn open(&self) -> Result<StorageConnection, RustStateError> {
         match read_owned_marker(&self.marker(), &self.project_id, &self.root) {
             MarkerState::Owned => {}

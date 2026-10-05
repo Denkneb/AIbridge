@@ -343,6 +343,18 @@ impl McpServer {
                 result["worktree_state"] = json!({"status":"missing"});
             }
         }
+        let metadata =
+            bridge_worker::workflow::saved_metadata(&self.layout, &self.project, task.task_id)
+                .map_err(|_| "workflow_metadata_corrupt")?;
+        if metadata.workflow_id.is_some() || !metadata.depends_on.is_empty() {
+            result["workflow"] = json!(metadata);
+            result["workflow_gate"] = bridge_worker::workflow::gate(
+                &self.layout,
+                &self.project,
+                &self.registry,
+                &metadata,
+            );
+        }
         Ok(result)
     }
 }

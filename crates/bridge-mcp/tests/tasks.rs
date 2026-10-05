@@ -263,11 +263,7 @@ fn validation_refusals_never_persist_or_spawn() {
             json!("-----BEGIN PRIVATE KEY-----\nsecret"),
             "suspected_secrets",
         ),
-        (
-            "workflow_id",
-            json!("workflow"),
-            "workflow_metadata_unavailable",
-        ),
+        ("workflow_id", json!("bad workflow"), "invalid_workflow_id"),
         (
             "test_commands",
             json!(["git push"]),
@@ -1462,4 +1458,250 @@ fn safe_error_context_and_revision_limit_never_send_a_round() {
             .unwrap(),
         1
     );
+}
+#[test]
+fn workflow_waits_replays_and_activates_only_on_explicit_status() {
+    let f = Fixture::new("max_active_tasks=5\n");
+    let server = f.server();
+    let mut parent = input();
+    parent["workflow_id"] = json!("flow-1");
+    let parent_id = task_id(&call(&server, "submit_task", parent));
+    let mut child = input();
+    child["request_id"] = json!("child");
+    child["workflow_id"] = json!("flow-1");
+    child["depends_on"] = json!([{"project_id":"proj","task_id":parent_id.to_string()}]);
+    let initial = call(&server, "submit_task", child.clone());
+    let child_id = task_id(&initial);
+    assert_eq!(initial["status"], "waiting_dependencies");
+    assert_eq!(initial["workflow_gate"]["state"], "waiting");
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+    // Replay is independent of a subsequent graph change or server outage.
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET workflow_id='changed' WHERE task_id=?1",
+            [parent_id.to_string()],
+        )
+        .unwrap();
+    f.calls.lock().unwrap().clear();
+    assert_eq!(
+        task_id(&call(&server, "submit_task", child.clone())),
+        child_id
+    );
+    assert!(f.calls.lock().unwrap().is_empty());
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET workflow_id='flow-1' WHERE task_id=?1",
+            [parent_id.to_string()],
+        )
+        .unwrap();
+    f.review(parent_id, false);
+    assert_eq!(
+        call(
+            &server,
+            "accept_task",
+            json!({"task_id":parent_id.to_string()})
+        )["status"],
+        "accepted"
+    );
+    server.recover_startup().unwrap();
+    assert_eq!(
+        f.layout
+            .open()
+            .unwrap()
+            .get_task(child_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::WaitingDependencies
+    );
+    let status = call(
+        &server,
+        "task_status",
+        json!({"task_id":child_id.to_string(),"wait_seconds":0}),
+    );
+    assert_eq!(status["status"], "implementing");
+    assert_eq!(status["workflow_gate"]["state"], "ready");
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        call(
+            &server,
+            "task_status",
+            json!({"task_id":child_id.to_string(),"wait_seconds":0})
+        )["status"],
+        "implementing"
+    );
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 2);
+    let mut conflict = child;
+    conflict["depends_on"] = json!([]);
+    assert_eq!(
+        call(&server, "submit_task", conflict)["error"],
+        "request_conflict"
+    );
+}
+#[test]
+fn workflow_refuses_missing_mismatch_and_cycles_without_reserving_request() {
+    let f = Fixture::new("max_active_tasks=5\n");
+    let server = f.server();
+    let mut args = input();
+    args["workflow_id"] = json!("flow-1");
+    let parent = task_id(&call(&server, "submit_task", args));
+    let mut args = input();
+    args["request_id"] = json!("child");
+    args["workflow_id"] = json!("flow-1");
+    args["depends_on"] = json!([{"project_id":"other","task_id":parent.to_string()}]);
+    assert_eq!(
+        call(&server, "submit_task", args.clone())["error"],
+        "unknown_dependency_project"
+    );
+    args["depends_on"] = json!([{"project_id":"proj","task_id":"missing"}]);
+    assert_eq!(
+        call(&server, "submit_task", args.clone())["error"],
+        "missing_dependency_task"
+    );
+    args["depends_on"] = json!([{"project_id":"proj","task_id":parent.to_string()}]);
+    args["workflow_id"] = json!("flow-2");
+    assert_eq!(
+        call(&server, "submit_task", args.clone())["error"],
+        "workflow_mismatch"
+    );
+    args["workflow_id"] = json!("flow-1");
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET depends_on=?1 WHERE task_id=?2",
+            rusqlite::params![args["depends_on"].to_string(), parent.to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        call(&server, "submit_task", args.clone())["error"],
+        "dependency_cycle"
+    );
+    assert_eq!(f.count(), 1);
+    f.layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET depends_on='[]'", [])
+        .unwrap();
+    assert_eq!(
+        call(&server, "submit_task", args)["status"],
+        "waiting_dependencies"
+    );
+    assert_eq!(f.count(), 2);
+}
+#[test]
+fn linked_workflow_reads_owned_state_and_removed_link_blocks_activation() {
+    let mut f = Fixture::new("max_active_tasks=5\n");
+    let linked = f.root.join("linked");
+    fs::create_dir(&linked).unwrap();
+    let config = f.root.join("projects.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str(&format!("auto_approve_external_directories=[{}]\n[projects.other]\nworkspace={}\nopencode_url=\"http://127.0.0.1:9001\"\nmax_rounds=3\npassword_file={}\n",json!(linked),json!(linked),json!(f.root.join("password"))));
+    fs::write(&config, text).unwrap();
+    let cfg = load_config_with_state_root(&config, &f.root.join("state")).unwrap();
+    f.project = cfg.project("proj").unwrap().clone();
+    let other = RustStateLayout::new(
+        f.layout.state_root(),
+        cfg.project("other").unwrap().id().clone(),
+    )
+    .unwrap();
+    other.initialize().unwrap();
+    let parent: TaskId = uuid::Uuid::new_v4().to_string().parse().unwrap();
+    other
+        .open()
+        .unwrap()
+        .create_task(bridge_storage::CreateTaskInput {
+            task_id: parent,
+            project_id: other.project_id().clone(),
+            workspace: linked.to_str().unwrap().into(),
+            task: "parent".into(),
+            request_id: "parent".into(),
+            payload_hash: "hash".into(),
+            base_head: None,
+            allowed_paths: vec!["src/".into()],
+            test_commands: vec![],
+            snapshot: None,
+        })
+        .unwrap();
+    other
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET workflow_id='flow-1',status='awaiting_review'",
+            [],
+        )
+        .unwrap();
+    let spawns = f.spawns.clone();
+    let server = McpServer::open(f.project.clone(), f.layout.clone())
+        .unwrap()
+        .with_workers(
+            Arc::new(move |_| {
+                spawns.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
+            cfg.projects().values().cloned().collect(),
+        )
+        .unwrap();
+    let mut args = input();
+    args["workflow_id"] = json!("flow-1");
+    args["depends_on"] = json!([{"project_id":"other","task_id":parent.to_string()}]);
+    let child = task_id(&call(&server, "submit_task", args.clone()));
+    assert_eq!(
+        call(
+            &server,
+            "task_status",
+            json!({"task_id":child.to_string(),"wait_seconds":0})
+        )["status"],
+        "waiting_dependencies"
+    );
+    assert!(
+        other
+            .open_readonly()
+            .unwrap()
+            .connection()
+            .execute("UPDATE tasks SET status='accepted'", [])
+            .is_err()
+    );
+    other
+        .open()
+        .unwrap()
+        .connection()
+        .execute("UPDATE tasks SET status='accepted'", [])
+        .unwrap();
+    drop(server);
+    let text = fs::read_to_string(&config)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("auto_approve_external_directories="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&config, text).unwrap();
+    f.project = load_config_with_state_root(&config, f.layout.state_root())
+        .unwrap()
+        .project("proj")
+        .unwrap()
+        .clone();
+    let server = f.server();
+    let status = call(
+        &server,
+        "task_status",
+        json!({"task_id":child.to_string(),"wait_seconds":0}),
+    );
+    assert_eq!(status["status"], "waiting_dependencies");
+    assert_eq!(
+        status["workflow_gate"]["dependencies"][0]["reason"],
+        "unlinked"
+    );
+    // An exact retry still resolves its original request before checking links.
+    assert_eq!(task_id(&call(&server, "submit_task", args)), child);
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 0);
 }

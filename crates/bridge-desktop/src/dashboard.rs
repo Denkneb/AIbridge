@@ -61,6 +61,56 @@ fn parsed(s: Option<String>) -> Value {
         .unwrap_or(Value::Null)
 }
 impl ProjectService {
+    /// Content-free WAL notification stamp. A periodic full refresh remains the
+    /// fallback for filesystem timestamp granularity and database replacement.
+    pub fn dashboard_revision(&self, project: &str, linked: bool) -> Result<String, &'static str> {
+        use std::{
+            hash::{Hash, Hasher},
+            os::unix::fs::MetadataExt,
+        };
+        let config = bridge_config::load_config_with_state_root(&self.config, &self.state)
+            .map_err(|_| "config invalid")?;
+        let selected = config.project(project).ok_or("project not configured")?;
+        let mut projects = vec![selected];
+        if linked {
+            projects.extend(config.linked_projects(project));
+        }
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        std::fs::read(&self.config)
+            .map_err(|_| "config unavailable")?
+            .hash(&mut hash);
+        for project in projects {
+            let layout =
+                bridge_storage::RustStateLayout::new(self.state.clone(), project.id().clone())
+                    .map_err(|_| "state invalid")?;
+            project.id().as_str().hash(&mut hash);
+            let db = layout.database();
+            for path in [
+                db.clone(),
+                db.with_file_name(format!(
+                    "{}-wal",
+                    db.file_name().ok_or("state invalid")?.to_string_lossy()
+                )),
+                layout.marker(),
+            ] {
+                match std::fs::metadata(path) {
+                    Ok(m) => (
+                        m.dev(),
+                        m.ino(),
+                        m.len(),
+                        m.mtime(),
+                        m.mtime_nsec(),
+                        m.ctime(),
+                        m.ctime_nsec(),
+                    )
+                        .hash(&mut hash),
+                    Err(_) => 0u8.hash(&mut hash),
+                }
+            }
+        }
+        Ok(format!("{:016x}", hash.finish()))
+    }
+
     pub fn dashboard(&self, q: Query) -> Result<Value, &'static str> {
         if q.limit == 0 || q.limit > 200 || q.offset > 100000 {
             return Err("invalid page");
@@ -132,6 +182,8 @@ impl ProjectService {
         let mut tasks = vec![];
         let mut active = 0;
         let mut writers = 0;
+        let mut waiting = 0i64;
+        let mut reservations = vec![];
         let total = filtered_total;
         let mut errors = vec![];
         let mut runs = vec![];
@@ -167,10 +219,12 @@ impl ProjectService {
             active += storage
                 .count_tasks(project.id(), true)
                 .map_err(|_| "task data invalid")?;
-            writers += storage
+            let ledger = storage
                 .get_active_writers(project.id())
-                .map_err(|_| "writer data invalid")?
-                .len();
+                .map_err(|_| "writer data invalid")?;
+            writers += ledger.len();
+            reservations.extend(ledger.into_iter().map(|r| json!({"task_id":r.task_id.to_string(),"project_id":r.project_id.as_str(),"parallel":r.parallel,"created_at":r.created_at})));
+            waiting += tx.query_row("SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status='waiting_dependencies'", [project.id().as_str()], |r| r.get::<_, i64>(0)).map_err(|_| "waiting data invalid")?;
             for t in summaries {
                 let(workflow,dependencies,mode,delivery,budget):(Option<String>,Option<String>,String,String,Option<String>)=tx.query_row("SELECT workflow_id,depends_on,execution_mode,delivery_mode,budget_json FROM tasks WHERE task_id=?1",[t.task_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|_|"task metadata invalid")?;
                 let delivery_state: Option<String> = tx
@@ -183,7 +237,7 @@ impl ProjectService {
                     .map_err(|_| "delivery metadata invalid")?
                     .flatten();
                 let mut rounds = vec![];
-                let mut results = vec![];
+
                 let mut stmt=tx.prepare("SELECT round_number,status,structured_findings,checkpoint_json,verifier_json,result_json FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 100").map_err(|_|"round data invalid")?;
                 let rows = stmt
                     .query_map(params![t.task_id.to_string(), project.id().as_str()], |r| {
@@ -200,10 +254,23 @@ impl ProjectService {
                 for row in rows {
                     let (number, status, findings, checkpoint, verification, result) =
                         row.map_err(|_| "round data invalid")?;
-                    results.push(result.map(Value::String).unwrap_or(Value::Null));
+                    let _ = result;
                     rounds.push(json!({"number":number,"status":status,"findings":parsed(findings),"checkpoint":parsed(checkpoint),"verification":parsed(verification)}));
                 }
-                let usage = bridge_storage::usage::total_saved_usage(results);
+                let mut all = tx.prepare("SELECT result_json FROM rounds WHERE task_id=?1 AND project_id=?2 AND result_json IS NOT NULL").map_err(|_| "usage data invalid")?;
+                let results = all
+                    .query_map(params![t.task_id.to_string(), project.id().as_str()], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .map_err(|_| "usage data invalid")?;
+                let mut usage = bridge_storage::usage::normalize_usage(&Value::Null);
+                for result in results {
+                    let result = result.map_err(|_| "usage data invalid")?;
+                    usage = bridge_storage::usage::add_usage(
+                        &usage,
+                        &bridge_storage::usage::total_saved_usage([Value::String(result)]),
+                    );
+                }
                 let budget = match budget {
                     None => Value::Null,
                     Some(b) => match bridge_storage::normalize_persisted_budget(Some(&b)) {
@@ -234,7 +301,7 @@ impl ProjectService {
                 .then(a["task_id"].as_str().cmp(&b["task_id"].as_str()))
         });
         Ok(
-            json!({"tasks":tasks,"total":total,"active_count":active,"writer_count":writers,"runs":runs,"errors":errors,"offset":q.offset,"limit":q.limit}),
+            json!({"tasks":tasks,"total":total,"active_count":active,"writer_count":writers,"waiting_count":waiting,"reservations":reservations,"runs":runs,"errors":errors,"offset":q.offset,"limit":q.limit}),
         )
     }
 }

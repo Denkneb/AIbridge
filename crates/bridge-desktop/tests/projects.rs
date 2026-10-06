@@ -234,3 +234,41 @@ fn first_project_can_be_created_without_initial_config_write() {
     assert_eq!(service.projects().unwrap()[0].id, "first");
     assert!(!service.state.exists());
 }
+#[test]
+fn wal_revision_and_usage_include_rounds_outside_visible_limit() {
+    let f = Fixture::new();
+    let initial = f.service.dashboard_revision("primary", false).unwrap();
+    assert!(!f.service.state.exists());
+    let id = f.task("primary", "usage", "2026-01-01T00:00:00.000+00:00");
+    let revision = f.service.dashboard_revision("primary", false).unwrap();
+    assert_ne!(revision, initial);
+    let (_, layout) = f.service.project("primary").unwrap();
+    let mut storage = layout.open().unwrap();
+    let tx = storage.connection_mut().transaction().unwrap();
+    tx.execute("DELETE FROM rounds WHERE task_id=?1", [&id])
+        .unwrap();
+    for n in 1..=101 {
+        tx.execute("INSERT INTO rounds(task_id,project_id,round_number,request_id,payload_hash,kind,status,result_json,created_at,updated_at) VALUES (?1,'primary',?2,?3,'hash','initial','completed',?4,'now','now')", rusqlite::params![id,n,format!("round-{n}"),r#"{"usage":{"input":1}}"#]).unwrap();
+    }
+    tx.commit().unwrap();
+    assert_ne!(
+        revision,
+        f.service.dashboard_revision("primary", false).unwrap()
+    );
+    let result = f
+        .service
+        .dashboard(Query {
+            project: "primary".into(),
+            active_only: false,
+            linked: false,
+            offset: 0,
+            limit: 100,
+            search: String::new(),
+            status: None,
+        })
+        .unwrap();
+    assert_eq!(result["tasks"][0]["rounds"].as_array().unwrap().len(), 100);
+    assert_eq!(result["tasks"][0]["usage"]["input"], 101);
+    assert_eq!(result["waiting_count"], 0);
+    assert!(result["reservations"].as_array().unwrap().is_empty());
+}

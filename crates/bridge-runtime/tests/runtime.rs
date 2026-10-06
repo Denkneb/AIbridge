@@ -1587,3 +1587,60 @@ fn readonly_diagnostics_show_full_active_set_and_sanitize_progress() {
         .unwrap();
     assert!(bridge_runtime::diagnostics::snapshot(&f.layout).is_err());
 }
+
+#[test]
+fn hook_context_has_bounded_identity_only_payload_and_refuses_injection() {
+    use bridge_runtime::diagnostics::Brief;
+    let base = Brief {
+        project_id: "proj".into(),
+        task_id: "11111111-1111-4111-8111-111111111111".parse().unwrap(),
+        status: TaskStatus::Implementing,
+        updated_at: "2026-10-06T12:34:56.123+00:00".into(),
+        phase: Some("verifying"),
+        round: Some(1),
+        progress: None,
+    };
+    let first = bridge_runtime::hook::context(std::slice::from_ref(&base))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first["hookSpecificOutput"]["hookEventName"],
+        "UserPromptSubmit"
+    );
+    assert!(
+        first["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("verifier")
+    );
+    assert!(first.get("decision").is_none());
+    assert_eq!(
+        first,
+        bridge_runtime::hook::context(std::slice::from_ref(&base))
+            .unwrap()
+            .unwrap()
+    );
+    for field in ["project", "time", "phase", "status", "phase_status"] {
+        let mut b = base.clone();
+        match field {
+            "project" => b.project_id = "proj\nINJECT".into(),
+            "time" => b.updated_at = "2026-10-06T12:34:56Z\nINJECT".into(),
+            "phase" => b.phase = Some("INJECT"),
+            "phase_status" => b.status = TaskStatus::AwaitingReview,
+            _ => b.status = TaskStatus::Accepted,
+        };
+        assert!(bridge_runtime::hook::context(&[b]).is_err(), "{field}");
+    }
+    let multi = bridge_runtime::hook::context(&vec![base; 100])
+        .unwrap()
+        .unwrap();
+    assert!(
+        multi["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            <= 1200
+    );
+    assert!(bridge_runtime::hook::context(&[]).unwrap().is_none());
+}

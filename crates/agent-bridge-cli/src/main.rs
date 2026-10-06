@@ -12,6 +12,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  hook-status      Fail-open read-only Codex UserPromptSubmit context
   status           Read-only runtime readiness/diagnostics (--json, --all)
   launch-codex      Start an approved workflow (--auto --plan PATH required)
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
@@ -377,6 +378,7 @@ fn deliver(args: LaunchArgs, id: TaskId, mode: DeliveryAction) -> Result<ExitCod
     }
 }
 fn main() -> ExitCode {
+    let hook = env::args_os().nth(1).is_some_and(|a| a == "hook-status");
     match parse(env::args_os().skip(1)) {
         Ok(Action::Help) => {
             println!("{HELP}");
@@ -393,6 +395,7 @@ fn main() -> ExitCode {
         Ok(Action::Deliver(args, task, mode)) => finish(deliver(args, task, mode)),
         Ok(Action::Automation(args, action)) => finish(automation::run(args, action)),
         Ok(Action::Services(args, action)) => finish(services::run(args, action)),
+        Err(_) if hook => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)

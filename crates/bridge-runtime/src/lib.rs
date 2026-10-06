@@ -6,6 +6,7 @@
 pub mod controller;
 pub mod controller_permissions;
 pub mod diagnostics;
+pub mod hook;
 pub mod lock;
 mod process;
 pub mod readiness;

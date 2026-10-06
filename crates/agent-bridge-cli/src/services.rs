@@ -8,23 +8,53 @@ use std::{
     time::Duration,
 };
 pub enum Action {
+    Hook,
     Status { json: bool, all: bool },
 }
 pub fn is_command(s: &OsStr) -> bool {
-    s == "status"
+    s == "status" || s == "hook-status"
 }
 pub fn parse(
-    _: &OsStr,
+    command: &OsStr,
     _: Option<OsString>,
     json: bool,
     all: bool,
 ) -> Result<Action, &'static str> {
+    if command == "hook-status" {
+        if json || all {
+            return Err("unsupported hook flag");
+        }
+        return Ok(Action::Hook);
+    }
     Ok(Action::Status { json, all })
 }
 pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
+    if matches!(action, Action::Hook) {
+        let result = (|| -> Result<(), String> {
+            let config = load_config_with_state_root(&args.config, &args.state_root)
+                .map_err(|_| "config unavailable")?;
+            let project = config
+                .project(&args.project)
+                .ok_or("project not configured")?;
+            let layout = RustStateLayout::new(args.state_root, project.id().clone())
+                .map_err(|_| "state invalid")?;
+            let briefs =
+                bridge_runtime::diagnostics::briefs(&layout).map_err(|_| "state unavailable")?;
+            if let Some(context) =
+                bridge_runtime::hook::context(&briefs).map_err(|_| "hook unavailable")?
+            {
+                println!("{context}");
+            }
+            Ok(())
+        })();
+        let _ = result;
+        return Ok(ExitCode::SUCCESS);
+    }
     let config = load_config_with_state_root(&args.config, &args.state_root)
         .map_err(|_| "config unavailable")?;
-    let Action::Status { json, all } = action;
+    let Action::Status { json, all } = action else {
+        unreachable!()
+    };
     let projects = if all {
         config.projects().values().collect::<Vec<_>>()
     } else {

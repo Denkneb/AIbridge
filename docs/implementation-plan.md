@@ -3861,13 +3861,19 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
     counters; строки и arbitrary verifier payload не копируются. Readonly
     missing-state CLI и two-active/progress/corrupt-timestamp fixtures прошли;
     targeted all-targets Clippy чист. Main service start/stop consumer — в 15.4.
-- **9.19b. Codex `hook-status` read-only.**
+- **9.19b. Codex `hook-status` read-only (завершено).**
   - **Цель:** read-only fail-open Codex hook.
   - **Source evidence:** `hook_status.py:19-132`; `cli.py:1402-1433`;
     `tests/test_hook_status.py`.
   - **Критерии приёмки:** без raw prompt text; injection validation.
   - **Targeted checks:** hook-status tests.
   - **Зависит от:** 0A.6.
+  - **Реализовано:** Rust-owned read-only full active briefs, narrow project/id/
+    timestamp/status/phase validation, Unicode-safe 1200 character cap,
+    deterministic UserPromptSubmit additionalContext без decision. Любая parse/
+    config/state ошибка даёт empty stdout/stderr и exit 0; stdin не читается,
+    OpenCode/recovery/initializer не вызываются. Pure injection/bound tests и
+    real CLI owned/missing/corrupt-state tests прошли; targeted Clippy чист.
 - **9.19c. `console`/`attach-opencode --task` routing.**
   - **Цель:** task-scoped console/attach routing.
   - **Source evidence:** `cli.py:549-574,1343-1433`; `worktree_runtime.py`.

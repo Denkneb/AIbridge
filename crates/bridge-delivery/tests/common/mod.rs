@@ -7,8 +7,15 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
     path::PathBuf,
     process::Command,
+    sync::{Mutex, MutexGuard},
 };
+// These byte/durable-boundary fixtures do not test concurrent delivery. A
+// subprocess fork from another fixture can inherit CLOEXEC flock descriptors
+// until exec and briefly make a just-released private project look busy.
+// Keep this harness sequential; production admission stays nonblocking.
+static FIXTURES: Mutex<()> = Mutex::new(());
 pub struct Fixture {
+    _serial: MutexGuard<'static, ()>,
     pub root: PathBuf,
     pub project: ProjectEntry,
     pub layout: RustStateLayout,
@@ -17,6 +24,7 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Self {
+        let serial = FIXTURES.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("bridge-delivery-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         let main = root.join("main");
@@ -87,6 +95,7 @@ impl Fixture {
             )
             .unwrap();
         Self {
+            _serial: serial,
             root,
             project,
             layout,

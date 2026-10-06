@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
+exclude = ["desktop/src-tauri"]
 members = [
+    "crates/bridge-desktop",
     "crates/bridge-artifact",
     "crates/bridge-automation",
     "crates/agent-bridge-cli",

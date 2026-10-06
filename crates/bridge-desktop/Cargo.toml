@@ -1,0 +1,21 @@
+[package]
+name = "bridge-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[lints]
+workspace = true
+[dependencies]
+bridge-config.workspace = true
+bridge-domain.workspace = true
+bridge-storage.workspace = true
+bridge-runtime.workspace = true
+bridge-worker.workspace = true
+bridge-git.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+nix = { workspace = true, features = ["signal", "process"] }
+rusqlite.workspace = true
+portable-pty = "0.9"
+toml_edit = "0.22"
+uuid = {workspace = true,features=["v4"]}

@@ -4664,3 +4664,19 @@ They recheck unfinished tasks and retained main service records before writes.
 Two stopped namespaces under one root are locked together without self-contention;
 active tasks fail closed. No Python runtime database/history is inspected.
 CLI add-project/migration regressions and desktop config-edit tests passed.
+
+### Desktop service foundation — 2026-10-06
+
+`bridge-desktop` is a headless workspace crate for typed project drafts,
+opaque review/apply tokens, secret-redacted settings, linked read-only dashboard
+snapshots and PTY sessions. First-project creation requires no initial config
+write; explicit apply validates the whole config and keeps backups/comments.
+Global linked pagination/search/status filters and saved usage/budget/detail
+cards use owned read-only state. Missing state is never initialized by dashboard.
+PTY queues are bounded and preserve bytes/sequence; real tests cover Unicode,
+input, resize, large output and cancellation with a full queue. Child reaping
+and signalling share one mutex to prevent reuse of a completed process ID.
+Five project/dashboard integration checks, two actual PTY checks and targeted
+all-targets Clippy passed. Tauri/WebView production smoke is tracked separately.
+Shared setup now enforces project-directory mode 0700; lifecycle regressions
+passed. The ordinary CLI still builds without Tauri/GTK dependencies.

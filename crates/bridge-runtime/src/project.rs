@@ -132,6 +132,8 @@ pub fn setup(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runt
                 .map_err(|_| RuntimeError::Io)?;
         }
         l.initialize().map_err(|_| RuntimeError::Ownership)?;
+        fs::set_permissions(l.project_dir(), fs::Permissions::from_mode(0o700))
+            .map_err(|_| RuntimeError::Io)?;
     }
     Ok(json!({"status":"ready","projects":projects.iter().map(|(p,_)|p.id()).collect::<Vec<_>>()}))
 }

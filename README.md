@@ -25,8 +25,9 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 `--auto --plan` сохраняет автоматический режим. Терминал проверен на X11/Wayland,
 включая native Unicode clipboard, mouse, paste и реальные TUI startup/input/resize.
 Репетиция v17 миграции, crash/restart, rollback и короткая обкатка двух одноразовых
-проектов прошли. Перевод рабочего проекта и длительная обкатка ожидают выбора
-project ID/config; [процедура и условия](docs/migration-runbook.md).
+проектов прошли. Следующий этап — самостоятельный запуск Rust на любом выбранном
+или новом тестовом проекте и обкатка. Переключение действующих Python-проектов
+не требуется; [процедура запуска и условия](docs/migration-runbook.md).
 
 
 Main services управляются явными командами `setup`, `doctor --json`, `start`,

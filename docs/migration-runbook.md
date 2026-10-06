@@ -1,9 +1,33 @@
-# Переключение проекта на Rust v17
+# Самостоятельный запуск Rust v17 и опциональное переключение
+
+Для самостоятельного запуска подходит любой отдельный Git-проект, в том числе
+новый тестовый. Создать для него собственный `projects.toml`, Rust state root,
+private credential files и свободные OpenCode/MCP endpoints. Затем выполнить
+Setup → Start → Doctor/Status командами из раздела ниже, проверить небольшую
+задачу, verifier, review и delivery. Остановка действующих Python-проектов,
+их конфигурация и откат к Python для этого не нужны.
+
+Воспроизводимый полный цикл с настоящими моделями создаёт одноразовый Git-проект
+и выполняет два шага, финальную проверку и доставку:
+
+```sh
+python3 tools/live_automation_smoke.py \
+  --bridge /absolute/agent-bridge --opencode /absolute/opencode \
+  --codex /absolute/codex --opencode-auth /private/opencode/auth.json \
+  --codex-auth /private/codex/auth.json --output /tmp/standalone-automation.json
+```
+
+Скрипт копирует auth в приватные временные каталоги, не меняет исходные файлы и
+удаляет тестовый проект/state после проверки. Это завершённая проверка полного
+цикла, а не оставленный работающий проект для длительной обкатки.
+
+Разделы остановки Python, возврата к нему и архивирования ниже применимы только
+при отдельно выбранном переключении действующего Python-проекта.
 
 Репетиция на одноразовых проектах доступна в `tools/migration_rehearsal.py`.
 Она проверяет fresh v17, ownership, приватные credentials, настоящий lifecycle
 OpenCode/MCP, падение MCP, restart, rollback и последовательный запуск проектов.
-Действующий проект выбирается отдельно: нужны ID, канонический `projects.toml`,
+Для переключения действующий проект выбирается отдельно: нужны ID, канонический `projects.toml`,
 путь к Python CLI и отдельный абсолютный Rust state root вне workspace.
 
 ## Подготовка и остановка
@@ -110,4 +134,5 @@ config/state binding и результат проверок. Массовый `-
 рассматривается после перевода выбранных проектов, согласованного периода
 наблюдения и реального rollback rehearsal. Исходники и state/history не удаляются
 в рамках этой работы. Фактический переход рабочего проекта пока ожидает выбора
-ID/config; закрытые disposable proofs перечислены в implementation plan.
+ID/config, если такое переключение будет выбрано; самостоятельный запуск Rust
+этого не требует. Закрытые disposable proofs перечислены в implementation plan.

@@ -4810,3 +4810,12 @@ for an input seat, without system installation. Real TUI tests use empty private
 homes and may show login/trust UI; actual model prepare/review/execution is proven
 separately by 15.5. Evidence: `fixtures/runtime/terminal-native-x11-2026-10-06.json`
 and `fixtures/runtime/terminal-native-wayland-2026-10-06.json`.
+
+### Worker HTTP fixture disconnect handling — 2026-10-06
+
+Close/cancellation can legitimately disconnect before the fixture sends its HTTP
+response. The runner fixture now tolerates BrokenPipe/ConnectionReset, releases
+its evidence mutex before I/O, and preserves the first failure during cleanup.
+Eight runner tests and all-targets worker Clippy passed. Production worker behavior
+is unchanged. Rust credential paths are explicit TOML bindings; the migration
+runbook now states the separate Rust paths and shared config edit window.

@@ -21,6 +21,15 @@ OpenCode/MCP, падение MCP, restart, rollback и последовател�
 Редактировать общий TOML можно только при остановленных runtime/controllers и
 отсутствии активных задач; Rust config-edit fences дополнительно проверяют это.
 
+Перед Setup проверить credential bindings в каноническом TOML: `password_file`
+и `mcp_token_file` должны указывать на отдельные Rust credential files, вне
+workspace и Python runtime namespace. `--state-root` сам по себе не меняет эти
+пути. При необходимости изменить только эти bindings через Preview/Save в общем
+окне остановки runtime/controllers; сохранить исходный TOML для отката. Setup
+создаёт отсутствующие Rust credentials, сохраняя исходные Python файлы.
+Если конфигурация меняется, прочие проекты останавливаются на время общего edit
+window и возобновляются со своими bindings после сохранения.
+
 ## Fresh Rust state и проверка
 
 Ниже переменные задаёт оператор. `RUST_BRIDGE_BIN` — абсолютный путь к Rust CLI,

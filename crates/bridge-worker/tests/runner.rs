@@ -139,7 +139,24 @@ impl Fixture {
                         } else {
                             value.to_string()
                         };
-                        write!(stream, "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len()).unwrap();
+                        // A close hook can cancel the client while its response
+                        // is being sent. Do not poison shared evidence on that
+                        // expected disconnect, or mask the worker's outcome.
+                        drop(state);
+                        if let Err(error) = write!(
+                            stream,
+                            "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                            payload.len()
+                        ) {
+                            assert!(
+                                matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::BrokenPipe
+                                        | std::io::ErrorKind::ConnectionReset
+                                ),
+                                "fixture response failed: {error}"
+                            );
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(1))
@@ -261,8 +278,12 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.server.take().unwrap().join().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
+        let server = self.server.take().unwrap().join();
+        let cleanup = std::fs::remove_dir_all(&self.root);
+        if !thread::panicking() {
+            server.unwrap();
+            cleanup.unwrap();
+        }
     }
 }
 #[test]

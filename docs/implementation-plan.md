@@ -4141,7 +4141,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   verification_relative, runtime_files_outside, primary_copy_unchanged.
   Depends on 7.16b.
 
-### 15.3. `smoke-opencode --parallel-worktrees`
+### 15.3. `smoke-opencode --parallel-worktrees` (deterministic proof завершён; live отдельно)
 
 - **Source evidence:** `parallel_worktree_smoke.py:1-1514`;
   `tests/test_parallel_worktree_smoke.py`.
@@ -4155,6 +4155,14 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   startup wait снижает кратковременные collision, timeout всё ещё может fail;
   текущий staggered smoke сам по себе не доказывает simultaneous startup.
   Добавить отдельный concurrent-start lock test. Depends on 7.17b, 9.7a.
+
+- **Реализовано:** production worker rendezvous test в
+  `bridge-automation/tests/proof.rs`: два настоящих task servers/workers,
+  отдельные checkout/ports, пересечение интервалов model-double исполнения,
+  третья overlapping submission refused, независимое acceptance и zero
+  reservations после review. Main HEAD/index/content неизменны; один prompt
+  на task. Concurrent manager start/reuse и bounded lock wait дополнительно
+  покрывает `bridge-runtime/tests/runtime.rs`. Live provider matrix отдельно.
 
 ### 15.4. Explicit local service lifecycle и полная CI matrix
 

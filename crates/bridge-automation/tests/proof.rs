@@ -267,3 +267,96 @@ fn production_worker_multistep_workflow_proves_inheritance_verification_and_deli
     assert_eq!(original["head"], after["head"]);
     assert_eq!(original["index_fingerprint"], after["index_fingerprint"]);
 }
+fn tool(server: &bridge_mcp::McpServer, name: &str, args: Value) -> Value {
+    bridge_mcp::protocol::Protocol::stateless_http().handle(server,json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}})).unwrap()["result"]["structuredContent"].clone()
+}
+#[test]
+fn parallel_workers_rendezvous_proves_overlap_and_independent_acceptance() {
+    let f = Fixture::new(true);
+    fs::write(f.project.workspace().join("check.py"),"import sys\nfrom pathlib import Path\np=Path(sys.argv[1])\nassert p.read_text()==p.stem+'\\n'\n").unwrap();
+    git(f.project.workspace(), &["add", "check.py"]);
+    git(
+        f.project.workspace(),
+        &[
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=p@example.invalid",
+            "commit",
+            "-qm",
+            "checker",
+        ],
+    );
+    let main = bridge_git::take_snapshot(f.project.workspace()).unwrap();
+    let gate = f.root.join("rendezvous");
+    fs::create_dir(&gate).unwrap();
+    let server = bridge_mcp::McpServer::open(f.project.clone(), f.layout.clone())
+        .unwrap()
+        .with_workers(f.spawner(Some(gate.clone())), vec![f.project.clone()])
+        .unwrap();
+    let mut ids = vec![];
+    for step in ["left", "right"] {
+        let response = tool(
+            &server,
+            "submit_task",
+            json!({"request_id":step,"task":format!("PROOF:{step}"),"allowed_paths":[format!("{step}.txt")],"test_commands":[format!("python3 -B check.py {step}.txt")]}),
+        );
+        ids.push(
+            response["task_id"]
+                .as_str()
+                .unwrap()
+                .parse::<bridge_domain::TaskId>()
+                .unwrap(),
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !gate.join("left").exists() || !gate.join("right").exists() {
+        assert!(Instant::now() < deadline, "models did not rendezvous");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let refused = tool(
+        &server,
+        "submit_task",
+        json!({"request_id":"overlap","task":"PROOF:left","allowed_paths":["left.txt"],"test_commands":["python3 -B check.py left.txt"]}),
+    );
+    assert!(refused.get("error").is_some(), "{refused}");
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .list_tasks(f.project.id(), false, 100, 0)
+            .unwrap()
+            .len(),
+        2
+    );
+    fs::write(gate.join("release"), "go").unwrap();
+    f.join();
+    let traces = ids.iter().map(|id| f.trace(*id)).collect::<Vec<_>>();
+    assert!(traces.iter().all(|t| t.len() == 1));
+    let a = &traces[0][0];
+    let b = &traces[1][0];
+    assert!(
+        a["started"].as_f64().unwrap() < b["finished"].as_f64().unwrap()
+            && b["started"].as_f64().unwrap() < a["finished"].as_f64().unwrap()
+    );
+    for id in &ids {
+        assert_eq!(
+            tool(&server, "task_status", json!({"task_id":id}))["status"],
+            "awaiting_review"
+        );
+        assert_eq!(
+            tool(&server, "accept_task", json!({"task_id":id}))["status"],
+            "accepted"
+        );
+    }
+    let s = f.layout.open_readonly().unwrap();
+    let count: i64 = s
+        .connection()
+        .query_row("SELECT COUNT(*) FROM active_writers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        main
+    );
+}

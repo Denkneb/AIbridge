@@ -69,6 +69,12 @@ and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
+A status dot beside the selected project turns green when OpenCode and MCP are
+ready, amber when only some services are available, and grey when stopped.
+An outlined dot means checking or unavailable status; hover reveals the state.
+Read-only Doctor checks refresh every five seconds and after lifecycle actions,
+independently of dashboard polling. Switching projects cancels stale results.
+
 The terminal opens fixed Shell, OpenCode or Codex profiles. OpenCode uses the
 existing Rust controller; task attachment uses the proven task checkout/session
 router. Codex uses `agent-bridge launch-codex` with process-local primary/linked MCP
@@ -85,14 +91,16 @@ profile locks until their children exit, so the two controllers can coexist.
 Each terminal tab owns a PTY and xterm buffer; hidden tabs keep draining output.
 Open reuses a running Codex/OpenCode tab for the selected project and opens a new
 Shell tab. Attach reuses the tab for that exact project/task. Closing a tab stops
-only its process. Up to eight tabs are supported. Switching project/tab or
+only its process. Up to eight tabs across projects are supported. The tab list and
+visible terminal belong to the selected project. Each project remembers its active
+tab, selected program and environment draft; other PTYs remain mounted and keep
+running with their output buffered in the background. Switching project/tab or
 resizing preserves existing sessions. Output queues and input chunks are bounded;
 output stays ordered and xterm preserves UTF-8 across chunks. Closing the window
 terminates and reaps its terminal processes before application exit. Managed
 project services still use the explicit Start/Stop lifecycle.
 
-Dashboard reads owned Rust state only, aggregates configured trusted linked
-projects, and supports Active/All, search, status filters and global pagination.
+Dashboard reads owned Rust state for the selected project only, and supports Active/All, search, status filters and global pagination.
 DB/WAL change stamps skip unchanged snapshots, with a full refresh every 30
 seconds. Rows are virtualized, task selection is retained by ID, and refreshes do not
 launch workers or recover tasks. Details show verifier results, repository

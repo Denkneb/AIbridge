@@ -83,60 +83,68 @@ function TerminalSession({tab,visible,fontSize,clearCount,onStatus}:{tab:Termina
 }
 
 export function TerminalPane({project,attach}:{project:string;attach:{task:string;project:string;nonce:number}|null}){
- const [tabs,setTabs]=useState<TerminalTab[]>([]),[active,setActive]=useState(''),[profile,setProfile]=useState('shell'),[error,setError]=useState(''),[clearCount,setClearCount]=useState(0);
+ const [tabs,setTabs]=useState<TerminalTab[]>([]),[activeByProject,setActiveByProject]=useState<Record<string,string>>({}),[profiles,setProfiles]=useState<Record<string,string>>({}),[errors,setErrors]=useState<Record<string,string>>({}),[clearCount,setClearCount]=useState(0);
+ const active=activeByProject[project]??'',profile=profiles[project]??'shell',error=errors[project]??'';
+ const setError=(message:string,target=project)=>setErrors(items=>({...items,[target]:message}));
+ const setActive=(id:string,target=project)=>setActiveByProject(items=>({...items,[target]:id}));
  const [fontSize,setFontSize]=useState(()=>Number(localStorage.getItem('aibridge-terminal-font'))||14);
- const [envDrafts,setEnvDrafts]=useState<Record<string,{text:string;saved:string}>>({}),[envSaving,setEnvSaving]=useState(false);
+ const [envDrafts,setEnvDrafts]=useState<Record<string,{text:string;saved:string}>>({}),[savingProjects,setSavingProjects]=useState<Record<string,boolean>>({});
+ const envSaving=!!savingProjects[project];
  const launchEnv=envDrafts[project]?.text??'',envReady=!!envDrafts[project],envDirty=envReady&&launchEnv!==envDrafts[project].saved;
  const envDraftsRef=useRef(envDrafts);envDraftsRef.current=envDrafts;
  useEffect(()=>{
   if(!project||envDraftsRef.current[project])return;
   let cancelled=false;
-  invoke<string>('codex_env_read',{project}).then(text=>{if(!cancelled)setEnvDrafts(items=>({...items,[project]:{text,saved:text}}));}).catch(e=>{if(!cancelled)setError(String(e));});
+  invoke<string>('codex_env_read',{project}).then(text=>{if(!cancelled)setEnvDrafts(items=>({...items,[project]:{text,saved:text}}));}).catch(e=>{if(!cancelled)setError(String(e),project);});
   return()=>{cancelled=true;};
  },[project]);
  const saveEnv=async(target=project)=>{
   const draft=envDraftsRef.current[target];if(!draft)throw Error('Переменные Codex ещё не загружены');
-  setEnvSaving(true);
+  setSavingProjects(items=>({...items,[target]:true}));
   try{await invoke('codex_env_save',{project:target,text:draft.text});setEnvDrafts(items=>({...items,[target]:{...items[target],saved:draft.text}}));return draft.text;}
-  finally{setEnvSaving(false);}
+  finally{setSavingProjects(items=>({...items,[target]:false}));}
  };
  const tabsRef=useRef(tabs);tabsRef.current=tabs;
  const onStatus=useCallback((id:string,status:TabStatus)=>setTabs(items=>items.map(tab=>tab.id===id?{...tab,status}:tab)),[]);
  useEffect(()=>{localStorage.setItem('aibridge-terminal-font',String(fontSize));},[fontSize]);
  const connect=async(target=project,selected=profile,task:string|null=null)=>{
-  setError('');
+  setError('',target);
   const existing=selected==='shell'?undefined:tabsRef.current.find(tab=>tab.project===target&&tab.profile===selected&&tab.task===task&&(tab.status==='starting'||tab.status==='running'));
-  if(existing){setActive(existing.id);return;}
-  if(tabsRef.current.length>=8){setError('Открыто 8 вкладок: закройте ненужную перед запуском новой');return;}
+  if(existing){setActive(existing.id,target);return;}
+  if(tabsRef.current.length>=8){setError('Открыто 8 сессий во всех проектах: закройте ненужную перед запуском новой',target);return;}
   let variables:string|null=null;
-  if(selected==='codex'){try{variables=await saveEnv(target);}catch(e){setError(String(e));return;}}
+  if(selected==='codex'){try{variables=await saveEnv(target);}catch(e){setError(String(e),target);return;}}
   // Saving crosses an async boundary: another click may have opened a tab.
   const opened=selected==='shell'?undefined:tabsRef.current.find(tab=>tab.project===target&&tab.profile===selected&&tab.task===task&&(tab.status==='starting'||tab.status==='running'));
-  if(opened){setActive(opened.id);return;}
-  if(tabsRef.current.length>=8){setError('Открыто 8 вкладок: закройте ненужную перед запуском новой');return;}
+  if(opened){setActive(opened.id,target);return;}
+  if(tabsRef.current.length>=8){setError('Открыто 8 сессий во всех проектах: закройте ненужную перед запуском новой',target);return;}
   const tab:TerminalTab={id:crypto.randomUUID(),project:target,profile:selected,task,launchEnv:variables,status:'starting'};
-  tabsRef.current=[...tabsRef.current,tab];setTabs(tabsRef.current);setActive(tab.id);
+  tabsRef.current=[...tabsRef.current,tab];setTabs(tabsRef.current);setActive(tab.id,target);
  };
  const close=(id=active)=>{
+  const closing=tabsRef.current.find(tab=>tab.id===id);if(!closing)return;
+  const siblings=tabsRef.current.filter(tab=>tab.project===closing.project);
+  const index=siblings.findIndex(tab=>tab.id===id);
   const remaining=tabsRef.current.filter(tab=>tab.id!==id);
-  const index=tabsRef.current.findIndex(tab=>tab.id===id);
+  const next=siblings.filter(tab=>tab.id!==id);
   tabsRef.current=remaining;setTabs(remaining);
-  if(active===id)setActive(remaining[Math.min(index,remaining.length-1)]?.id??'');
+  if(activeByProject[closing.project]===id)setActive(next[Math.min(index,next.length-1)]?.id??'',closing.project);
  };
  useEffect(()=>{if(attach)connect(attach.project,'attach',attach.task);},[attach]);
  const external=async()=>{
   setError('');try{const variables=profile==='codex'?await saveEnv():null;await invoke('terminal_external',{project,profile,task:null,launchEnv:variables});}catch(e){setError(String(e));}
  };
  const codexBlocked=profile==='codex'&&(!envReady||envSaving);
- const current=tabs.find(tab=>tab.id===active);
- return <section className="terminal-pane"><div className="pane-bar"><strong>Терминал</strong><span className="muted">{current?label(current)+(current.status==='exited'?' · завершена':''):'Нет сессии'}</span><select aria-label="Программа терминала" value={profile} onChange={e=>setProfile(e.target.value)}><option value="shell">Shell</option><option value="opencode">OpenCode</option><option value="codex">Codex</option></select><select aria-label="Размер шрифта терминала" value={fontSize} onChange={e=>setFontSize(Number(e.target.value))}>{[12,14,16,18,20].map(size=><option key={size} value={size}>{size}px</option>)}</select><button disabled={!project||codexBlocked} onClick={()=>void connect()}>Открыть</button><button disabled={!current} onClick={()=>close()}>Завершить</button><button disabled={!project||codexBlocked} onClick={()=>void external()}>Во внешнем терминале</button><button disabled={!current} onClick={()=>setClearCount(n=>n+1)}>Очистить</button></div>
+ const visibleTabs=tabs.filter(tab=>tab.project===project);
+ const current=visibleTabs.find(tab=>tab.id===active);
+ return <section className="terminal-pane"><div className="pane-bar"><strong>Терминал</strong><span className="muted">{current?label(current)+(current.status==='exited'?' · завершена':''):'Нет сессии'}</span><select aria-label="Программа терминала" value={profile} onChange={e=>setProfiles(items=>({...items,[project]:e.target.value}))}><option value="shell">Shell</option><option value="opencode">OpenCode</option><option value="codex">Codex</option></select><select aria-label="Размер шрифта терминала" value={fontSize} onChange={e=>setFontSize(Number(e.target.value))}>{[12,14,16,18,20].map(size=><option key={size} value={size}>{size}px</option>)}</select><button disabled={!project||codexBlocked} onClick={()=>void connect()}>Открыть</button><button disabled={!current} onClick={()=>close()}>Завершить</button><button disabled={!project||codexBlocked} onClick={()=>void external()}>Во внешнем терминале</button><button disabled={!current} onClick={()=>setClearCount(n=>n+1)}>Очистить</button></div>
  {profile==='codex'&&<details className="terminal-launch-env"><summary>Переменные окружения Codex</summary><p>По одной переменной на строку: NAME=value или export NAME=value. Сохраняются отдельно для каждого проекта в приватном файле с правами 0600. Нажмите «Сохранить»; перед запуском Codex сохранение выполняется автоматически. Значения используются буквально: команды и подстановки $VAR не выполняются.</p><textarea aria-label="Переменные окружения Codex" spellCheck={false} placeholder={'export MY_VARIABLE=value\nOTHER_VARIABLE="значение с пробелами"'} value={launchEnv} disabled={!envReady||envSaving} onChange={e=>setEnvDrafts(items=>({...items,[project]:{...items[project],text:e.target.value}}))}/><button disabled={!envReady||envSaving||!envDirty} onClick={()=>{setError('');void saveEnv().catch(e=>setError(String(e)));}}>{envSaving?'Сохранение…':'Сохранить переменные'}</button><span className="muted">{!envReady?'Загрузка…':envDirty?'Есть несохранённые изменения':'Сохранено для проекта'}</span></details>}
  {error&&<p role="alert" className="error">{error}</p>}
- <div className="terminal-tabs" role="tablist" aria-label="Терминальные сессии">{tabs.map(tab=><div className="terminal-tab" key={tab.id}>
+ <div className="terminal-tabs" role="tablist" aria-label="Терминальные сессии">{visibleTabs.map(tab=><div className="terminal-tab" key={tab.id}>
   <button role="tab" id={`terminal-tab-${tab.id}`} aria-controls={`terminal-panel-${tab.id}`} aria-selected={active===tab.id} onClick={()=>setActive(tab.id)}>{label(tab)}{tab.status==='starting'?' · запуск':tab.status==='exited'?' · завершена':tab.status==='error'?' · ошибка':''}</button>
   <button aria-label={`Закрыть ${label(tab)}`} onClick={()=>close(tab.id)}>×</button>
  </div>)}</div>
- {tabs.map(tab=><TerminalSession key={tab.id} tab={tab} visible={active===tab.id} fontSize={fontSize} clearCount={clearCount} onStatus={onStatus}/>)}
- {!tabs.length&&<p className="empty">Выберите программу и нажмите «Открыть»</p>}
+ {tabs.map(tab=><TerminalSession key={tab.id} tab={tab} visible={tab.project===project&&active===tab.id} fontSize={fontSize} clearCount={clearCount} onStatus={onStatus}/>)}
+ {!visibleTabs.length&&<p className="empty">Выберите программу и нажмите «Открыть»</p>}
  </section>;
 }

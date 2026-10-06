@@ -26,3 +26,9 @@
 .opencode-editor{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
 .opencode-editor h3{font-size:14px}
 .opencode-editor textarea{display:block;width:100%;min-height:280px;max-height:600px;margin:12px 0;font-family:"DejaVu Sans Mono",monospace;line-height:1.5}
+
+.project-indicator{display:inline-flex;align-items:center;padding:5px;flex-shrink:0}
+.project-status-dot{width:12px;height:12px;border-radius:50%;background:var(--muted);border:1px solid #0002}
+.project-indicator-running .project-status-dot{background:#32c66a;box-shadow:0 0 0 3px #32c66a20}
+.project-indicator-partial .project-status-dot{background:#e8ab36}
+.project-indicator-checking .project-status-dot,.project-indicator-unknown .project-status-dot{background:transparent;border:2px solid var(--muted)}

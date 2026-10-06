@@ -581,8 +581,22 @@ impl fmt::Display for BasicAuth {
 /// the [`fmt::Debug`] output.
 pub struct HttpTransport {
     endpoint: Endpoint,
-    auth: BasicAuth,
+    auth: TransportAuth,
     timeout: Duration,
+}
+
+#[derive(Debug)]
+enum TransportAuth {
+    Basic(BasicAuth),
+    Bearer(Secret),
+}
+impl TransportAuth {
+    fn header_value(&self) -> String {
+        match self {
+            Self::Basic(a) => a.header_value(),
+            Self::Bearer(s) => format!("Bearer {}", s.expose_secret()),
+        }
+    }
 }
 
 impl HttpTransport {
@@ -594,9 +608,25 @@ impl HttpTransport {
     pub fn new(endpoint: Endpoint, auth: BasicAuth, timeout: Duration) -> Self {
         Self {
             endpoint,
-            auth,
+            auth: TransportAuth::Basic(auth),
             timeout,
         }
+    }
+
+    /// Uses the same bounded loopback transport for authenticated MCP probes.
+    pub fn bearer(
+        endpoint: Endpoint,
+        secret: Secret,
+        timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        if !secret.expose_secret().bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(TransportError::InvalidAuth);
+        }
+        Ok(Self {
+            endpoint,
+            auth: TransportAuth::Bearer(secret),
+            timeout,
+        })
     }
 
     /// Returns the configured request timeout.

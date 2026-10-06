@@ -1,5 +1,6 @@
 //! Runtime CLI. Implemented commands require explicit Rust configuration/state.
 mod automation;
+mod services;
 use bridge_config::load_config_with_state_root;
 use bridge_domain::TaskId;
 use bridge_runtime::controller::{ControllerCommand, launch_controller};
@@ -11,6 +12,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  status           Read-only runtime readiness/diagnostics (--json, --all)
   launch-codex      Start an approved workflow (--auto --plan PATH required)
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
   automation-worker  Private detached workflow supervisor (--run UUID required)
@@ -50,6 +52,7 @@ enum Action {
     Worker(LaunchArgs, TaskId, u32),
     Deliver(LaunchArgs, TaskId, DeliveryAction),
     Automation(LaunchArgs, automation::Action),
+    Services(LaunchArgs, services::Action),
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +86,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         && command != "worker"
         && command != "deliver-task"
         && !automation::is_command(&command)
+        && !services::is_command(&command)
     {
         return Err("unsupported command; use --help");
     }
@@ -91,6 +95,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
     let mut delivery_mode = None;
     let (mut run, mut plan) = (None, None);
     let mut auto = false;
+    let (mut json, mut all) = (false, false);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             return Ok(Action::Help);
@@ -122,6 +127,18 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             auto = true;
             continue;
         }
+        if services::is_command(&command) && matches!(flag, "--json" | "--all") {
+            let slot = if flag == "--json" {
+                &mut json
+            } else {
+                &mut all
+            };
+            if *slot || inline.is_some() {
+                return Err("duplicate or invalid flag");
+            }
+            *slot = true;
+            continue;
+        }
         let slot = match flag {
             "--run" if automation::is_command(&command) && command != "launch-codex" => &mut run,
             "--plan" if command == "launch-codex" => &mut plan,
@@ -143,7 +160,11 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         }
         *slot = Some(value);
     }
+    if all && project.is_some() {
+        return Err("select --project or --all");
+    }
     let project = project
+        .or_else(|| all.then(OsString::new))
         .ok_or("--project required")?
         .into_string()
         .map_err(|_| "invalid project encoding")?;
@@ -158,7 +179,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         config,
         state_root,
     };
-    Ok(if automation::is_command(&command) {
+    Ok(if services::is_command(&command) {
+        Action::Services(common, services::parse(&command, task, json, all)?)
+    } else if automation::is_command(&command) {
         Action::Automation(common, automation::parse(&command, auto, plan, run)?)
     } else if command == "worker" {
         let task = task
@@ -369,6 +392,7 @@ fn main() -> ExitCode {
         Ok(Action::Worker(args, task, round)) => finish(worker(args, task, round)),
         Ok(Action::Deliver(args, task, mode)) => finish(deliver(args, task, mode)),
         Ok(Action::Automation(args, action)) => finish(automation::run(args, action)),
+        Ok(Action::Services(args, action)) => finish(services::run(args, action)),
         Err(error) => {
             eprintln!("agent-bridge: {error}");
             ExitCode::from(2)

@@ -3846,7 +3846,7 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 Не завершено. Разбито на независимые подзадачи.
 
-- **9.19a. `status --json` и diagnostics.**
+- **9.19a. `status --json` и diagnostics (завершено).**
   - **Цель:** версионный readiness/diagnostics (`exit 1` если не ready).
   - **Source evidence:** `runtime.py:515-587`; `diagnostics.py:41-523`;
     `cli.py:369-376`; `tests/test_runtime.py:394-532`.
@@ -3854,6 +3854,13 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
     `DIAGNOSTICS_SCHEMA_VERSION=1`; full active set.
   - **Targeted checks:** runtime status-json tests.
   - **Зависит от:** 0A.6, 7.17c.
+  - **Реализовано:** bounded OpenCode health/root/OpenAPI и bearer-authenticated
+    MCP initialize/tools/project_info probe; readonly process diagnosis и
+    schema_version=1 report. `--all` изолирует ошибки state по проектам.
+    Snapshot показывает full active set/writers/waiting, безопасную phase и
+    counters; строки и arbitrary verifier payload не копируются. Readonly
+    missing-state CLI и two-active/progress/corrupt-timestamp fixtures прошли;
+    targeted all-targets Clippy чист. Main service start/stop consumer — в 15.4.
 - **9.19b. Codex `hook-status` read-only.**
   - **Цель:** read-only fail-open Codex hook.
   - **Source evidence:** `hook_status.py:19-132`; `cli.py:1402-1433`;

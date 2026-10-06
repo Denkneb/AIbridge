@@ -1538,3 +1538,52 @@ fn worker_runner_closes_worktree_only_after_cleanup_and_defers_while_fenced() {
         before
     );
 }
+
+#[test]
+fn readonly_diagnostics_show_full_active_set_and_sanitize_progress() {
+    let f = Fixture::new();
+    let mut s = f.layout.open().unwrap();
+    let before = std::fs::read(f.layout.database()).unwrap();
+    let snapshot = bridge_runtime::diagnostics::snapshot(&f.layout).unwrap();
+    assert_eq!(snapshot["active_tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["active_tasks"][0]["phase"], "agent");
+    assert!(!snapshot.to_string().contains("fixture-password"));
+    assert!(!snapshot.to_string().contains(f.root.to_str().unwrap()));
+    s.connection().execute("UPDATE rounds SET verifier_state='running',verifier_json=?1 WHERE task_id=?2",[serde_json::json!({"state":"running","command_index":999,"command_count":2,"secret":"DO_NOT_EMIT"}).to_string(),f.task.to_string()]).unwrap();
+    let snap = bridge_runtime::diagnostics::snapshot(&f.layout).unwrap();
+    assert_eq!(snap["active_tasks"][0]["phase"], "verifying");
+    assert_eq!(
+        snap["active_tasks"][0]["verification_progress"]["command_index"],
+        2
+    );
+    assert!(!snap.to_string().contains("DO_NOT_EMIT"));
+    s.connection()
+        .execute("UPDATE active_writers SET parallel=1", [])
+        .unwrap();
+    s.create_task_with_admission(
+        CreateTaskInput {
+            task_id: "22222222-2222-4222-8222-222222222222".parse().unwrap(),
+            project_id: f.project.id().clone(),
+            workspace: f.project.workspace().to_str().unwrap().into(),
+            task: "SECRET TASK".into(),
+            request_id: "second".into(),
+            payload_hash: "second".into(),
+            allowed_paths: vec!["second".into()],
+            test_commands: vec![],
+            base_head: None,
+            snapshot: None,
+        },
+        &AdmissionSettings::new(2, true, ExecutionMode::Worktree).unwrap(),
+        TaskStatus::Implementing,
+    )
+    .unwrap();
+    let multi = bridge_runtime::diagnostics::snapshot(&f.layout).unwrap();
+    assert_eq!(multi["active_tasks"].as_array().unwrap().len(), 2);
+    assert_eq!(multi["active_writer_count"], 2);
+    assert!(!multi.to_string().contains("SECRET TASK"));
+    assert_eq!(std::fs::read(f.layout.database()).unwrap(), before);
+    s.connection()
+        .execute("UPDATE tasks SET updated_at=?1", ["bad\nINJECT"])
+        .unwrap();
+    assert!(bridge_runtime::diagnostics::snapshot(&f.layout).is_err());
+}

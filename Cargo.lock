@@ -187,6 +187,7 @@ dependencies = [
  "bridge-worker",
  "nix 0.27.1",
  "process-wrap",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

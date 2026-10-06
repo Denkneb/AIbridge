@@ -5,8 +5,10 @@
 //! Worktree callers hold the task lifecycle/worker fence.
 pub mod controller;
 pub mod controller_permissions;
+pub mod diagnostics;
 pub mod lock;
 mod process;
+pub mod readiness;
 use bridge_config::{Endpoint, ProjectEntry};
 use bridge_domain::{TaskId, TaskStatus};
 use bridge_git::checkout::{CheckoutPaths, probe_checkout};
@@ -125,7 +127,9 @@ fn binding(
     if layout.project_id() != project.id() {
         return Err(RuntimeError::Binding);
     }
-    let storage = layout.open().map_err(|_| RuntimeError::Ownership)?;
+    let storage = layout
+        .open_readonly()
+        .map_err(|_| RuntimeError::Ownership)?;
     let saved = storage
         .get_task(task)
         .map_err(|_| RuntimeError::Binding)?

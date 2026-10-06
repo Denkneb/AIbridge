@@ -93,6 +93,8 @@
 //! diagnostics are retained only as the error
 //! [`source`](std::error::Error::source).
 
+pub mod migration;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt;

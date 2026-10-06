@@ -3910,7 +3910,7 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
     Routing/refusal/session и real subprocess argv/env/exit fixture прошли;
     server/worker/recovery автоматически не запускаются.
 
-### 9.20. OpenCode config migration helper (не завершено)
+### 9.20. OpenCode config migration helper (завершено)
 
 - **Цель:** эквивалент `scripts/migrate_opencode_config.py`.
 - **Source evidence:** `scripts/migrate_opencode_config.py:68-933`;
@@ -3922,6 +3922,16 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
   делается. Python helper multi-file writes атомарны по файлу, **НЕ** общая
   transaction.
 - **Targeted checks:** migration helper tests (dry-run/idempotent/JSONC/mode).
+
+- **Реализовано 2026-10-06:** Rust CLI `migrate-opencode-config` defaults
+  to preview; explicit apply copies JSON/JSONC verbatim and wires OPENCODE_CONFIG
+  through the project env file. Comment/trailing-comma validation, protected env
+  names, exact 0600, symlink/path-disjointness/controller-config refusal,
+  refreshed backups and per-file fsynced atomic writes. Apply rechecks every
+  input under the shared config lock. JSONC parser and CLI integration checks
+  passed (byte preservation, dry-run, backup, idempotency, protected env refusal).
+  Writes are individually atomic; the full migration is resumable, not one
+  multi-file transaction. Original workspace config remains unchanged.
 
 **Готовность потока:** совместимы argv, exit codes и безопасные ошибки.
 

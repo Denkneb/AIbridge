@@ -1,0 +1,94 @@
+{
+  "date": "2026-10-06",
+  "outcome": "passed",
+  "rust": {
+    "command": "CARGO_INCREMENTAL=0 RUST_TEST_THREADS=4 cargo test --offline --workspace",
+    "exit_code": 0,
+    "unit_integration": {
+      "passed": 1379,
+      "failed": 0,
+      "ignored": 0
+    },
+    "doctests": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "clippy": "workspace/all-targets passed; desktop/all-targets passed"
+  },
+  "source_fixture_suites": [
+    {
+      "suite": "fixtures-sqlite",
+      "exit_code": 0
+    },
+    {
+      "suite": "fixtures-delta",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-config-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-mcp-verify",
+      "exit_code": 0,
+      "counts": {
+        "passed": 145,
+        "failed": 0,
+        "skipped": 17
+      }
+    },
+    {
+      "suite": "v15-security-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-runtime-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-parity-verify_parity",
+      "exit_code": 0,
+      "counts": {
+        "passed": 97,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "v17-docs-verify_contract_manifest",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-config-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-mcp-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-runtime-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-delta-verify_parity",
+      "exit_code": 0
+    }
+  ],
+  "legacy_mcp_skips": 17,
+  "desktop": {
+    "production_build": true,
+    "production_frontend_smoke_hook_absent": true,
+    "x11": "terminal-native-x11-2026-10-06.json",
+    "wayland": "terminal-native-wayland-2026-10-06.json"
+  },
+  "live_automation": "live-automation-proof-2026-10-06.json",
+  "migration_rehearsal": "migration-rehearsal-2026-10-06.json",
+  "operational_pending": [
+    "selected working project/config cutover",
+    "agreed production soak",
+    "working-project rollback acceptance and later Python archival decision"
+  ],
+  "note": "Historical MCP skips are separate from passed cases. Disposable proofs do not claim a working-project cutover."
+}

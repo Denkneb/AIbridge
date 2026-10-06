@@ -4819,3 +4819,25 @@ its evidence mutex before I/O, and preserves the first failure during cleanup.
 Eight runner tests and all-targets worker Clippy passed. Production worker behavior
 is unchanged. Rust credential paths are explicit TOML bindings; the migration
 runbook now states the separate Rust paths and shared config edit window.
+
+### Итог следующего блока — 2026-10-06
+
+Terminal hardening/clipboard/fallback, interactive Codex controller, X11/Wayland
+real TUI startup/input/resize, bounded real model automation, disposable migration
+rehearsal and short service soak implemented and committed in intermediate blocks.
+Final workspace tests passed with four harness threads (explicit concurrency
+proofs retain parallel workers); workspace and desktop all-targets Clippy passed.
+Rust unit/integration: 1379 passed; doctests: 0 passed; 0 failed/ignored.
+
+Frozen source/fixture suites v15/v17 all exit zero; legacy MCP harness retains
+17 explicitly reported skips, not counted as parity passes. Production frontend
+and desktop rebuilt without smoke hooks/features. Test fixture root port races
+and expected cancelled HTTP replies were corrected; a disk-full validation failure
+was recovered by clearing generated incremental caches only. Sanitized summary:
+`fixtures/runtime/final-validation-2026-10-06.json`.
+
+Actual working-project cutover, sustained production observation and operational
+rollback acceptance remain open pending project ID/canonical config selection.
+Python stays available as an independent fallback. The runbook specifies separate
+credential bindings and shared config edit fences; no user's Python state/history
+was imported or changed by these proofs.

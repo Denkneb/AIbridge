@@ -8,7 +8,8 @@ MCP stdio/HTTP (`bridge-mcp`) и CLI (`agent-bridge-cli`). Цель —
 сохранить контракты CLI, MCP и SQLite, предоставить headless Rust CLI и
 десктопное приложение на **Tauri 2 + React + TypeScript**, со сборкой frontend
 через **Vite**. Встроенный терминал — **xterm.js**, PTY и процессы — в Rust.
-GUI пока не реализован; выбор стека зафиксирован в
+GUI реализован в `desktop/`, с native clipboard и проверенным X11/Wayland PTY;
+выбор стека зафиксирован в
 [решениях](docs/risks-and-decisions.md#десктопный-ui-tauri-2-react-typescript-vite).
 Миграция идёт поэтапно, без одномоментной замены Python.
 Python и Rust делят только канонический `projects.toml` для чтения (запись —
@@ -19,6 +20,14 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 или перенос Python state/history в Rust не поддерживается и не планируется.
 
 ## Расхождение версий и ближайший шаг
+
+Интерактивный `launch-codex` подключает process-local local/HTTP MCP и status hooks;
+`--auto --plan` сохраняет автоматический режим. Терминал проверен на X11/Wayland,
+включая native Unicode clipboard, mouse, paste и реальные TUI startup/input/resize.
+Репетиция v17 миграции, crash/restart, rollback и короткая обкатка двух одноразовых
+проектов прошли. Перевод рабочего проекта и длительная обкатка ожидают выбора
+project ID/config; [процедура и условия](docs/migration-runbook.md).
+
 
 Main services управляются явными командами `setup`, `doctor --json`, `start`,
 `status --json`, `stop` с `--project ID --config PATH --state-root ABSOLUTE_PATH`;
@@ -38,7 +47,8 @@ production worker/lifecycle с deterministic model doubles и crash/reopen.
 локальных servers. **9.19a–c** добавляют status/diagnostics, hook и task-scoped
 attach. **15.4** добавляет main service lifecycle и общую CI matrix;
 [команды и границы проверок](docs/testing-and-migration.md).
-Full live Codex+OpenCode automation proof остаётся отдельной optional проверкой.
+Bounded live Codex+OpenCode automation proof прошёл: два шага, final verifier,
+independent review и cumulative delivery; [отчёт](docs/live-smoke.md).
 
 Запуск: `agent-bridge launch-codex --auto --plan /absolute/plan.json --project ID
 --config /absolute/projects.toml --state-root /absolute/rust-state`.
@@ -78,7 +88,7 @@ Transport/infrastructure errors сохраняют безопасные redacted
 принятия: [результаты](docs/live-smoke.md).
 
 7.16, services 7.17a–c, delivery gate 7.17d и delivery 9.18a–e завершены;
-live parallel smoke остаётся 15.3. Также завершены domain
+live parallel smoke 15.3 завершён. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
 3.14 добавляет guarded automation run storage. Automatic plan coordinator и его bounded read-only model adapter подключены. MCP stdio/HTTP и standalone delegated

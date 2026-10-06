@@ -4161,6 +4161,12 @@ WebView с xterm.js и настоящим Rust PTY; input/resize/stream/cleanup 
 
 ## Поток 14. Миграция
 
+Disposable rehearsal 14.2–14.6 и sequential two-project lifecycle реализованы;
+реальный cutover/длительный production soak ожидают выбора project ID/config.
+[Runbook](migration-runbook.md) содержит команды, rollback и критерии обкатки.
+Python остаётся независимым fallback до подтверждённого рабочего переключения.
+
+
 ### 14.1. Подготовка переключения и остановка Python runtime
 
 Python runtime останавливается; проверяется отсутствие живых locks и
@@ -4169,16 +4175,16 @@ PID/process records. Python state при этом не копируется, н�
 
 ### 14.2. Создание нового Rust state
 
-Rust инициализирует собственную пустую БД **fresh schema v15** и отдельную
+Rust инициализирует собственную пустую БД **fresh schema v17** и отдельную
 историю задач; Python state не импортируется, не копируется и не переносится.
-Rust-owned legacy v6 может быть поднят additive-миграцией до v15 только для
-Rust-owned тестовых fixtures, а не как импорт Python runtime state.
+Поддержанные Rust-owned v6/v11/v14/v15/v16 обновляются транзакционно до v17;
+это отдельный контракт upgrade, не импорт Python runtime state.
 
 ### 14.3. Проверка изоляции и ownership marker
 
 Раздельные state root, SQLite, locks, PID/ownership records, token-файлы, логи и
-endpoints; fresh **schema v15**, `meta.runtime_owner='rust'` и sidecar marker
-(ownership/format guard из 3.11 расширяется на v15); fail-closed при чужом
+endpoints; fresh **schema v17**, `meta.runtime_owner='rust'` и sidecar marker
+(ownership/format guard из 3.11 расширяется на v17); fail-closed при чужом
 state. Исторические завершённые 3.10/3.11 были foundation schema v6 и
 сохраняются как история, а не как финальный target.
 
@@ -4762,3 +4768,11 @@ v17 state and copied private auth were disposed. No Python runtime state/history
 participated. Sanitized evidence: `fixtures/runtime/live-automation-proof-2026-10-06.json`.
 Crash/revision/control boundary coverage remains in deterministic production-worker
 proofs; this live run establishes the real successful multi-step model path.
+
+### Automation proof fixture isolation — 2026-10-06
+
+Independent proof tests now serialize their disposable roots because they allocate
+from the same host worktree port range. The parallel proof still runs both writers
+concurrently inside its root and verifies overlap. Worker join failures no longer
+poison the fixture mutex or trigger a second panic in Drop. Both production-worker
+proofs and targeted automation Clippy passed.

@@ -19,6 +19,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+// Both tests allocate from the same OS port range using independent Rust roots.
+// Serialize fixture roots; the parallel proof still runs its two workers together.
+static PROOF_LOCK: Mutex<()> = Mutex::new(());
 struct Fixture {
     root: PathBuf,
     project: ProjectEntry,
@@ -117,7 +120,8 @@ impl Fixture {
         })
     }
     fn join(&self) {
-        for h in self.workers.lock().unwrap().drain(..) {
+        let workers = self.workers.lock().unwrap().drain(..).collect::<Vec<_>>();
+        for h in workers {
             h.join().unwrap();
         }
     }
@@ -135,7 +139,15 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.join();
+        let workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect::<Vec<_>>();
+        for worker in workers {
+            let _ = worker.join();
+        }
         if let Ok(s) = self.layout.open_readonly() {
             for t in s
                 .list_tasks(self.project.id(), false, 100, 0)
@@ -184,6 +196,7 @@ impl ReviewClient for Model {
 }
 #[test]
 fn production_worker_multistep_workflow_proves_inheritance_verification_and_delivery() {
+    let _serial = PROOF_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let f = Fixture::new(false);
     let plan: Value = serde_json::from_str(include_str!(
         "../../../docs/fixtures/runtime-automation-v17.json"
@@ -272,6 +285,7 @@ fn tool(server: &bridge_mcp::McpServer, name: &str, args: Value) -> Value {
 }
 #[test]
 fn parallel_workers_rendezvous_proves_overlap_and_independent_acceptance() {
+    let _serial = PROOF_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let f = Fixture::new(true);
     fs::write(f.project.workspace().join("check.py"),"import sys\nfrom pathlib import Path\np=Path(sys.argv[1])\nassert p.read_text()==p.stem+'\\n'\n").unwrap();
     git(f.project.workspace(), &["add", "check.py"]);

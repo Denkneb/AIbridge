@@ -28,5 +28,6 @@ uuid = { workspace = true, features = ["v4"] }
 rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
+bridge-runtime.workspace = true
 bridge-domain.workspace = true
 bridge-verifier = { path = "../bridge-verifier" }

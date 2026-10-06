@@ -4163,7 +4163,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   fixtures verifier-ы, compatibility smoke direct/worktree/parallel.
   Запускается только на границе потока/в CI, не внутри каждой задачи.
 
-### 15.5. Automation workflow proof (не завершено)
+### 15.5. Automation workflow proof (synthetic завершён; live optional)
 
 - **Цель:** synthetic multi-step Git workflow с deterministic model doubles,
   production verifier/lifecycle/materializer; отдельно optional live proof.
@@ -4173,6 +4173,14 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   Codex+OpenCode run отмечается только при отдельном фактическом запуске.
 - **Source:** `tests/test_automation.py`, `tests/test_codex_client.py` (v17).
 - **Зависит от:** поток 16, 15.2, 0B.5.
+
+- **Реализовано:** `bridge-automation/tests/proof.rs` запускает настоящий
+  `run_worker` с локальным OpenCode HTTP-double: production checkout/server,
+  dispatch/session/observation, verifier, acceptance, inheritance и materializer.
+  Workflow fix→consumer→final доставляет cumulative result, сохраняет HEAD/index;
+  injected crashes после submit/accept восстанавливаются без второго prompt.
+  Остальные control/revision/delivery boundary cases покрыты существующими tests.
+  Настоящие модели не вызывались; full live Codex+OpenCode proof не заявляется.
 
 ## Поток 16. Approved automatic plan execution (v17, не завершён)
 

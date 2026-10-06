@@ -74,6 +74,7 @@ dependencies = [
  "bridge-git",
  "bridge-mcp",
  "bridge-path-policy",
+ "bridge-runtime",
  "bridge-storage",
  "bridge-verifier",
  "bridge-worker",

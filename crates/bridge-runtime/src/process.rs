@@ -97,7 +97,10 @@ pub(crate) fn write_record(path: &Path, record: &ProcessRecord) -> Result<(), Ru
         file.write_all(&serde_json::to_vec(record).map_err(|_| RuntimeError::Record)?)
             .map_err(|_| RuntimeError::Io)?;
         file.sync_all().map_err(|_| RuntimeError::Io)?;
-        fs::rename(&temporary, path).map_err(|_| RuntimeError::Io)
+        fs::rename(&temporary, path).map_err(|_| RuntimeError::Io)?;
+        fs::File::open(path.parent().ok_or(RuntimeError::Binding)?)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| RuntimeError::Io)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);

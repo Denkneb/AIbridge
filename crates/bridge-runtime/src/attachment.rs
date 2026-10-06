@@ -60,6 +60,7 @@ pub fn resolve(
     attach: bool,
     timeout: Duration,
 ) -> Result<Target, RuntimeError> {
+    crate::project::validate(project, layout)?;
     let mut view = project.clone();
     let mut session = None;
     if let Some(id) = task {

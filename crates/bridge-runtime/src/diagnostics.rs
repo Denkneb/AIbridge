@@ -153,6 +153,9 @@ pub fn snapshot(layout: &RustStateLayout) -> Result<Value, &'static str> {
     )
 }
 pub fn status(project: &ProjectEntry, layout: &RustStateLayout, timeout: Duration) -> Value {
+    if crate::project::validate(project, layout).is_err() {
+        return json!({"project_id":project.id(),"ready":false,"servers":{"opencode":{"ready":false,"managed":false,"process_record":"invalid"},"mcp":{"ready":false,"managed":false,"process_record":"invalid"}},"snapshot":{"project_id":project.id(),"error":"state_unavailable"}});
+    }
     let mut servers = json!({});
     let mut all = true;
     for kind in ["opencode", "mcp"] {

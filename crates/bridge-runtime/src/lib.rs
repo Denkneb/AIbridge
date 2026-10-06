@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod hook;
 pub mod lock;
 mod process;
+pub mod project;
 pub mod readiness;
 use bridge_config::{Endpoint, ProjectEntry};
 use bridge_domain::{TaskId, TaskStatus};
@@ -41,6 +42,7 @@ pub enum RuntimeError {
     Credentials,
     Spawn,
     Readiness,
+    ProjectReadiness,
     Io,
     Unsupported,
 }
@@ -57,6 +59,7 @@ impl fmt::Display for RuntimeError {
             Self::Credentials => "runtime_credentials_unavailable",
             Self::Spawn => "runtime_spawn_failed",
             Self::Readiness => "worktree_server_unavailable",
+            Self::ProjectReadiness => "project_server_unavailable",
             Self::Io => "runtime_io_error",
             Self::Unsupported => "pidfd_unsupported",
         })

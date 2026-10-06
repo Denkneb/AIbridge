@@ -12,6 +12,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  setup/doctor/start/stop   Explicit Rust-owned lifecycle (--all supported)
   hook-status      Fail-open read-only Codex UserPromptSubmit context
   console/attach-opencode  Attach to project or task-scoped OpenCode (--task ID)
   status           Read-only runtime readiness/diagnostics (--json, --all)

@@ -9,6 +9,11 @@ use std::{
 };
 pub enum Action {
     Hook,
+    Lifecycle {
+        command: String,
+        all: bool,
+        json: bool,
+    },
     Attach {
         task: Option<bridge_domain::TaskId>,
         session: bool,
@@ -21,7 +26,16 @@ pub enum Action {
 pub fn is_command(s: &OsStr) -> bool {
     matches!(
         s.to_str(),
-        Some("status" | "hook-status" | "console" | "attach-opencode")
+        Some(
+            "status"
+                | "hook-status"
+                | "console"
+                | "attach-opencode"
+                | "setup"
+                | "doctor"
+                | "start"
+                | "stop"
+        )
     )
 }
 pub fn parse(
@@ -30,6 +44,16 @@ pub fn parse(
     json: bool,
     all: bool,
 ) -> Result<Action, &'static str> {
+    if matches!(
+        command.to_str(),
+        Some("setup" | "doctor" | "start" | "stop")
+    ) {
+        return Ok(Action::Lifecycle {
+            command: command.to_str().unwrap().into(),
+            all,
+            json,
+        });
+    }
     if command == "console" || command == "attach-opencode" {
         if json || all {
             return Err("unsupported attach flag");
@@ -65,6 +89,7 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
                 .ok_or("project not configured")?;
             let layout = RustStateLayout::new(args.state_root, project.id().clone())
                 .map_err(|_| "state invalid")?;
+            bridge_runtime::project::validate(project, &layout).map_err(|_| "state invalid")?;
             let briefs =
                 bridge_runtime::diagnostics::briefs(&layout).map_err(|_| "state unavailable")?;
             if let Some(context) =
@@ -79,6 +104,80 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
     }
     let config = load_config_with_state_root(&args.config, &args.state_root)
         .map_err(|_| "config unavailable")?;
+    if let Action::Lifecycle { command, all, json } = action {
+        let selected = if all {
+            config.projects().values().collect::<Vec<_>>()
+        } else {
+            vec![
+                config
+                    .project(&args.project)
+                    .ok_or("project not configured")?,
+            ]
+        };
+        let projects = selected
+            .iter()
+            .map(|p| {
+                Ok((
+                    (*p).clone(),
+                    RustStateLayout::new(args.state_root.clone(), p.id().clone())
+                        .map_err(|_| "state invalid")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if command == "doctor" {
+            let mut reports = vec![];
+            let mut ready = true;
+            for (p, l) in &projects {
+                let mut report =
+                    bridge_runtime::diagnostics::status(p, l, Duration::from_millis(300));
+                let credentials = p.read_password().is_ok()
+                    && p.read_opencode_env().is_ok()
+                    && (p.mcp_endpoint().is_none()
+                        || p.read_mcp_token().is_ok_and(|v| v.is_some()));
+                let ok = credentials
+                    && report["snapshot"].get("error").is_none()
+                    && report["servers"]["opencode"]["ready"] == true
+                    && (p.mcp_endpoint().is_none() || report["servers"]["mcp"]["ready"] == true);
+                report["ready"] = json!(ok);
+                report["credentials_ok"] = json!(credentials);
+                ready &= ok;
+                reports.push(report);
+            }
+            if json {
+                println!("{}", json!({"schema_version":1,"projects":reports}));
+            } else {
+                for r in reports {
+                    println!(
+                        "{}: {}",
+                        r["project_id"].as_str().unwrap(),
+                        if r["ready"] == true {
+                            "ready"
+                        } else {
+                            "not ready"
+                        }
+                    );
+                }
+            }
+            return Ok(if ready {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
+        let report = match command.as_str() {
+            "setup" => bridge_runtime::project::setup(&projects),
+            "start" => bridge_runtime::project::start(
+                &projects,
+                &bridge_runtime::ServerCommand::opencode(),
+                &std::env::current_exe().map_err(|_| "executable unavailable")?,
+                Duration::from_secs(20),
+            ),
+            _ => bridge_runtime::project::stop(&projects),
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{report}");
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Action::Attach { task, session } = action {
         use std::os::unix::process::ExitStatusExt;
         let project = config

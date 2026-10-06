@@ -703,7 +703,11 @@ impl HttpTransport {
         head.push_str(&self.auth.header_value());
         head.push_str("\r\n");
         head.push_str("accept: ");
-        head.push_str(ACCEPT_HEADER);
+        head.push_str(if matches!(&self.auth, TransportAuth::Bearer(_)) {
+            "application/json, text/event-stream"
+        } else {
+            ACCEPT_HEADER
+        });
         head.push_str("\r\n");
         head.push_str("connection: close\r\n");
         if let Some(body) = &request.body {

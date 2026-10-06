@@ -97,6 +97,15 @@ pub fn record_state(
     if identity(record.pid).as_deref() != Some(&record.start) || boot_id()? != record.boot_id {
         return Ok("stale");
     }
+    require_main_record(&record, project, kind)?;
+    Ok("live")
+}
+
+pub(crate) fn require_main_record(
+    record: &crate::process::ProcessRecord,
+    project: &ProjectEntry,
+    kind: &str,
+) -> Result<(), RuntimeError> {
     let endpoint = if kind == "opencode" {
         project.opencode_endpoint().url()
     } else {
@@ -120,5 +129,5 @@ pub fn record_state(
     {
         return Err(RuntimeError::ForeignProcess);
     }
-    Ok("live")
+    Ok(())
 }

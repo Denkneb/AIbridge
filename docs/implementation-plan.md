@@ -4191,6 +4191,17 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   fixtures verifier-ы, compatibility smoke direct/worktree/parallel.
   Запускается только на границе потока/в CI, не внутри каждой задачи.
 
+- **Lifecycle реализован:** `setup` создаёт только отдельный Rust-owned state
+  и отсутствующие private credentials; `doctor`/`status` читают state без
+  инициализации. `start` запускает main OpenCode и настоящий Rust MCP,
+  проверяет health/root/OpenAPI и initialize/tools/project binding, повторно
+  использует здоровые сервисы. `stop` сигналит только PID/start/boot-checked
+  собственные записи; stale записи удаляются без сигнала. Manager lock общий
+  с worktree startup. При ошибке multi-project start откатываются только
+  новые процессы. Integration checks покрывают оба сервиса, repeat start/stop,
+  console argv/exit, foreign live record, symlink credentials, foreign state и
+  независимые ошибки `status --all`. Полная матрица проверяется отдельно ниже.
+
 ### 15.5. Automation workflow proof (synthetic завершён; live optional)
 
 - **Цель:** synthetic multi-step Git workflow с deterministic model doubles,

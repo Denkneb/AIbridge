@@ -22,6 +22,7 @@ bridge-worker.workspace = true
 bridge-delivery.workspace = true
 serde_json.workspace = true
 nix.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 bridge-git.workspace = true

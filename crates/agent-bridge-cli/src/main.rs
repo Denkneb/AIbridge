@@ -1,6 +1,7 @@
 //! Runtime CLI. Implemented commands require explicit Rust configuration/state.
 mod add_project;
 mod automation;
+mod prune;
 mod services;
 use bridge_config::load_config_with_state_root;
 use bridge_domain::TaskId;
@@ -13,6 +14,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  prune            Preview/delete terminal history (--older-than 90d, --apply, --vacuum)
   add-project WORKSPACE --id ID  Preview or apply a new project binding
   setup/doctor/start/stop   Explicit Rust-owned lifecycle (--all supported)
   hook-status      Fail-open read-only Codex UserPromptSubmit context
@@ -51,6 +53,7 @@ struct LaunchArgs {
     state_root: PathBuf,
 }
 enum Action {
+    Prune(prune::Args),
     AddProject(add_project::Args),
     Help,
     Version,
@@ -74,6 +77,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
     let Some(command) = args.next() else {
         return Err("command required; use --help");
     };
+    if command == "prune" {
+        return prune::parse(args).map(Action::Prune);
+    }
     if command == "add-project" {
         return add_project::parse(args).map(Action::AddProject);
     }
@@ -397,6 +403,7 @@ fn deliver(args: LaunchArgs, id: TaskId, mode: DeliveryAction) -> Result<ExitCod
 fn main() -> ExitCode {
     let hook = env::args_os().nth(1).is_some_and(|a| a == "hook-status");
     match parse(env::args_os().skip(1)) {
+        Ok(Action::Prune(args)) => finish(prune::run(args)),
         Ok(Action::AddProject(args)) => finish(add_project::run(args)),
         Ok(Action::Help) => {
             println!("{HELP}");

@@ -132,6 +132,8 @@ pub use session::{
 };
 pub use startup::{DEFAULT_STARTUP_GRACE, StartupGrace, StartupObservation};
 
+pub mod quarantine;
+
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;

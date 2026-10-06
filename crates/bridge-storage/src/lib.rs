@@ -162,6 +162,8 @@
 //! or mutates existing state. Scope authorization and runtime parallel workers
 //! remain the responsibility of higher-level consumers.
 
+pub mod prune;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
@@ -4013,6 +4015,7 @@ mod tests {
     mod delivery_policy;
     mod dependencies;
     mod mcp_lifecycle;
+    mod prune;
     mod recovery;
     mod schema16;
     mod schema17;

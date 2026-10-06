@@ -16,6 +16,7 @@ dependencies = [
  "bridge-storage",
  "bridge-worker",
  "nix 0.27.1",
+ "rusqlite",
  "serde_json",
  "uuid",
 ]

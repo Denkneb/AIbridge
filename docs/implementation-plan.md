@@ -3770,7 +3770,7 @@ Delta v17: вывод execution/delivery modes из validated config
   credentials 0600 и project state/secrets directories 0700. Повтор идентичной
   привязки не пишет. Targeted integration tests (2), config/CLI Clippy прошли.
 
-### 9.16. History prune gates (не завершено)
+### 9.16. History prune gates (завершено)
 
 - **Цель:** управляемая очистка истории.
 - **Source evidence:** `prune.py:27-279`; `cli.py:423-497,877-898`;
@@ -3780,7 +3780,7 @@ Delta v17: вывод execution/delivery modes из validated config
   statuses never auto-deleted; WAL checkpoint always, VACUUM only explicit.
 - **Targeted checks:** prune gate/atomic/vacuum tests.
 
-### 9.17. Quarantine prune CLI (не завершено)
+### 9.17. Quarantine prune CLI (завершено)
 
 - **Цель:** crash-safe физическая очистка orphan worktree.
 - **Source evidence:** `quarantine.py:55-860`; `cli.py:423-497,877-895`;
@@ -3792,6 +3792,19 @@ Delta v17: вывод execution/delivery modes из validated config
   recovery.
 - **Targeted checks:** quarantine crash-resume/snapshot tests.
 - **Зависит от:** 3.12e, 7.16d.
+
+- **Реализовано 2026-10-06:** Rust `prune` validates bounded ASCII duration,
+  vacuum/apply and quarantine/history option gates before state access. History
+  dry-run uses owned read-only state; BEGIN IMMEDIATE reselects terminal/age/
+  removed-worktree candidates and atomically deletes dependent rows. Explicit
+  `--worktree` retains terminal status and uses existing proven cleanup fences;
+  checkpoint and optional vacuum run after committed deletion. Quarantine
+  preview includes inode/device identities and exact-list snapshot. Apply holds
+  worker/task/admission fences, revalidates registry/path/process/ownership/Git
+  evidence and performs exact orphan Git move/remove only. Plain rename and
+  partially moved registered slots resume before durable moved/removed changes.
+  Storage prune tests (3), quarantine real-Git integration tests (3), targeted
+  all-targets Clippy passed. No user history or quarantine was pruned.
 
 ### 9.18. `deliver-task` (завершено)
 

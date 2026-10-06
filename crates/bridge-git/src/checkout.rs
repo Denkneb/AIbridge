@@ -401,3 +401,84 @@ pub fn remove_checkout(
     }
     Ok(())
 }
+
+/// Read-only identity proof for an exact orphan/quarantine checkout.
+/// # Errors
+/// Refuses a foreign common directory, symlinks and broken admin back links.
+pub fn probe_orphan(workspace: &Path, checkout: &Path) -> Result<(), CheckoutError> {
+    safe_directory(checkout)?;
+    if git_path(checkout, "--show-toplevel")? != checkout
+        || git_path(checkout, "--git-common-dir")? != main_common_dir(workspace)?
+    {
+        return Err(CheckoutError::Mismatch);
+    }
+    let file = checkout.join(".git");
+    if fs::symlink_metadata(&file)
+        .map_err(|_| CheckoutError::Io)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(CheckoutError::Traversal);
+    }
+    let raw = fs::read_to_string(&file).map_err(|_| CheckoutError::Io)?;
+    let admin = PathBuf::from(
+        raw.strip_prefix("gitdir:")
+            .ok_or(CheckoutError::Mismatch)?
+            .trim(),
+    );
+    if !admin.is_absolute() {
+        return Err(CheckoutError::Mismatch);
+    }
+    let admin = fs::canonicalize(admin).map_err(|_| CheckoutError::Io)?;
+    if admin.parent() != Some(main_common_dir(workspace)?.join("worktrees").as_path())
+        || git_path(checkout, "--git-dir")? != admin
+        || Path::new(
+            fs::read_to_string(admin.join("gitdir"))
+                .map_err(|_| CheckoutError::Io)?
+                .trim(),
+        ) != file
+        || !registrations(workspace)?.contains(checkout)
+    {
+        return Err(CheckoutError::Mismatch);
+    }
+    Ok(())
+}
+/// Moves only a proven orphan checkout; the caller owns its parent slots.
+/// # Errors
+/// Refuses existing destination and proves the updated registration afterwards.
+pub fn move_orphan(workspace: &Path, source: &Path, dest: &Path) -> Result<(), CheckoutError> {
+    probe_orphan(workspace, source)?;
+    safe_directory(dest)?;
+    if dest.exists() {
+        return Err(CheckoutError::Mismatch);
+    }
+    git(
+        workspace,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("move"),
+            source.as_os_str(),
+            dest.as_os_str(),
+        ],
+    )?;
+    probe_orphan(workspace, dest)
+}
+/// Removes only one exact proven quarantine checkout, never global pruning.
+/// # Errors
+/// Refuses foreign/broken registration and verifies removal.
+pub fn remove_orphan(workspace: &Path, checkout: &Path) -> Result<(), CheckoutError> {
+    probe_orphan(workspace, checkout)?;
+    git(
+        workspace,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            checkout.as_os_str(),
+        ],
+    )?;
+    if checkout.exists() || registrations(workspace)?.contains(checkout) {
+        return Err(CheckoutError::Mismatch);
+    }
+    Ok(())
+}

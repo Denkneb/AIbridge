@@ -386,3 +386,47 @@ pub fn recover_project_worktrees(
     }
     Ok(outcomes)
 }
+
+/// Explicit history maintenance retains task status while removing its checkout.
+/// # Errors
+/// Only terminal tasks and created/removing records can be cleaned; both worker
+/// fences stay held. Interrupted removing records resume through existing cleanup.
+pub fn prune_terminal_worktree(
+    layout: &RustStateLayout,
+    project: &ProjectEntry,
+    id: TaskId,
+    layouts: &[&RustStateLayout],
+) -> Result<(), ExecutionError> {
+    let _worker = match WorkerLock::try_acquire(layout).map_err(|_| ExecutionError::Ownership)? {
+        WorkerLockOutcome::Acquired(g) => g,
+        WorkerLockOutcome::Busy => return Err(ExecutionError::Round),
+    };
+    let _task =
+        match WorkerLock::try_acquire_task(layout, id).map_err(|_| ExecutionError::Ownership)? {
+            WorkerLockOutcome::Acquired(g) => g,
+            WorkerLockOutcome::Busy => return Err(ExecutionError::Round),
+        };
+    let mut storage = layout.open().map_err(|_| ExecutionError::Ownership)?;
+    let task = owned_task(&storage, project, id)?;
+    if !matches!(
+        task.status,
+        TaskStatus::Accepted | TaskStatus::Closed | TaskStatus::Failed
+    ) {
+        return Err(ExecutionError::Binding);
+    }
+    let record = storage
+        .get_worktree(id, project.id())
+        .map_err(|_| ExecutionError::Storage)?
+        .ok_or(ExecutionError::MissingRecord)?;
+    if !matches!(
+        record.status,
+        WorktreeStatus::Created | WorktreeStatus::Removing | WorktreeStatus::Removed
+    ) {
+        return Err(ExecutionError::Binding);
+    }
+    if cleanup(&mut storage, layout, project, &task, layouts)? {
+        Ok(())
+    } else {
+        Err(ExecutionError::Runtime)
+    }
+}

@@ -236,6 +236,19 @@ impl ProjectService {
                     .optional()
                     .map_err(|_| "delivery metadata invalid")?
                     .flatten();
+                let refusal: Option<(String, String)> = tx.query_row("SELECT message,created_at FROM events WHERE task_id=?1 AND kind='delivery_refused' ORDER BY id DESC LIMIT 1", [t.task_id.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(|_| "delivery refusal invalid")?;
+                let refusal = refusal.map(|(message, time)| {
+                    let code = message.split(':').next().unwrap_or("");
+                    let code = if !code.is_empty()
+                        && code.len() <= 64
+                        && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                    {
+                        code
+                    } else {
+                        "unavailable"
+                    };
+                    json!({"code":code,"created_at":safe_text(&time)})
+                });
                 let mut rounds = vec![];
 
                 let mut stmt=tx.prepare("SELECT round_number,status,structured_findings,checkpoint_json,verifier_json,result_json FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 100").map_err(|_|"round data invalid")?;
@@ -279,7 +292,7 @@ impl ProjectService {
                         Err(_) => json!({"gate":"corrupt"}),
                     },
                 };
-                tasks.push(json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":rounds,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}));
+                tasks.push(json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"delivery_refusal":refusal,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":rounds,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}));
             }
             drop(tx);
             let store = bridge_storage::automation::AutomationRunStore::new(layout);

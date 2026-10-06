@@ -250,6 +250,7 @@ fn wal_revision_and_usage_include_rounds_outside_visible_limit() {
     for n in 1..=101 {
         tx.execute("INSERT INTO rounds(task_id,project_id,round_number,request_id,payload_hash,kind,status,result_json,created_at,updated_at) VALUES (?1,'primary',?2,?3,'hash','initial','completed',?4,'now','now')", rusqlite::params![id,n,format!("round-{n}"),r#"{"usage":{"input":1}}"#]).unwrap();
     }
+    tx.execute("INSERT INTO events(task_id,kind,message,created_at) VALUES (?1,'delivery_refused','scope_overlap: /private/journal','now')", [&id]).unwrap();
     tx.commit().unwrap();
     assert_ne!(
         revision,
@@ -269,6 +270,11 @@ fn wal_revision_and_usage_include_rounds_outside_visible_limit() {
         .unwrap();
     assert_eq!(result["tasks"][0]["rounds"].as_array().unwrap().len(), 100);
     assert_eq!(result["tasks"][0]["usage"]["input"], 101);
+    assert_eq!(
+        result["tasks"][0]["delivery_refusal"]["code"],
+        "scope_overlap"
+    );
+    assert!(!result.to_string().contains("/private/journal"));
     assert_eq!(result["waiting_count"], 0);
     assert!(result["reservations"].as_array().unwrap().is_empty());
 }

@@ -55,6 +55,15 @@ pub fn run(mut args: Args) -> Result<ExitCode, String> {
     let plan = bridge_config::migration::plan(&args.options)?;
     println!("{}", plan.report());
     if args.apply {
+        let config = bridge_config::load_config_with_state_root(
+            &args.options.config,
+            &args.options.state_root,
+        )
+        .map_err(|_| "config unavailable")?;
+        let _runtime =
+            bridge_runtime::project::config_edit_guard(&config, &args.options.state_root).map_err(
+                |_| "stop tasks, services and controllers before migrating configuration",
+            )?;
         plan.apply()?;
         println!("migration applied");
     }

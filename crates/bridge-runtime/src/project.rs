@@ -363,3 +363,78 @@ pub fn stop(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runti
     }
     Ok(json!({"status":"stopped","processes":stopped}))
 }
+
+/// Holds every manager/admission/controller/worker fence during shared config edits.
+/// Existing owned namespaces must have no unfinished tasks or service records.
+pub struct ConfigEditGuard {
+    _manager: Option<ManagerLock>,
+    _files: Vec<fs::File>,
+}
+/// # Errors
+/// Refuses foreign state, active tasks, retained service records or busy locks.
+pub fn config_edit_guard(
+    config: &bridge_config::Config,
+    state: &Path,
+) -> Result<ConfigEditGuard, RuntimeError> {
+    use std::os::fd::AsRawFd;
+    let mut layouts = vec![];
+    for project in config.projects().values() {
+        let layout = RustStateLayout::new(state.to_owned(), project.id().clone())
+            .map_err(|_| RuntimeError::Binding)?;
+        validate(project, &layout)?;
+        if layout.database().exists() {
+            layout
+                .open_readonly()
+                .map_err(|_| RuntimeError::Ownership)?;
+            layouts.push(layout);
+        } else if layout.marker().exists() {
+            return Err(RuntimeError::Ownership);
+        }
+    }
+    let refs = layouts.iter().collect::<Vec<_>>();
+    let manager = if refs.is_empty() {
+        None
+    } else {
+        Some(ManagerLock::acquire(&refs, Duration::ZERO)?)
+    };
+    let mut files = vec![];
+    for layout in &layouts {
+        for name in ["admission.lock", "worker.lock", "controller.lock"] {
+            let path = layout.project_dir().join(name);
+            check_path(&path, false)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+                .open(path)
+                .map_err(|_| RuntimeError::Io)?;
+            nix::fcntl::flock(
+                file.as_raw_fd(),
+                nix::fcntl::FlockArg::LockExclusiveNonblock,
+            )
+            .map_err(|_| RuntimeError::LockBusy)?;
+            files.push(file);
+        }
+        let storage = layout
+            .open_readonly()
+            .map_err(|_| RuntimeError::Ownership)?;
+        if storage
+            .count_tasks(layout.project_id(), true)
+            .map_err(|_| RuntimeError::Ownership)?
+            > 0
+        {
+            return Err(RuntimeError::LockBusy);
+        }
+        for kind in ["opencode", "mcp"] {
+            if read_record(&layout.project_dir().join(format!("{kind}.process.json")))?.is_some() {
+                return Err(RuntimeError::LockBusy);
+            }
+        }
+    }
+    Ok(ConfigEditGuard {
+        _manager: manager,
+        _files: files,
+    })
+}

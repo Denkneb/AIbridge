@@ -4655,3 +4655,12 @@ round, verifier, on_accept delivery и idempotent repeat; реальный OpenC
 projects, recovery/crash), runtime diagnostics/maintenance CLI 9.15–9.20,
 automatic plan coordinator 16.x и GUI. Smoke одного worktree task не закрывает
 эту матрицу и не доказывает полную parity со всем Python runtime.
+
+### Shared config edit fences — 2026-10-06
+
+CLI add-project/migration and desktop settings now retain the sorted manager
+fence plus each existing Rust namespace's admission, worker and controller locks.
+They recheck unfinished tasks and retained main service records before writes.
+Two stopped namespaces under one root are locked together without self-contention;
+active tasks fail closed. No Python runtime database/history is inspected.
+CLI add-project/migration regressions and desktop config-edit tests passed.

@@ -171,6 +171,18 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
     if !args.apply {
         return Ok(ExitCode::SUCCESS);
     }
+    let existing = validate_config_text(text, &config, Some(layout.state_root()))
+        .map_err(|e| e.to_string())
+        .or_else(|e| {
+            if original.is_none() || text.trim().is_empty() {
+                validate_config_text("[projects]\n", &config, Some(layout.state_root()))
+                    .map_err(|e| e.to_string())
+            } else {
+                Err(e)
+            }
+        })?;
+    let _runtime = bridge_runtime::project::config_edit_guard(&existing, layout.state_root())
+        .map_err(|_| "stop tasks, services and controllers before changing configuration")?;
     let parent = config.parent().ok_or("config directory required")?;
     fs::create_dir_all(parent).map_err(|_| "config directory creation failed")?;
     let lock = parent.join(".agent-bridge-config.lock");

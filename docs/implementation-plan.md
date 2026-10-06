@@ -4776,3 +4776,16 @@ from the same host worktree port range. The parallel proof still runs both write
 concurrently inside its root and verifies overlap. Worker join failures no longer
 poison the fixture mutex or trigger a second panic in Drop. Both production-worker
 proofs and targeted automation Clippy passed.
+
+### Migration rehearsal and short service soak — 2026-10-06
+
+`tools/migration_rehearsal.py` passed with real OpenCode/MCP on two disposable
+projects. Fresh v17 empty Rust ownership, private credentials/namespace, read-only
+preflight and foreign-owner refusal verified. Actual MCP crash was detected;
+Stop/Start recovered both services. Exact config backup/rollback and sequential
+second-project lifecycle passed. 63 readiness samples, 0 steady readiness failures,
+1 bounded startup retry; timed soak 86.561 seconds. Evidence:
+`fixtures/runtime/migration-rehearsal-2026-10-06.json`.
+This closes disposable rehearsal preparation, not a user project's cutover or
+sustained production soak. Actual 14.1/14.5/14.7–14.9 operational acceptance awaits
+selected project/config and an agreed observation period; Python remains fallback.

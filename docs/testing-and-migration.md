@@ -159,3 +159,13 @@ Runs a fixed two-step plan and final verifier with private copied credentials,
 independent real Codex review, OpenCode worktrees and cumulative delivery.
 Maximum workflow time is 600 seconds; only safe labels and booleans survive.
 Uses provider tokens; crash/revision/control cases remain in offline proofs.
+
+## Migration rehearsal and operational gates
+
+[Migration runbook](migration-runbook.md) gives per-project cutover, fresh v17,
+backup/rollback, crash/recovery and soak procedure. `tools/migration_rehearsal.py`
+uses two disposable projects and real managed OpenCode/MCP services. Its samples
+and startup retries are reported separately; a failed steady readiness sample
+fails the proof. The successful 2026-10-06 report records 63 samples with no steady
+failures and one startup retry over an 86.561-second soak. A working project's
+cutover and longer observation are tracked separately after project selection.

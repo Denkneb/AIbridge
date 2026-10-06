@@ -1,0 +1,26 @@
+{
+  "scope": "disposable two-project v17 migration rehearsal and short service soak",
+  "outcome": "passed",
+  "checks": {
+    "config_backup": true,
+    "readonly_preflight": true,
+    "foreign_owner_refused": true,
+    "fresh_v17_empty": true,
+    "rust_owner": true,
+    "private_credentials": true,
+    "private_namespace": true,
+    "idempotent_start": true,
+    "crash_detected": true,
+    "restart_after_crash": true,
+    "rollback_services_stopped": true,
+    "rollback_config_exact": true,
+    "sequential_second_project": true
+  },
+  "metrics": {
+    "readiness_failures": 0,
+    "samples": 63,
+    "startup_probe_retries": 1,
+    "pilot_start_seconds": 11.75,
+    "soak_seconds": 86.561
+  }
+}

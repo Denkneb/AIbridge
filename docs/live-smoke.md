@@ -67,3 +67,18 @@ byte-exact preservation of HEAD/index. [Sanitized report](fixtures/runtime/live-
 Auth files were copied into private disposable homes; user project/history and
 Python runtime state were not used. The bounded successful run complements
 existing deterministic crash/revision/control proofs.
+
+## Самостоятельный запуск без переключения Python — 2026-10-06
+
+После уточнения пользователя повторно проверен полный Rust workflow на новом
+одноразовом Git-проекте: настоящие Codex/OpenCode выполнили два шага и финальную
+проверку. Статус `completed`, три принятые задачи и три rounds; итоговые bytes
+доставлены в основной checkout, HEAD и bytes Git index сохранены.
+[Отчёт](fixtures/runtime/standalone-automation-2026-10-06.json).
+
+Отдельно прошёл lifecycle двух новых проектов: fresh v17, приватные credentials,
+идемпотентный Start, обнаружение падения MCP, Stop/Start recovery и остановка
+сервисов. Все 13 readiness samples успешны, startup retries — 0; короткая
+обкатка — 11.98 секунды. [Отчёт](fixtures/runtime/standalone-lifecycle-2026-10-06.json).
+Длительная эксплуатационная обкатка остаётся отдельной проверкой. Тестовые
+проекты/state удалены после завершения, работающие сервисы не оставлены.

@@ -19,6 +19,7 @@ use std::{
     time::Duration,
 };
 pub enum Action {
+    Interactive,
     Start(PathBuf),
     Status(Option<RunId>),
     Pause(Option<RunId>),
@@ -57,9 +58,7 @@ pub fn parse(
             (true, Some(p)) => Action::Start(p.into()),
             (true, None) => return Err("--auto requires --plan"),
             (false, Some(_)) => return Err("--plan requires --auto"),
-            (false, None) => {
-                return Err("--auto --plan required; interactive Codex controller not implemented");
-            }
+            (false, None) => Action::Interactive,
         },
         "automation-status" => Action::Status(id),
         "automation-pause" => Action::Pause(id),
@@ -77,9 +76,26 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
         .ok_or("project not configured")?;
     let layout =
         RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    if matches!(action, Action::Interactive) {
+        use std::os::unix::process::ExitStatusExt;
+        let executable = std::env::current_exe().map_err(|_| "bridge executable unavailable")?;
+        let status = bridge_runtime::codex_controller::launch_codex(
+            project,
+            &config.linked_projects(&args.project),
+            &layout,
+            &executable,
+            &path,
+        )
+        .map_err(|e| e.to_string())?;
+        let code = status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
+        return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
+    }
     let store = AutomationRunStore::new(layout.clone());
     let executable = std::env::current_exe().map_err(|_| "bridge executable unavailable")?;
     let report = match action {
+        Action::Interactive => unreachable!("interactive launch returned"),
         Action::Start(plan) => {
             let bytes = read_bounded(&plan, 1_000_000)
                 .map_err(|_| "approved plan unavailable or exceeds 1MB")?;

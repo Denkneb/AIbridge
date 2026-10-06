@@ -67,7 +67,7 @@ fn token_var(project: &ProjectEntry) -> String {
 fn server_name(project: &ProjectEntry) -> String {
     format!("agent_bridge_{}", project.id())
 }
-fn check_bindings(
+pub(crate) fn check_bindings(
     primary: &ProjectEntry,
     linked: &[&ProjectEntry],
     layout: &RustStateLayout,
@@ -316,10 +316,10 @@ impl ControllerCommand {
     }
 }
 
-fn controller_env(
+pub(crate) fn controller_env(
     primary: &ProjectEntry,
     linked: &[&ProjectEntry],
-    config: &Path,
+    config: Option<&Path>,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Result<BTreeMap<OsString, OsString>> {
     let mut env: BTreeMap<_, _> = inherited.into_iter().collect();
@@ -328,7 +328,9 @@ fn controller_env(
             s == "AGENT_BRIDGE_MCP_TOKEN" || s.starts_with("AGENT_BRIDGE_MCP_TOKEN_")
         })
     });
-    env.insert("OPENCODE_CONFIG".into(), config.as_os_str().to_owned());
+    if let Some(config) = config {
+        env.insert("OPENCODE_CONFIG".into(), config.as_os_str().to_owned());
+    }
     env.remove(OsStr::new("OPENCODE_SERVER_PASSWORD"));
     env.remove(OsStr::new("OPENCODE_SERVER_USERNAME"));
     for (index, project) in std::iter::once(primary)
@@ -375,7 +377,7 @@ fn controller_env(
     Ok(env)
 }
 
-fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path::PathBuf, File)> {
+pub(crate) fn lock_controller(layout: &RustStateLayout) -> Result<File> {
     layout.initialize().map_err(|_| ControllerError::State)?;
     layout.open().map_err(|_| ControllerError::State)?;
     let dir = layout.project_dir();
@@ -410,6 +412,12 @@ fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path:
             ControllerError::Io
         }
     })?;
+    Ok(guard)
+}
+
+fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path::PathBuf, File)> {
+    let guard = lock_controller(layout)?;
+    let dir = layout.project_dir();
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let temp = dir.join(format!(
         ".controller-{}-{}.tmp",
@@ -458,7 +466,7 @@ pub fn launch_controller(
     let payload = build_controller_config(primary, linked, layout, bridge_exe, config_path)?;
     check_workspace_config(primary, linked)?;
     let path = layout.project_dir().join(CONFIG_FILENAME);
-    let env = controller_env(primary, linked, &path, std::env::vars_os())?;
+    let env = controller_env(primary, linked, Some(&path), std::env::vars_os())?;
     let (_, _guard) = write_config(layout, &payload)?;
     Command::new(&executable.program)
         .current_dir(primary.workspace())

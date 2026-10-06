@@ -27,3 +27,5 @@ rusqlite.workspace = true
 [dev-dependencies]
 bridge-git.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+toml.workspace = true

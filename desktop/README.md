@@ -38,8 +38,9 @@ enabled dialog permission.
 
 The terminal opens fixed Shell, OpenCode or Codex profiles. OpenCode uses the
 existing Rust controller; task attachment uses the proven task checkout/session
-router. Codex opens the installed interactive CLI in the selected workspace;
-this does not claim the separate interactive Codex controller parity task 9.12.
+router. Codex uses `agent-bridge launch-codex` with process-local primary/linked MCP
+wiring, durable delegation rules, read-only sandbox and bounded status hooks.
+Both controllers hold the shared controller fence until their child exits.
 Switching project/tab or resizing does not recreate an existing terminal.
 Open/Attach explicitly replaces it. Output queues and input chunks are bounded;
 output stays ordered and xterm preserves UTF-8 across chunks. Closing the window
@@ -95,3 +96,10 @@ ordinary Vite builds remove this test hook. The actual WebView proof covers ANSI
 alternate screen, wide/combining Unicode, selection, bracketed paste, 12,000-character
 paste without byte loss, and bounded scrollback. OS clipboard and mouse/provider
 interaction require separate live checks.
+
+“Во внешнем терминале” uses the installed `x-terminal-emulator -e` with the same
+fixed profile and project binding, without a shell command string. Missing terminal
+support produces an explicit error. External windows have their own lifecycle.
+Interactive `launch-codex` needs no `--auto`; `--auto --plan PATH` retains approved
+workflow behavior. MCP credentials stay in child environment, never argv or frontend.
+Codex hooks remain subject to Codex's ordinary hook trust flow.

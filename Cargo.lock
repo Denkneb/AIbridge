@@ -18,6 +18,7 @@ dependencies = [
  "nix 0.27.1",
  "rusqlite",
  "serde_json",
+ "toml",
  "uuid",
 ]
 

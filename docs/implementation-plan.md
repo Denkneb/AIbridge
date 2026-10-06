@@ -3704,7 +3704,16 @@ Delta v17: вывод execution/delivery modes из validated config
 
 ### 9.11. `console` и `attach-opencode`
 
-### 9.12. `launch-codex`
+### 9.12. `launch-codex` (interactive controller реализован)
+
+Process-local primary/linked stdio/HTTP MCP overrides, all six tool approvals,
+durable developer rules, multi_agent disabled, read-only sandbox and per-project
+bounded UserPromptSubmit hooks. No Codex config files are written. Provider env
+is preserved; inherited bridge tokens/executor auth are scrubbed. Shared controller
+fence and foreign-state guards apply; child exits/signals propagate to caller.
+`--auto --plan` keeps the existing coordinator path. Desktop Codex uses this CLI.
+Checks: TOML parsing of actual argv, local/remote env isolation and token preflight,
+controller contention, spawn recovery, signals, linked wiring and safe shell quoting.
 
 ### 9.13. `launch-opencode`
 
@@ -4732,3 +4741,12 @@ without loss. Selection verified; OS clipboard and mouse interaction remain live
 checks. Sanitized evidence: `fixtures/runtime/terminal-proof-2026-10-06.json`.
 Frontend typecheck/build and both real PTY integration tests passed. Smoke-only
 xterm access is compiled out of ordinary frontend builds.
+
+### Interactive controller and fallback — 2026-10-06
+
+9.12 interactive CLI/desktop routing implemented. The targeted block passed:
+3 Codex CLI, 3 automation CLI, 9 OpenCode CLI, 11 runtime controller tests;
+all-targets runtime/CLI Clippy passed. Terminal external fallback (13.15) routes
+fixed Shell/Codex/OpenCode/attach argv to `x-terminal-emulator -e`; external
+windows are independently managed. Actual provider TUI/Wayland proof follows
+separately. Auth or model availability is not inferred from offline tests.

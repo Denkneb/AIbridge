@@ -76,6 +76,102 @@ async fn lifecycle(
     .await
     .map_err(|_| "lifecycle action failed".to_owned())?
 }
+fn terminal_command(
+    p: &ProjectService,
+    project: &str,
+    profile: &str,
+    task: Option<String>,
+) -> Result<portable_pty::CommandBuilder, String> {
+    let (entry, _) = p.project(project).map_err(str::to_owned)?;
+    let executable = std::env::var_os("AIBRIDGE_CLI")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agent-bridge")
+        });
+    let mut cmd = match profile {
+        "shell" => {
+            if task.is_some() {
+                return Err("shell task binding is unsupported".into());
+            }
+            let mut c = portable_pty::CommandBuilder::new("/bin/bash");
+            c.args(["--noprofile", "--norc"]);
+            c
+        }
+        "opencode" | "codex" | "attach" => {
+            if !executable.is_absolute() || !executable.is_file() {
+                return Err("agent-bridge executable unavailable".into());
+            }
+            let mut c = portable_pty::CommandBuilder::new(executable);
+            c.arg(if profile == "attach" {
+                "attach-opencode"
+            } else if profile == "codex" {
+                "launch-codex"
+            } else {
+                "launch-opencode"
+            });
+            c.args(["--project", project, "--config"]);
+            c.arg(&p.config);
+            c.arg("--state-root");
+            c.arg(&p.state);
+            if let Some(task) = task {
+                task.parse::<bridge_domain::TaskId>()
+                    .map_err(|_| "invalid task")?;
+                if profile != "attach" {
+                    return Err("task requires attach profile".into());
+                }
+                c.args(["--task", &task]);
+            } else if profile == "attach" {
+                return Err("task required".into());
+            }
+            c
+        }
+        _ => return Err("unsupported terminal profile".into()),
+    };
+    cmd.cwd(entry.workspace());
+    cmd.env("TERM", "xterm-256color");
+    for key in [
+        "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_SERVER_USERNAME",
+        "AGENT_BRIDGE_MCP_TOKEN",
+    ] {
+        cmd.env_remove(key);
+    }
+    Ok(cmd)
+}
+#[tauri::command]
+async fn terminal_external(
+    state: State<'_, AppState>,
+    project: String,
+    profile: String,
+    task: Option<String>,
+) -> Result<(), String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cmd = terminal_command(&p, &project, &profile, task)?;
+        let mut external = std::process::Command::new("x-terminal-emulator");
+        external
+            .arg("-e")
+            .args(cmd.get_argv())
+            .current_dir(cmd.get_cwd().ok_or("terminal directory unavailable")?)
+            .env("TERM", "xterm-256color");
+        for key in [
+            "OPENCODE_SERVER_PASSWORD",
+            "OPENCODE_SERVER_USERNAME",
+            "AGENT_BRIDGE_MCP_TOKEN",
+        ] {
+            external.env_remove(key);
+        }
+        let mut child = external
+            .spawn()
+            .map_err(|_| "external terminal unavailable: install x-terminal-emulator".to_owned())?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    })
+    .await
+    .map_err(|_| "external terminal launch failed".to_owned())?
+}
 #[tauri::command]
 async fn terminal_open(
     state: State<'_, AppState>,
@@ -88,67 +184,7 @@ async fn terminal_open(
     let p = state.projects.clone();
     let t = state.terminals.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (entry, _) = p.project(&project).map_err(str::to_owned)?;
-        let executable = std::env::var_os("AIBRIDGE_CLI")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agent-bridge")
-            });
-        let mut cmd = match profile.as_str() {
-            "shell" => {
-                if task.is_some() {
-                    return Err("shell task binding is unsupported".into());
-                }
-                let mut c = portable_pty::CommandBuilder::new("/bin/bash");
-                c.args(["--noprofile", "--norc"]);
-                c
-            }
-            "codex" => {
-                if task.is_some() {
-                    return Err("Codex task attachment is unsupported".into());
-                }
-                let mut c = portable_pty::CommandBuilder::new("codex");
-                c.arg("--cd");
-                c.arg(entry.workspace());
-                c
-            }
-            "opencode" | "attach" => {
-                if !executable.is_absolute() || !executable.is_file() {
-                    return Err("agent-bridge executable unavailable".into());
-                }
-                let mut c = portable_pty::CommandBuilder::new(executable);
-                c.arg(if profile == "attach" {
-                    "attach-opencode"
-                } else {
-                    "launch-opencode"
-                });
-                c.args(["--project", &project, "--config"]);
-                c.arg(&p.config);
-                c.arg("--state-root");
-                c.arg(&p.state);
-                if let Some(task) = task {
-                    task.parse::<bridge_domain::TaskId>()
-                        .map_err(|_| "invalid task")?;
-                    if profile != "attach" {
-                        return Err("task requires attach profile".into());
-                    }
-                    c.args(["--task", &task]);
-                } else if profile == "attach" {
-                    return Err("task required".into());
-                }
-                c
-            }
-            _ => return Err("unsupported terminal profile".into()),
-        };
-        cmd.cwd(entry.workspace());
-        cmd.env("TERM", "xterm-256color");
-        for key in [
-            "OPENCODE_SERVER_PASSWORD",
-            "OPENCODE_SERVER_USERNAME",
-            "AGENT_BRIDGE_MCP_TOKEN",
-        ] {
-            cmd.env_remove(key);
-        }
+        let cmd = terminal_command(&p, &project, &profile, task)?;
         t.open(cmd, rows, cols).map_err(str::to_owned)
     })
     .await
@@ -249,6 +285,7 @@ fn main() {
             project_cancel,
             lifecycle,
             terminal_open,
+            terminal_external,
             terminal_read,
             terminal_write,
             terminal_resize,

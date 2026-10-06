@@ -4,6 +4,7 @@
 //! launcher uses existing HTTP MCP endpoints; it does not start bridge servers.
 //! Worktree callers hold the task lifecycle/worker fence.
 pub mod attachment;
+pub mod codex_controller;
 pub mod controller;
 pub mod controller_permissions;
 pub mod diagnostics;

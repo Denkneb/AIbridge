@@ -412,3 +412,30 @@ fn failed_spawn_releases_lock_and_does_not_expose_command_or_credentials() {
     assert_eq!(error.to_string(), "controller_spawn_failed");
     assert_eq!(f.launch(&config).unwrap().code(), Some(17));
 }
+
+#[test]
+fn codex_linked_remote_wiring_isolated_and_collisions_precede_state() {
+    use bridge_runtime::codex_controller::build_codex_args;
+    let f = Fixture::new();
+    let config = f.linked_config();
+    let primary = config.project("proj").unwrap();
+    let args = build_codex_args(
+        primary,
+        &config.linked_projects("proj"),
+        &f.layout(&config),
+        &f.root.join("bridge with 'quote"),
+        &f.root.join("projects.toml"),
+    )
+    .unwrap();
+    let joined = args
+        .iter()
+        .map(|a| a.to_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("mcp_servers.agent_bridge_peer="));
+    assert!(joined.contains("AGENT_BRIDGE_MCP_TOKEN_PEER"));
+    assert!(!joined.contains("primary-fixture-token"));
+    assert!(!joined.contains("peer-fixture-token"));
+    assert!(joined.contains("'\\\\''"));
+    assert!(!f.root.join("state").exists());
+}

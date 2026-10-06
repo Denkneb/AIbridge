@@ -78,7 +78,6 @@ impl Drop for Fixture {
 fn flags_and_plan_file_are_validated_before_runtime_mutation() {
     let f = Fixture::new();
     for args in [
-        vec![],
         vec!["--auto"],
         vec!["--plan", "missing"],
         vec!["--auto", "--auto", "--plan", "missing"],

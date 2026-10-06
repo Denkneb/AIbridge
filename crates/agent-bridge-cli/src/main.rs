@@ -22,7 +22,7 @@ Commands:
   hook-status      Fail-open read-only Codex UserPromptSubmit context
   console/attach-opencode  Attach to project or task-scoped OpenCode (--task ID)
   status           Read-only runtime readiness/diagnostics (--json, --all)
-  launch-codex      Start an approved workflow (--auto --plan PATH required)
+  launch-codex      Launch Codex controller; --auto --plan PATH starts an approved workflow
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
   automation-worker  Private detached workflow supervisor (--run UUID required)
   deliver-task      Build, validate or apply accepted worktree changes (--task ID)

@@ -13,7 +13,7 @@
   const binding=()=>document.querySelector('.terminal-pane .muted')?.textContent;
   for(let i=0;i<100&&binding()!=='proof · shell';i++)await new Promise(r=>setTimeout(r,30));
   if(binding()!=='proof · shell')throw Error('xterm_session_missing');checks.xterm_connected=true;
-  const terminal=document.querySelector('.terminal-host').smokeTerminal;
+  let terminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
   if(!terminal)throw Error('smoke_frontend_build_required');
   const renderHost=document.createElement('div');renderHost.style.cssText='position:fixed;left:-10000px;width:800px;height:600px';document.body.appendChild(renderHost);
   const renderer=new terminal.constructor({cols:80,rows:24,scrollback:5000});renderer.open(renderHost);
@@ -58,13 +58,89 @@
   const separator=document.querySelector('[role="separator"]'),before=separator.getAttribute('aria-valuenow');separator.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));await new Promise(r=>setTimeout(r,100));if(separator.getAttribute('aria-valuenow')===before)throw Error('split_unchanged');checks.split_keyboard=true;
   const settings=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('terminal_recreated_on_rerender');checks.terminal_survives_rerender=true;
+  const waitUI=async(check,label)=>{for(let i=0;i<150;i++){if(await check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
+  const setInput=(label,value)=>{const input=document.querySelector(`[aria-label="${label}"]`);if(!input)throw Error('missing_'+label);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
+  setInput('Модель исполнителя OpenCode','fixture/executor');setInput('Модель контроллера OpenCode','fixture/controller');await new Promise(r=>setTimeout(r,50));
+  document.querySelector('.settings form').requestSubmit();
+  await waitUI(()=>document.querySelector('[aria-label="Просмотр изменений"]'),'model_preview_missing');
+  [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
+  await waitUI(async()=>{const p=(await invoke('projects'))[0];return p.opencode_model==='fixture/executor'&&p.opencode_controller_model==='fixture/controller';},'models_not_saved');
+  await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'model_review_still_open');
+  await new Promise(r=>setTimeout(r,100));
+  setInput('Модель исполнителя OpenCode','');setInput('Модель контроллера OpenCode','');await new Promise(r=>setTimeout(r,50));
+  document.querySelector('.settings form').requestSubmit();await waitUI(()=>document.querySelector('[aria-label="Просмотр изменений"]'),'model_clear_preview');
+  [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
+  await waitUI(async()=>{const p=(await invoke('projects'))[0];return p.opencode_model===null&&p.opencode_controller_model===null;},'models_not_cleared');
+  checks.project_models_settings=true;
+  await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'model_clear_review_still_open');
+  await new Promise(r=>setTimeout(r,150));
+  const baseline=(await invoke('projects'))[0];
+  document.querySelector('.settings form').requestSubmit();await waitUI(()=>document.querySelector('[aria-label="Просмотр изменений"]'),'retry_preview_missing');
+  let externalReview=await invoke('project_preview',{draft:{...baseline,max_rounds:baseline.max_rounds+1},password:null,token:null});
+  await invoke('project_apply',{reviewId:externalReview.review_id});
+  [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
+  await waitUI(()=>document.querySelector('.settings .error'),'save_error_missing');
+  externalReview=await invoke('project_preview',{draft:baseline,password:null,token:null});await invoke('project_apply',{reviewId:externalReview.review_id});
+  await waitUI(()=>![...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').disabled,'retry_still_busy');
+  [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
+  await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'retry_not_saved');
+  if(document.querySelector('.settings .error'))throw Error('successful_save_retained_old_error');checks.successful_save_clears_error=true;
+
+  [...document.querySelectorAll('.opencode-editor button')].find(b=>b.textContent==='Загрузить').click();
+  await waitUI(()=>document.querySelector('[aria-label="Содержимое конфигурации OpenCode"]'),'config_editor_missing');
+  const editor=document.querySelector('[aria-label="Содержимое конфигурации OpenCode"]');
+  const edited='{\n  "$schema": "https://opencode.ai/config.json",\n  "instructions": []\n}\n';
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(editor,edited);editor.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,50));
+  [...document.querySelectorAll('.opencode-editor button')].find(b=>b.textContent==='Проверить конфигурацию OpenCode').click();
+  await waitUI(()=>document.querySelector('[aria-label="Просмотр конфигурации OpenCode"]'),'config_editor_preview_missing');
+  [...document.querySelectorAll('.opencode-editor button')].find(b=>b.textContent==='Сохранить конфигурацию OpenCode').click();
+  await waitUI(()=>document.querySelector('.opencode-editor [role="status"]'),'config_editor_save_failed');
+  const editedFile=await invoke('opencode_config_read',{project:'proof',file:'opencode.json'});if(editedFile.content!==edited)throw Error('config_editor_bytes');
+  checks.opencode_project_editor=true;
+
   document.querySelector('nav button').click();await new Promise(r=>setTimeout(r,100));
+  const bufferText=t=>Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i).translateToString(true)).join('\n');
+  const waitFor=async(check,label)=>{for(let i=0;i<150;i++){if(check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
+  terminal.input('\x15');terminal.paste("export TAB_MARKER=first; printf 'FIRST_TAB_READY\\n'");terminal.input('\r');
+  await waitFor(()=>bufferText(terminal).split('\n').includes('FIRST_TAB_READY'),'first_tab_ready');
+  const firstTab=document.querySelector('[role="tab"][aria-selected="true"]');
+  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
+  await waitFor(()=>document.querySelectorAll('.terminal-session').length===2,'second_tab_missing');
+  const secondTab=document.querySelector('[role="tab"][aria-selected="true"]');
+  const secondTerminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
+  await waitFor(()=>!secondTab.textContent.includes(' · запуск')&&bufferText(secondTerminal).trim().length>0,'second_tab_not_ready');
+  if(secondTerminal===terminal||!terminal.element.closest('[hidden]'))throw Error('first_tab_replaced');
+  terminal.paste("printf 'BACKGROUND_TAB_ALIVE\\n'");terminal.input('\r');
+  secondTerminal.paste("printf 'SECOND_TAB:%s\\n' ${TAB_MARKER:-independent}");secondTerminal.input('\r');
+  await waitFor(()=>bufferText(terminal).split('\n').includes('BACKGROUND_TAB_ALIVE')&&bufferText(secondTerminal).split('\n').includes('SECOND_TAB:independent'),'tab_process_isolation');
+  firstTab.click();await new Promise(r=>setTimeout(r,100));
+  if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==terminal)throw Error('tab_buffer_replaced');
+  secondTab.parentElement.querySelector('button[aria-label^="Закрыть"]').click();
+  await waitFor(()=>document.querySelectorAll('.terminal-session').length===1,'tab_close_missing');
+  terminal.paste("printf 'SURVIVING_TAB:%s\\n' $TAB_MARKER");terminal.input('\r');
+  await waitFor(()=>bufferText(terminal).split('\n').includes('SURVIVING_TAB:first'),'closing_tab_killed_peer');
+  checks.independent_terminal_tabs=true;checks.background_tab_output=true;checks.tab_close_preserves_peer=true;
   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();
+  const program=document.querySelector('[aria-label="Программа терминала"]');program.value='codex';program.dispatchEvent(new Event('change',{bubbles:true}));
+  await waitUI(()=>document.querySelector('[aria-label="Переменные окружения Codex"]')&&!document.querySelector('[aria-label="Переменные окружения Codex"]').disabled,'codex_env_not_loaded');
+  document.querySelector('.terminal-launch-env').open=true;
+  const envField=document.querySelector('[aria-label="Переменные окружения Codex"]');
+  const envText='export AIBRIDGE_TEST_ENV="project value"\n';
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(envField,envText);envField.dispatchEvent(new Event('input',{bubbles:true}));
+  await waitUI(()=>!document.querySelector('.terminal-launch-env button').disabled,'codex_env_not_dirty');
+  document.querySelector('.terminal-launch-env button').click();
+  await waitUI(async()=>await invoke('codex_env_read',{project:'proof'})===envText,'codex_env_not_persisted');
+  await waitUI(()=>document.querySelector('.terminal-launch-env .muted').textContent==='Сохранено для проекта','codex_env_status');
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(envField,'');envField.dispatchEvent(new Event('input',{bubbles:true}));
+  await waitUI(()=>!document.querySelector('.terminal-launch-env button').disabled,'codex_env_clear_not_dirty');document.querySelector('.terminal-launch-env button').click();
+  await waitUI(async()=>await invoke('codex_env_read',{project:'proof'})==='','codex_env_not_cleared');checks.codex_environment_persistence=true;
   const options=await invoke('smoke_options');
   if(options.live_tui){
    for(const profile of ['codex','opencode']){
     const select=document.querySelector('[aria-label="Программа терминала"]');select.value=profile;select.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,50));
     [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
+    await new Promise(r=>setTimeout(r,100));
+    terminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
     let ready=false;
     for(let i=0;i<600;i++){
      let text='';for(let row=0;row<terminal.buffer.active.length;row++)text+=terminal.buffer.active.getLine(row).translateToString(true)+'\n';
@@ -76,7 +152,13 @@
     const size=document.querySelector('[aria-label="Размер шрифта терминала"]');size.value='16';size.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,100));
     if(!document.querySelector('.xterm')||binding()!==`proof · ${profile}`)throw Error(profile+'_tui_resize');
     checks[profile+'_actual_tui_render_input_resize']=true;
-    [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();await new Promise(r=>setTimeout(r,800));
+    if(profile==='opencode'){
+     if(document.querySelectorAll('.terminal-session').length!==2)throw Error('controller_tabs_missing');
+     [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();await new Promise(r=>setTimeout(r,800));
+     if(binding()!=='proof · codex')throw Error('codex_stopped_by_opencode');
+     checks.codex_opencode_coexist=true;
+     [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();await new Promise(r=>setTimeout(r,800));
+    }
    }
   }
   await invoke('smoke_complete',{passed:true,checks});

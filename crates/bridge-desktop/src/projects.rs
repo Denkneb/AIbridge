@@ -21,6 +21,12 @@ pub struct ProjectDraft {
     pub workspace: String,
     pub opencode_url: String,
     pub mcp_url: Option<String>,
+    #[serde(default)]
+    pub opencode_model: Option<String>,
+    #[serde(default)]
+    pub opencode_controller_model: Option<String>,
+    #[serde(default)]
+    pub opencode_env_file: Option<String>,
     pub max_rounds: u64,
     pub execution_mode: String,
     pub delivery_mode: String,
@@ -37,6 +43,15 @@ impl ProjectDraft {
             workspace: p.workspace().to_string_lossy().into(),
             opencode_url: p.opencode_endpoint().url(),
             mcp_url: p.mcp_endpoint().map(|v| v.url()),
+            opencode_model: p
+                .opencode_model()
+                .map(|m| format!("{}/{}", m.provider(), m.model())),
+            opencode_controller_model: p
+                .opencode_controller_model()
+                .map(|m| format!("{}/{}", m.provider(), m.model())),
+            opencode_env_file: p
+                .opencode_env_file()
+                .map(|f| f.as_path().to_string_lossy().into_owned()),
             max_rounds: p.max_rounds(),
             execution_mode: if p.execution_mode() == bridge_domain::ExecutionMode::Worktree {
                 "worktree"
@@ -73,6 +88,7 @@ pub struct ProjectService {
     pub config: PathBuf,
     pub state: PathBuf,
     pending: Mutex<HashMap<String, Pending>>,
+    pub(crate) pending_opencode: Mutex<HashMap<String, crate::opencode_config::PendingConfig>>,
 }
 impl ProjectService {
     pub fn new(config: PathBuf, state: PathBuf) -> Result<Self, &'static str> {
@@ -89,16 +105,17 @@ impl ProjectService {
             config,
             state,
             pending: Mutex::new(HashMap::new()),
+            pending_opencode: Mutex::new(HashMap::new()),
         })
     }
-    fn config_bytes(&self) -> Result<Vec<u8>, &'static str> {
+    pub(crate) fn config_bytes(&self) -> Result<Vec<u8>, &'static str> {
         match fs::read(&self.config) {
             Ok(v) => Ok(v),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
             Err(_) => Err("config unavailable"),
         }
     }
-    fn config_view(&self) -> Result<bridge_config::Config, &'static str> {
+    pub(crate) fn config_view(&self) -> Result<bridge_config::Config, &'static str> {
         if self.config.exists() {
             load_config_with_state_root(&self.config, &self.state).map_err(|_| "config invalid")
         } else {
@@ -195,6 +212,20 @@ impl ProjectService {
         ] {
             table[key] = toml_edit::value(value);
         }
+        for (key, value) in [
+            ("opencode_model", &draft.opencode_model),
+            (
+                "opencode_controller_model",
+                &draft.opencode_controller_model,
+            ),
+            ("opencode_env_file", &draft.opencode_env_file),
+        ] {
+            if let Some(value) = value.as_ref().filter(|v| !v.is_empty()) {
+                table[key] = toml_edit::value(value.as_str());
+            } else if let Some(table) = table.as_table_mut() {
+                table.remove(key);
+            }
+        }
         for (key, n) in [
             ("max_rounds", draft.max_rounds),
             ("max_active_tasks", draft.max_active_tasks),
@@ -247,6 +278,8 @@ impl ProjectService {
         let l = RustStateLayout::new(self.state.clone(), p.id().clone())
             .map_err(|_| "state invalid")?;
         bridge_runtime::project::validate(p, &l).map_err(|_| "state/workspace overlap")?;
+        p.read_opencode_env()
+            .map_err(|_| "env file missing, unsafe or invalid (required mode: 0600)")?;
         let existing = self.config_view()?;
         let before = existing.project(&draft.id).map(ProjectDraft::from_project);
         let id = uuid::Uuid::new_v4().to_string();
@@ -268,32 +301,28 @@ impl ProjectService {
             json!({"review_id":id,"before":before,"after":draft,"credentials_changed":pending[&id].password.is_some()||pending[&id].token.is_some()}),
         )
     }
-    pub fn apply(&self, review_id: &str) -> Result<Value, &'static str> {
+    pub fn apply(&self, review_id: &str) -> Result<Value, String> {
         let mut pending = self.pending.lock().map_err(|_| "preview unavailable")?;
         let change = pending.get(review_id).ok_or("preview expired")?;
         safe_path(&self.config)?;
-        use std::os::fd::AsRawFd;
-        let parent = self.config.parent().ok_or("config directory required")?;
-        fs::create_dir_all(parent).map_err(|_| "config directory unavailable")?;
-        let handle = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(nix::libc::O_NOFOLLOW)
-            .open(parent.join(".agent-bridge-config.lock"))
-            .map_err(|_| "config lock unavailable")?;
-        nix::fcntl::flock(
-            handle.as_raw_fd(),
-            nix::fcntl::FlockArg::LockExclusiveNonblock,
-        )
-        .map_err(|_| "config lock busy")?;
+        let _config_lock = self.config_file_guard()?;
         if self.config_bytes()? != change.original {
-            return Err("config changed; request a new preview");
+            return Err("config changed; request a new preview".into());
         }
         let config = self.config_view()?;
-        let _runtime = bridge_runtime::project::config_edit_guard(&config, &self.state)
-            .map_err(|_| "stop tasks, services and controllers before changing configuration")?;
+        let proposed = validate_config_text(
+            std::str::from_utf8(&change.proposed).map_err(|_| "config invalid")?,
+            &self.config,
+            Some(&self.state),
+        )
+        .map_err(|_| "config invalid")?;
+        let _runtime = bridge_runtime::project::project_config_edit_guard(
+            &config,
+            &proposed,
+            &change.project,
+            &self.state,
+        )
+        .map_err(|e| e.to_string())?;
         let mode = fs::metadata(&self.config)
             .map(|m| m.permissions().mode() & 0o777)
             .unwrap_or(0o600);
@@ -305,13 +334,9 @@ impl ProjectService {
         if !change.original.is_empty() {
             atomic_write(&backup, &change.original, mode)?;
         }
-        let proposed = validate_config_text(
-            std::str::from_utf8(&change.proposed).map_err(|_| "config invalid")?,
-            &self.config,
-            Some(&self.state),
-        )
-        .map_err(|_| "config invalid")?;
         let p = proposed.project(&change.project).ok_or("project missing")?;
+        p.read_opencode_env()
+            .map_err(|_| "env file missing, unsafe or invalid (required mode: 0600)")?;
         for (path, value) in [
             (
                 p.password_file().map(|p| p.as_path()),
@@ -325,7 +350,7 @@ impl ProjectService {
             if let (Some(path), Some(_value)) = (path, value) {
                 safe_path(path)?;
                 if path.starts_with(p.workspace()) {
-                    return Err("credential path inside workspace");
+                    return Err("credential path inside workspace".into());
                 }
             }
         }
@@ -348,6 +373,25 @@ impl ProjectService {
         let project = change.project.clone();
         pending.remove(review_id);
         Ok(json!({"saved":true,"project":project}))
+    }
+    pub(crate) fn config_file_guard(&self) -> Result<fs::File, &'static str> {
+        use std::os::fd::AsRawFd;
+        let parent = self.config.parent().ok_or("config directory required")?;
+        fs::create_dir_all(parent).map_err(|_| "config directory unavailable")?;
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(parent.join(".agent-bridge-config.lock"))
+            .map_err(|_| "config lock unavailable")?;
+        nix::fcntl::flock(
+            handle.as_raw_fd(),
+            nix::fcntl::FlockArg::LockExclusiveNonblock,
+        )
+        .map_err(|_| "config lock busy")?;
+        Ok(handle)
     }
     pub fn cancel(&self, id: &str) {
         if let Ok(mut p) = self.pending.lock() {

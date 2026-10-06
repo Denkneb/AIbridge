@@ -66,3 +66,37 @@ fn close_full_output_queue_is_bounded_and_repeatable() {
     assert!(terms.write(&id, vec![1]).is_err());
     assert!(terms.resize(&id, 0, 80).is_err());
 }
+
+#[test]
+fn closing_one_real_pty_preserves_the_other_process_and_input() {
+    let terms = Terminals::default();
+    let mut cmd = CommandBuilder::new("/bin/bash");
+    cmd.args([
+        "--noprofile",
+        "--norc",
+        "-c",
+        "while read value; do printf 'ALIVE:%s\\n' \"$value\"; done",
+    ]);
+    let first = terms.open(cmd.clone(), 24, 80).unwrap();
+    let second = terms.open(cmd, 24, 80).unwrap();
+    assert_ne!(first, second);
+    terms.close(&second).unwrap();
+    terms.write(&first, b"after-close\n".to_vec()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    loop {
+        assert!(Instant::now() < deadline, "surviving PTY did not respond");
+        for event in terms.read(&first).unwrap() {
+            match event {
+                Event::Data { bytes, .. } => output.extend(bytes),
+                Event::Exit { .. } => panic!("closing a peer terminated this PTY"),
+                Event::Error { message } => panic!("{message}"),
+            }
+        }
+        if String::from_utf8_lossy(&output).contains("ALIVE:after-close") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    terms.close(&first).unwrap();
+}

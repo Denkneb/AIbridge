@@ -168,12 +168,15 @@ pub fn build_controller_config(
     }
     let permissions = controller_agent_permission(primary, layout.state_root())
         .map_err(|_| ControllerError::Permissions)?;
-    Ok(
-        json!({"$schema":"https://opencode.ai/config.json", "mcp":mcp,
+    let mut payload = json!({"$schema":"https://opencode.ai/config.json", "mcp":mcp,
         "default_agent":CONTROLLER_AGENT,"subagent_depth":CONTROLLER_SUBAGENT_DEPTH,
         "agent":{CONTROLLER_AGENT:{"description":"agent-bridge controller: plans, submits and reviews delegated tasks; never edits code itself",
-            "mode":"primary","prompt":CONTROLLER_PROMPT,"permission":permissions}}}),
-    )
+            "mode":"primary","prompt":CONTROLLER_PROMPT,"permission":permissions}}});
+    if let Some(model) = primary.opencode_controller_model() {
+        payload["agent"][CONTROLLER_AGENT]["model"] =
+            json!(format!("{}/{}", model.provider(), model.model()));
+    }
+    Ok(payload)
 }
 
 /// Parses comments and trailing commas without changing quoted strings.
@@ -260,8 +263,6 @@ pub fn parse_jsonc(text: &str) -> Result<Value> {
 /// # Errors
 /// Refuses malformed files and controller-owned names/keys, even null values.
 pub fn check_workspace_config(primary: &ProjectEntry, linked: &[&ProjectEntry]) -> Result<()> {
-    let mut reserved = BTreeSet::from(["agent_bridge".to_owned()]);
-    reserved.extend(linked.iter().map(|p| server_name(p)));
     for name in ["opencode.json", "opencode.jsonc"] {
         let text = match fs::read_to_string(primary.workspace().join(name)) {
             Ok(text) => text,
@@ -274,20 +275,30 @@ pub fn check_workspace_config(primary: &ProjectEntry, linked: &[&ProjectEntry]) 
             }
             Err(_) => return Err(ControllerError::WorkspaceConfig),
         };
-        let data = parse_jsonc(&text)?;
-        let object = data.as_object().ok_or(ControllerError::WorkspaceConfig)?;
-        if object.contains_key("default_agent") || object.contains_key("subagent_depth") {
-            return Err(ControllerError::WorkspaceConflict);
-        }
-        for (key, names) in [
-            ("mcp", &reserved),
-            ("agent", &BTreeSet::from([CONTROLLER_AGENT.to_owned()])),
-        ] {
-            if let Some(value) = object.get(key).filter(|v| !v.is_null()) {
-                let table = value.as_object().ok_or(ControllerError::WorkspaceConfig)?;
-                if names.iter().any(|name| table.contains_key(name)) {
-                    return Err(ControllerError::WorkspaceConflict);
-                }
+        validate_workspace_config_text(linked, &text)?;
+    }
+    Ok(())
+}
+
+/// Validates an edited project JSON/JSONC with the controller's reserved-key policy.
+/// # Errors
+/// Rejects malformed JSON and bridge-owned configuration overrides.
+pub fn validate_workspace_config_text(linked: &[&ProjectEntry], text: &str) -> Result<()> {
+    let mut reserved = BTreeSet::from(["agent_bridge".to_owned()]);
+    reserved.extend(linked.iter().map(|p| server_name(p)));
+    let data = parse_jsonc(text)?;
+    let object = data.as_object().ok_or(ControllerError::WorkspaceConfig)?;
+    if object.contains_key("default_agent") || object.contains_key("subagent_depth") {
+        return Err(ControllerError::WorkspaceConflict);
+    }
+    for (key, names) in [
+        ("mcp", &reserved),
+        ("agent", &BTreeSet::from([CONTROLLER_AGENT.to_owned()])),
+    ] {
+        if let Some(value) = object.get(key).filter(|v| !v.is_null()) {
+            let table = value.as_object().ok_or(ControllerError::WorkspaceConfig)?;
+            if names.iter().any(|name| table.contains_key(name)) {
+                return Err(ControllerError::WorkspaceConflict);
             }
         }
     }
@@ -377,7 +388,20 @@ pub(crate) fn controller_env(
     Ok(env)
 }
 
-pub(crate) fn lock_controller(layout: &RustStateLayout) -> Result<File> {
+pub(crate) struct ControllerGuard {
+    _fence: File,
+    _profile: File,
+}
+
+pub(crate) fn lock_controller(layout: &RustStateLayout) -> Result<ControllerGuard> {
+    lock_profile_controller(layout, "opencode-controller.lock")
+}
+
+pub(crate) fn lock_codex_controller(layout: &RustStateLayout) -> Result<ControllerGuard> {
+    lock_profile_controller(layout, "codex-controller.lock")
+}
+
+fn lock_profile_controller(layout: &RustStateLayout, profile: &str) -> Result<ControllerGuard> {
     layout.initialize().map_err(|_| ControllerError::State)?;
     layout.open().map_err(|_| ControllerError::State)?;
     let dir = layout.project_dir();
@@ -401,8 +425,32 @@ pub(crate) fn lock_controller(layout: &RustStateLayout) -> Result<File> {
     if !guard.metadata().map_err(|_| ControllerError::Io)?.is_file() {
         return Err(ControllerError::Io);
     }
+    nix::fcntl::flock(guard.as_raw_fd(), nix::fcntl::FlockArg::LockSharedNonblock).map_err(
+        |e| {
+            if e == nix::errno::Errno::EWOULDBLOCK {
+                ControllerError::Busy
+            } else {
+                ControllerError::Io
+            }
+        },
+    )?;
+    let profile_guard = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+        .open(dir.join(profile))
+        .map_err(|_| ControllerError::Io)?;
+    if !profile_guard
+        .metadata()
+        .map_err(|_| ControllerError::Io)?
+        .is_file()
+    {
+        return Err(ControllerError::Io);
+    }
     nix::fcntl::flock(
-        guard.as_raw_fd(),
+        profile_guard.as_raw_fd(),
         nix::fcntl::FlockArg::LockExclusiveNonblock,
     )
     .map_err(|e| {
@@ -412,10 +460,16 @@ pub(crate) fn lock_controller(layout: &RustStateLayout) -> Result<File> {
             ControllerError::Io
         }
     })?;
-    Ok(guard)
+    Ok(ControllerGuard {
+        _fence: guard,
+        _profile: profile_guard,
+    })
 }
 
-fn write_config(layout: &RustStateLayout, payload: &Value) -> Result<(std::path::PathBuf, File)> {
+fn write_config(
+    layout: &RustStateLayout,
+    payload: &Value,
+) -> Result<(std::path::PathBuf, ControllerGuard)> {
     let guard = lock_controller(layout)?;
     let dir = layout.project_dir();
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -474,4 +528,62 @@ pub fn launch_controller(
         .envs(env)
         .status()
         .map_err(|_| ControllerError::Spawn)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn codex_and_opencode_coexist_but_fence_and_same_profile_remain_exclusive() {
+        let root =
+            std::env::temp_dir().join(format!("bridge-controller-locks-{}", std::process::id()));
+        let layout = RustStateLayout::new(root.clone(), "test".parse().unwrap()).unwrap();
+        let codex = lock_codex_controller(&layout).unwrap();
+        let opencode = lock_controller(&layout).unwrap();
+        assert!(matches!(
+            lock_codex_controller(&layout),
+            Err(ControllerError::Busy)
+        ));
+        assert!(matches!(
+            lock_controller(&layout),
+            Err(ControllerError::Busy)
+        ));
+        let fence = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(layout.project_dir().join("controller.lock"))
+            .unwrap();
+        assert!(
+            nix::fcntl::flock(
+                fence.as_raw_fd(),
+                nix::fcntl::FlockArg::LockExclusiveNonblock
+            )
+            .is_err()
+        );
+        drop(codex);
+        assert!(
+            nix::fcntl::flock(
+                fence.as_raw_fd(),
+                nix::fcntl::FlockArg::LockExclusiveNonblock
+            )
+            .is_err()
+        );
+        drop(opencode);
+        nix::fcntl::flock(
+            fence.as_raw_fd(),
+            nix::fcntl::FlockArg::LockExclusiveNonblock,
+        )
+        .unwrap();
+        assert!(matches!(
+            lock_codex_controller(&layout),
+            Err(ControllerError::Busy)
+        ));
+        assert!(matches!(
+            lock_controller(&layout),
+            Err(ControllerError::Busy)
+        ));
+        drop(fence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

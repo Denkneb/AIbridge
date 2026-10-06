@@ -553,6 +553,7 @@ pub struct ProjectEntry {
     default_profile: Option<String>,
     profile_definitions: BTreeMap<String, ProfileDefinition>,
     opencode_model: Option<OpenCodeModel>,
+    opencode_controller_model: Option<OpenCodeModel>,
     opencode_env_file: Option<ProjectEnvFile>,
     password_file: Option<CredentialPath>,
     mcp_token_file: Option<CredentialPath>,
@@ -692,6 +693,12 @@ impl ProjectEntry {
     #[must_use]
     pub fn opencode_model(&self) -> Option<&OpenCodeModel> {
         self.opencode_model.as_ref()
+    }
+
+    /// Returns the optional Rust controller-only model override.
+    #[must_use]
+    pub fn opencode_controller_model(&self) -> Option<&OpenCodeModel> {
+        self.opencode_controller_model.as_ref()
     }
 
     /// Returns the optional resolved `opencode_env_file`.
@@ -1061,6 +1068,10 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
         let max_active_tasks = validate_max_active_tasks(&values)?;
         let allow_parallel_writers = validate_allow_parallel_writers(&values, execution_mode)?;
         let opencode_model = validate_opencode_model(&values)?;
+        let opencode_controller_model = values.get("opencode_controller_model").map(|value| {
+            value.as_str().ok_or_else(|| DomainError::invalid_input("project opencode_controller_model must be a string"))
+                .and_then(|raw| parse_opencode_model(raw).map_err(|_| DomainError::invalid_input("project opencode_controller_model must be provider/model without surrounding whitespace")))
+        }).transpose()?;
         let profile_definitions = profiles::parse_definitions(&values)?;
         let default_profile = profiles::parse_default(&values, &profile_definitions)?;
         let opencode_env_file = validate_opencode_env_file(&values, config_dir)?;
@@ -1092,6 +1103,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 default_profile,
                 profile_definitions,
                 opencode_model,
+                opencode_controller_model,
                 opencode_env_file: opencode_env_file.map(ProjectEnvFile::new),
                 password_file: password.map(CredentialPath::new),
                 mcp_token_file: token.map(CredentialPath::new),

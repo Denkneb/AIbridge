@@ -1,3 +1,4 @@
+mod launch_env;
 use bridge_desktop::{
     dashboard::Query,
     projects::{ProjectDraft, ProjectService},
@@ -16,6 +17,24 @@ async fn projects(state: State<'_, AppState>) -> Result<Vec<ProjectDraft>, Strin
     tauri::async_runtime::spawn_blocking(move || p.projects().map_err(str::to_owned))
         .await
         .map_err(|_| "project query failed".to_owned())?
+}
+#[tauri::command]
+async fn codex_env_read(state: State<'_, AppState>, project: String) -> Result<String, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.read_codex_env(&project))
+        .await
+        .map_err(|_| "Не удалось загрузить переменные Codex".to_owned())?
+}
+#[tauri::command]
+async fn codex_env_save(
+    state: State<'_, AppState>,
+    project: String,
+    text: String,
+) -> Result<(), String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.save_codex_env(&project, &text))
+        .await
+        .map_err(|_| "Не удалось сохранить переменные Codex".to_owned())?
 }
 #[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
@@ -55,13 +74,57 @@ async fn project_preview(
 #[tauri::command]
 async fn project_apply(state: State<'_, AppState>, review_id: String) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.apply(&review_id).map_err(str::to_owned))
+    tauri::async_runtime::spawn_blocking(move || p.apply(&review_id))
         .await
         .map_err(|_| "save failed".to_owned())?
 }
 #[tauri::command]
 fn project_cancel(state: State<'_, AppState>, review_id: String) {
     state.projects.cancel(&review_id);
+}
+#[tauri::command]
+async fn opencode_config_read(
+    state: State<'_, AppState>,
+    project: String,
+    file: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.read_opencode_config(&project, &file)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "OpenCode config read failed".to_owned())?
+}
+#[tauri::command]
+async fn opencode_config_preview(
+    state: State<'_, AppState>,
+    project: String,
+    file: String,
+    content: String,
+    original_content: Option<String>,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.preview_opencode_config(&project, &file, &content, original_content.as_deref())
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "OpenCode config preview failed".to_owned())?
+}
+#[tauri::command]
+async fn opencode_config_apply(
+    state: State<'_, AppState>,
+    review_id: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.apply_opencode_config(&review_id))
+        .await
+        .map_err(|_| "OpenCode config save failed".to_owned())?
+}
+#[tauri::command]
+fn opencode_config_cancel(state: State<'_, AppState>, review_id: String) {
+    state.projects.cancel_opencode_config(&review_id);
 }
 #[tauri::command]
 async fn lifecycle(
@@ -81,6 +144,7 @@ fn terminal_command(
     project: &str,
     profile: &str,
     task: Option<String>,
+    launch_env: Option<String>,
 ) -> Result<portable_pty::CommandBuilder, String> {
     let (entry, _) = p.project(project).map_err(str::to_owned)?;
     let executable = std::env::var_os("AIBRIDGE_CLI")
@@ -88,6 +152,10 @@ fn terminal_command(
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agent-bridge")
         });
+    let variables = launch_env::parse(launch_env.as_deref().unwrap_or(""))?;
+    if !variables.is_empty() && profile != "codex" {
+        return Err("Переменные запуска доступны для Codex".into());
+    }
     let mut cmd = match profile {
         "shell" => {
             if task.is_some() {
@@ -136,6 +204,9 @@ fn terminal_command(
     ] {
         cmd.env_remove(key);
     }
+    for (name, value) in variables {
+        cmd.env(name, value);
+    }
     Ok(cmd)
 }
 #[tauri::command]
@@ -144,10 +215,11 @@ async fn terminal_external(
     project: String,
     profile: String,
     task: Option<String>,
+    launch_env: Option<String>,
 ) -> Result<(), String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cmd = terminal_command(&p, &project, &profile, task)?;
+        let cmd = terminal_command(&p, &project, &profile, task, launch_env.clone())?;
         let mut external = std::process::Command::new("x-terminal-emulator");
         external
             .arg("-e")
@@ -160,6 +232,9 @@ async fn terminal_external(
             "AGENT_BRIDGE_MCP_TOKEN",
         ] {
             external.env_remove(key);
+        }
+        for (name, value) in launch_env::parse(launch_env.as_deref().unwrap_or(""))? {
+            external.env(name, value);
         }
         let mut child = external
             .spawn()
@@ -180,11 +255,12 @@ async fn terminal_open(
     task: Option<String>,
     rows: u16,
     cols: u16,
+    launch_env: Option<String>,
 ) -> Result<String, String> {
     let p = state.projects.clone();
     let t = state.terminals.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cmd = terminal_command(&p, &project, &profile, task)?;
+        let cmd = terminal_command(&p, &project, &profile, task, launch_env.clone())?;
         t.open(cmd, rows, cols).map_err(str::to_owned)
     })
     .await
@@ -338,11 +414,17 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             projects,
+            codex_env_read,
+            codex_env_save,
             dashboard,
             dashboard_revision,
             project_preview,
             project_apply,
             project_cancel,
+            opencode_config_read,
+            opencode_config_preview,
+            opencode_config_apply,
+            opencode_config_cancel,
             lifecycle,
             terminal_open,
             terminal_external,

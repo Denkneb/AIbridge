@@ -372,25 +372,150 @@ pub struct ConfigEditGuard {
     _manager: Option<ManagerLock>,
     _files: Vec<fs::File>,
 }
+/// A config-edit refusal with a project and a concrete, credential-free reason.
+#[derive(Debug)]
+pub struct ConfigEditError {
+    project: Option<String>,
+    kind: RuntimeError,
+    detail: String,
+}
+impl ConfigEditError {
+    fn runtime(project: Option<&str>, kind: RuntimeError) -> Self {
+        let detail = match kind {
+            RuntimeError::LockBusy | RuntimeError::LockTimeout => {
+                "Выполняется операция управления сервисами. Повторите сохранение позже."
+            }
+            RuntimeError::Ownership => {
+                "Rust state не прошёл проверку владения или схемы. Проверьте проект через Doctor."
+            }
+            RuntimeError::Binding => "Настройки проекта не соответствуют каталогу Rust state.",
+            RuntimeError::Record => {
+                "Запись сервиса повреждена или недоступна. Проверьте проект через Doctor."
+            }
+            RuntimeError::ForeignProcess => {
+                "Запись работающего сервиса не соответствует проекту. Проверьте проект через Doctor."
+            }
+            RuntimeError::Io => {
+                "Нет доступа к файлам Rust state или блокировок. Проверьте права доступа."
+            }
+            _ => {
+                "Не удалось проверить возможность изменения конфигурации. Проверьте проект через Doctor."
+            }
+        };
+        Self {
+            project: project.map(str::to_owned),
+            kind,
+            detail: format!("{detail} ({kind})"),
+        }
+    }
+    fn busy(project: &str, detail: impl Into<String>) -> Self {
+        Self {
+            project: Some(project.into()),
+            kind: RuntimeError::LockBusy,
+            detail: detail.into(),
+        }
+    }
+}
+impl From<RuntimeError> for ConfigEditError {
+    fn from(kind: RuntimeError) -> Self {
+        Self::runtime(None, kind)
+    }
+}
+impl std::fmt::Display for ConfigEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(project) = &self.project {
+            write!(f, "Проект {project}: ")?;
+        }
+        f.write_str(&self.detail)
+    }
+}
+impl std::error::Error for ConfigEditError {}
+
 /// # Errors
 /// Refuses foreign state, active tasks, retained service records or busy locks.
 pub fn config_edit_guard(
     config: &bridge_config::Config,
     state: &Path,
 ) -> Result<ConfigEditGuard, RuntimeError> {
+    config_entries_edit_guard(&config.projects().values().collect::<Vec<_>>(), state)
+        .map_err(|e| e.kind)
+}
+
+/// Fence the changed project and controllers that consume it in either config.
+/// Newly registered workspaces can turn an existing trusted root into a link.
+/// Projects sharing credential files also participate in the fence.
+/// # Errors
+/// Refuses activity or unsafe state in affected projects; independent projects
+/// can keep running. The caller must separately serialize writes to the file.
+pub fn project_config_edit_guard(
+    existing: &bridge_config::Config,
+    proposed: &bridge_config::Config,
+    changed: &str,
+    state: &Path,
+) -> Result<ConfigEditGuard, ConfigEditError> {
+    use std::collections::BTreeSet;
+    if proposed.project(changed).is_none() {
+        return Err(RuntimeError::Binding.into());
+    }
+    let mut affected = BTreeSet::new();
+    for config in [existing, proposed] {
+        for project in config.projects().values() {
+            let shared_credentials = config.project(changed).is_some_and(|target| {
+                let target_paths = [target.password_file(), target.mcp_token_file()];
+                [project.password_file(), project.mcp_token_file()]
+                    .into_iter()
+                    .flatten()
+                    .any(|path| {
+                        target_paths
+                            .into_iter()
+                            .flatten()
+                            .any(|other| path == other)
+                    })
+            });
+            if project.id().as_str() == changed
+                || shared_credentials
+                || config
+                    .linked_projects(project.id().as_str())
+                    .iter()
+                    .any(|linked| linked.id().as_str() == changed)
+            {
+                affected.insert(project.id().as_str());
+            }
+        }
+    }
+    let projects = affected
+        .into_iter()
+        .filter_map(|id| existing.project(id).or_else(|| proposed.project(id)))
+        .collect::<Vec<_>>();
+    config_entries_edit_guard(&projects, state)
+}
+
+fn config_entries_edit_guard(
+    projects: &[&ProjectEntry],
+    state: &Path,
+) -> Result<ConfigEditGuard, ConfigEditError> {
     use std::os::fd::AsRawFd;
     let mut layouts = vec![];
-    for project in config.projects().values() {
-        let layout = RustStateLayout::new(state.to_owned(), project.id().clone())
-            .map_err(|_| RuntimeError::Binding)?;
-        validate(project, &layout)?;
-        if layout.database().exists() {
-            layout
-                .open_readonly()
-                .map_err(|_| RuntimeError::Ownership)?;
+    for project in projects {
+        let prepare = || -> Result<Option<RustStateLayout>, RuntimeError> {
+            let layout = RustStateLayout::new(state.to_owned(), project.id().clone())
+                .map_err(|_| RuntimeError::Binding)?;
+            validate(project, &layout)?;
+            if layout.database().exists() {
+                layout
+                    .open_readonly()
+                    .map_err(|_| RuntimeError::Ownership)?;
+                Ok(Some(layout))
+            } else if layout.marker().exists() {
+                Err(RuntimeError::Ownership)
+            } else {
+                Ok(None)
+            }
+        };
+        if let Some(layout) =
+            prepare().map_err(|e| ConfigEditError::runtime(Some(project.id().as_str()), e))?
+        {
             layouts.push(layout);
-        } else if layout.marker().exists() {
-            return Err(RuntimeError::Ownership);
         }
     }
     let refs = layouts.iter().collect::<Vec<_>>();
@@ -401,9 +526,24 @@ pub fn config_edit_guard(
     };
     let mut files = vec![];
     for layout in &layouts {
-        for name in ["admission.lock", "worker.lock", "controller.lock"] {
+        let id = layout.project_id().as_str();
+        let runtime_error = |e| ConfigEditError::runtime(Some(id), e);
+        for (name, detail) in [
+            (
+                "admission.lock",
+                "Выполняется операция с задачами. Повторите сохранение позже.",
+            ),
+            (
+                "worker.lock",
+                "Работает worker. Остановите worker этого проекта.",
+            ),
+            (
+                "controller.lock",
+                "Открыт контроллер Codex/OpenCode. Завершите его вкладку терминала.",
+            ),
+        ] {
             let path = layout.project_dir().join(name);
-            check_path(&path, false)?;
+            check_path(&path, false).map_err(runtime_error)?;
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -411,27 +551,45 @@ pub fn config_edit_guard(
                 .mode(0o600)
                 .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
                 .open(path)
-                .map_err(|_| RuntimeError::Io)?;
+                .map_err(|_| runtime_error(RuntimeError::Io))?;
             nix::fcntl::flock(
                 file.as_raw_fd(),
                 nix::fcntl::FlockArg::LockExclusiveNonblock,
             )
-            .map_err(|_| RuntimeError::LockBusy)?;
+            .map_err(|e| {
+                if e == nix::errno::Errno::EWOULDBLOCK {
+                    ConfigEditError::busy(id, detail)
+                } else {
+                    runtime_error(RuntimeError::Io)
+                }
+            })?;
             files.push(file);
         }
         let storage = layout
             .open_readonly()
-            .map_err(|_| RuntimeError::Ownership)?;
-        if storage
+            .map_err(|_| runtime_error(RuntimeError::Ownership))?;
+        let count = storage
             .count_tasks(layout.project_id(), true)
-            .map_err(|_| RuntimeError::Ownership)?
-            > 0
-        {
-            return Err(RuntimeError::LockBusy);
+            .map_err(|_| runtime_error(RuntimeError::Ownership))?;
+        if count > 0 {
+            return Err(ConfigEditError::busy(
+                id,
+                format!(
+                    "Незавершённых задач: {count}. Завершите или закройте их перед сохранением."
+                ),
+            ));
         }
+        let project = projects
+            .iter()
+            .find(|p| p.id() == layout.project_id())
+            .ok_or_else(|| runtime_error(RuntimeError::Binding))?;
         for kind in ["opencode", "mcp"] {
-            if read_record(&layout.project_dir().join(format!("{kind}.process.json")))?.is_some() {
-                return Err(RuntimeError::LockBusy);
+            // Retained records of exited processes are not running services.
+            if readiness::record_state(layout, project, kind).map_err(runtime_error)? == "live" {
+                return Err(ConfigEditError::busy(
+                    id,
+                    format!("Работает сервис {kind}. Остановите сервисы этого проекта."),
+                ));
             }
         }
     }

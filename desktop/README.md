@@ -31,8 +31,41 @@ are atomic; they are not a single multi-file transaction.
 For development, start `npm run dev` in `desktop` and run the Tauri target with
 `--no-default-features` so it loads the Vite dev URL. Production builds embed
 `desktop/dist` and prohibit remote content through CSP. The window has no
-arbitrary shell, filesystem or SQL IPC. The native directory picker is the only
-enabled dialog permission.
+arbitrary shell, filesystem or SQL IPC. Native directory/file pickers use the only enabled dialog permission.
+
+## Per-project OpenCode settings
+
+Settings exposes optional `opencode_model` (executor), Rust-specific
+`opencode_controller_model` (interactive `bridge-controller`), and
+`opencode_env_file` (executor/service environment). Model IDs use `provider/model`;
+blank values remove overrides. A task profile's frozen model takes precedence
+for execution; the controller override is written into its generated agent config
+and does not change executor or Codex models. The env path can be typed or selected
+with the native file picker. It resolves relative to `projects.toml`; preview and
+save verify the existing private mode-0600 file without sending its values to React.
+
+After saving a project, its OpenCode editor explicitly loads `opencode.json` or
+`opencode.jsonc` from the saved workspace. It supports creating a missing file,
+editing text, JSON/JSONC and bridge-reserved-key validation, review and explicit
+save. JSONC comments are preserved verbatim. Both load-to-preview and
+preview-to-save detect changed files; config bindings are checked again on save.
+Manager/admission/worker/controller fences block edits to an active project and
+projects whose controllers link to it through trusted roots or share credential
+files. Independent projects
+can keep running while another project is edited or added. Both current and
+proposed links are checked, including newly registered trusted workspaces. The
+shared config-file lock and stale-preview check still serialize file writes.
+Config-edit errors name the affected project and distinguish unfinished tasks,
+worker/controller locks, live services, state ownership and filesystem failures.
+Exited service records are checked by PID start time and boot ID and do not block
+saves; records and processes are not deleted or stopped by saving settings.
+Existing files receive sibling backups. Paths are limited to those two filenames
+inside the configured project, with symlink refusal and a 1 MiB size limit.
+The editor loads the selected JSON text only on request; bridge password/token
+values and env-file contents remain outside the frontend. The syntax check does
+not replace OpenCode's complete schema/provider validation. In worktree mode,
+project configuration must also be present in the task checkout. Restart services
+and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
@@ -40,9 +73,20 @@ The terminal opens fixed Shell, OpenCode or Codex profiles. OpenCode uses the
 existing Rust controller; task attachment uses the proven task checkout/session
 router. Codex uses `agent-bridge launch-codex` with process-local primary/linked MCP
 wiring, durable delegation rules, read-only sandbox and bounded status hooks.
-Both controllers hold the shared controller fence until their child exits.
-Switching project/tab or resizing does not recreate an existing terminal.
-Open/Attach explicitly replaces it. Output queues and input chunks are bounded;
+Codex launch variables accept `NAME=value` or `export NAME=value`, one per line,
+with literal values (no shell expansion). The Save variables button and both
+Codex launch buttons persist them per project at
+`<state-root>/<project>/desktop-codex.env` with mode 0600. Opening the app restores
+them; switching projects keeps drafts separate. Clear and save to remove overrides.
+Invalid text is refused without echoing values; symlink and non-private files are
+refused. Existing terminal sessions retain the environment from their launch.
+Codex and OpenCode hold a shared config-edit fence and separate exclusive
+profile locks until their children exit, so the two controllers can coexist.
+Each terminal tab owns a PTY and xterm buffer; hidden tabs keep draining output.
+Open reuses a running Codex/OpenCode tab for the selected project and opens a new
+Shell tab. Attach reuses the tab for that exact project/task. Closing a tab stops
+only its process. Up to eight tabs are supported. Switching project/tab or
+resizing preserves existing sessions. Output queues and input chunks are bounded;
 output stays ordered and xterm preserves UTF-8 across chunks. Closing the window
 terminates and reaps its terminal processes before application exit. Managed
 project services still use the explicit Start/Stop lifecycle.
@@ -91,7 +135,7 @@ by `tools/live_automation_smoke.py`.
 Terminal input is serialized in 4 KiB chunks with a 1 MiB pending cap and bounded
 retry when the Rust queue is full. Ctrl+C remains SIGINT; Ctrl+Shift+C/V use native GTK clipboard IPC, with 1 MiB bounds, a two-second deadline and
 explicit errors if clipboard access or the display input seat is unavailable.
-Project switches preserve the bound session; Open/Attach replace it explicitly.
+Project switches preserve all terminal tabs; Open/Attach selects or creates a tab.
 The smoke frontend build exposes its xterm instance only for compatibility checks;
 ordinary Vite builds remove this test hook. The actual WebView proof covers ANSI,
 alternate screen, wide/combining Unicode, selection, bracketed paste, 12,000-character

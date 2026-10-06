@@ -14,7 +14,7 @@ bridge-worker.workspace = true
 bridge-git.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-nix = { workspace = true, features = ["signal", "process"] }
+nix = { workspace = true, features = ["signal", "process", "user"] }
 rusqlite.workspace = true
 portable-pty = "0.9"
 toml_edit = "0.22"

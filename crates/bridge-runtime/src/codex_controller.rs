@@ -1,6 +1,6 @@
 //! Interactive Codex controller: process-local MCP wiring, rules and read-only hooks.
 use crate::controller::{
-    CONTROLLER_PROMPT, ControllerError, check_bindings, controller_env, lock_controller,
+    CONTROLLER_PROMPT, ControllerError, check_bindings, controller_env, lock_codex_controller,
 };
 use bridge_config::ProjectEntry;
 use bridge_storage::RustStateLayout;
@@ -172,7 +172,7 @@ pub fn launch_codex(
 ) -> Result<ExitStatus> {
     let args = build_codex_args(primary, linked, layout, bridge_exe, config_path)?;
     let env = controller_env(primary, linked, None, std::env::vars_os())?;
-    let _guard = lock_controller(layout)?;
+    let _guard = lock_codex_controller(layout)?;
     Command::new("codex")
         .args(args)
         .current_dir(primary.workspace())

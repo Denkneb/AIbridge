@@ -53,6 +53,194 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+#[test]
+fn project_models_and_private_env_roundtrip_without_affecting_other_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let env = f.root.join("executor.env");
+    fs::write(&env, "MODEL_API_KEY=fixture-private-value\n").unwrap();
+    fs::set_permissions(&env, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    draft.opencode_model = Some("executor/model".into());
+    draft.opencode_controller_model = Some("controller/model".into());
+    draft.opencode_env_file = Some(env.to_string_lossy().into());
+    let original = fs::read(&f.service.config).unwrap();
+    let review = f.service.preview(draft.clone(), None, None).unwrap();
+    assert!(!review.to_string().contains("fixture-private-value"));
+    fs::set_permissions(&env, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    fs::set_permissions(&env, fs::Permissions::from_mode(0o600)).unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    let projects = f.service.projects().unwrap();
+    let saved = projects.iter().find(|p| p.id == "primary").unwrap();
+    assert_eq!(saved.opencode_model, draft.opencode_model);
+    assert_eq!(
+        saved.opencode_controller_model,
+        draft.opencode_controller_model
+    );
+    assert_eq!(saved.opencode_env_file, draft.opencode_env_file);
+    assert!(
+        projects
+            .iter()
+            .find(|p| p.id == "second")
+            .unwrap()
+            .opencode_model
+            .is_none()
+    );
+    let (p, l) = f.service.project("primary").unwrap();
+    let payload = bridge_runtime::controller::build_controller_config(
+        &p,
+        &[],
+        &l,
+        &f.root.join("bridge"),
+        &f.service.config,
+    )
+    .unwrap();
+    assert_eq!(
+        payload["agent"]["bridge-controller"]["model"],
+        "controller/model"
+    );
+    assert!(payload.get("model").is_none());
+    assert_eq!(
+        p.profile_snapshot(None).unwrap().model.as_deref(),
+        Some("executor/model")
+    );
+    let mut invalid = draft.clone();
+    invalid.opencode_controller_model = Some("invalid".into());
+    assert!(f.service.preview(invalid, None, None).is_err());
+    draft.opencode_model = None;
+    draft.opencode_controller_model = None;
+    draft.opencode_env_file = None;
+    let review = f.service.preview(draft, None, None).unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        f.service
+            .projects()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == "primary")
+            .unwrap()
+            .opencode_controller_model
+            .is_none()
+    );
+}
+
+#[test]
+fn opencode_editor_preserves_jsonc_and_backup_and_refuses_stale_edits() {
+    let f = Fixture::new();
+    let path = f.root.join("main/opencode.jsonc");
+    let original = "{\n // keep comment\n \"model\": \"provider/old\",\n}\n";
+    fs::write(&path, original).unwrap();
+    assert_eq!(
+        f.service
+            .read_opencode_config("primary", "opencode.jsonc")
+            .unwrap()["content"],
+        original
+    );
+    let proposed = original.replace("provider/old", "provider/new");
+    let review = f
+        .service
+        .preview_opencode_config("primary", "opencode.jsonc", &proposed, Some(original))
+        .unwrap();
+    fs::write(&path, "{}").unwrap();
+    assert!(
+        f.service
+            .apply_opencode_config(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    assert!(
+        f.service
+            .preview_opencode_config("primary", "opencode.jsonc", &proposed, Some(original))
+            .is_err()
+    );
+    fs::write(&path, original).unwrap();
+    f.service
+        .apply_opencode_config(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), proposed);
+    let backup = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|v| v.unwrap().path())
+        .find(|p| p.extension().is_some_and(|ext| ext == "bak"))
+        .unwrap();
+    assert_eq!(fs::read_to_string(backup).unwrap(), original);
+    assert!(!f.root.join("second/opencode.jsonc").exists());
+    assert!(!f.service.state.exists());
+}
+
+#[test]
+fn opencode_editor_rejects_reserved_fields_symlinks_and_active_controller() {
+    use std::os::{fd::AsRawFd, unix::fs::symlink};
+    let f = Fixture::new();
+    for content in [
+        "[]",
+        "{broken",
+        "{\"default_agent\":null}",
+        "{\"subagent_depth\":1}",
+        "{\"mcp\":{\"agent_bridge\":{}}}",
+        "{\"agent\":{\"bridge-controller\":{}}}",
+    ] {
+        assert!(
+            f.service
+                .preview_opencode_config("primary", "opencode.json", content, None)
+                .is_err()
+        );
+    }
+    assert!(
+        f.service
+            .read_opencode_config("primary", "../projects.toml")
+            .is_err()
+    );
+    let path = f.root.join("main/opencode.json");
+    symlink(&f.service.config, &path).unwrap();
+    assert!(
+        f.service
+            .read_opencode_config("primary", "opencode.json")
+            .is_err()
+    );
+    fs::remove_file(&path).unwrap();
+    let review = f
+        .service
+        .preview_opencode_config("primary", "opencode.json", "{}", None)
+        .unwrap();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.initialize().unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(layout.project_dir().join("controller.lock"))
+        .unwrap();
+    nix::fcntl::flock(lock.as_raw_fd(), nix::fcntl::FlockArg::LockSharedNonblock).unwrap();
+    assert!(
+        f.service
+            .apply_opencode_config(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    assert!(!path.exists());
+    drop(lock);
+    f.service
+        .apply_opencode_config(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), "{}");
+}
 #[test]
 fn preview_secrets_stale_config_and_save_preserve_other_project() {
     let f = Fixture::new();
@@ -162,7 +350,7 @@ fn empty_dashboard_never_initializes_runtime() {
     assert!(!l.marker().exists());
 }
 #[test]
-fn config_edit_locks_all_namespaces_once_and_refuses_active_tasks() {
+fn project_config_edit_still_refuses_its_active_tasks() {
     let f = Fixture::new();
     let id = f.task("primary", "done", "2026-01-01T00:00:00.000+00:00");
     f.task("second", "done", "2026-01-01T00:00:00.000+00:00");
@@ -217,6 +405,9 @@ fn first_project_can_be_created_without_initial_config_write() {
         workspace: f.root.join("main").to_string_lossy().into(),
         opencode_url: "http://127.0.0.1:4103".into(),
         mcp_url: None,
+        opencode_model: None,
+        opencode_controller_model: None,
+        opencode_env_file: None,
         max_rounds: 3,
         execution_mode: "direct".into(),
         delivery_mode: "manual".into(),
@@ -277,4 +468,341 @@ fn wal_revision_and_usage_include_rounds_outside_visible_limit() {
     assert!(!result.to_string().contains("/private/journal"));
     assert_eq!(result["waiting_count"], 0);
     assert!(result["reservations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn codex_environment_survives_reopen_is_private_and_project_scoped() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let text = "export HTTPS_PROXY=http://127.0.0.1:8888\nPRIVATE_KEY='fixture-secret'\n";
+    assert_eq!(f.service.read_codex_env("primary").unwrap(), "");
+    f.service.save_codex_env("primary", text).unwrap();
+    let reopened = ProjectService::new(f.service.config.clone(), f.service.state.clone()).unwrap();
+    assert_eq!(reopened.read_codex_env("primary").unwrap(), text);
+    assert_eq!(reopened.read_codex_env("second").unwrap(), "");
+    let file = f.root.join("state/primary/desktop-codex.env");
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        !fs::read_to_string(&f.service.config)
+            .unwrap()
+            .contains("fixture-secret")
+    );
+    assert!(
+        !serde_json::to_string(&reopened.projects().unwrap())
+            .unwrap()
+            .contains("fixture-secret")
+    );
+    let error = reopened
+        .save_codex_env("primary", "1INVALID=fixture-secret")
+        .unwrap_err();
+    assert!(!error.contains("fixture-secret"));
+    assert_eq!(reopened.read_codex_env("primary").unwrap(), text);
+    reopened.save_codex_env("primary", "").unwrap();
+    assert_eq!(reopened.read_codex_env("primary").unwrap(), "");
+}
+
+#[test]
+fn codex_environment_refuses_unknown_project_symlink_and_public_file() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let f = Fixture::new();
+    assert!(f.service.save_codex_env("../primary", "KEY=value").is_err());
+    f.service.save_codex_env("primary", "KEY=value").unwrap();
+    let file = f.root.join("state/primary/desktop-codex.env");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(f.service.read_codex_env("primary").is_err());
+    assert!(f.service.save_codex_env("primary", "KEY=changed").is_err());
+    fs::remove_file(&file).unwrap();
+    let outside = f.root.join("outside.env");
+    fs::write(&outside, "KEY=original").unwrap();
+    symlink(&outside, &file).unwrap();
+    assert!(f.service.read_codex_env("primary").is_err());
+    assert!(f.service.save_codex_env("primary", "KEY=changed").is_err());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "KEY=original");
+}
+
+#[test]
+fn independent_project_can_be_edited_and_added_while_another_is_active() {
+    use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+    let f = Fixture::new();
+    let config = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("auto_approve_external_directories="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&f.service.config, config).unwrap();
+    let task = f.task("primary", "running", "2026-01-01T00:00:00.000+00:00");
+    let (_, active) = f.service.project("primary").unwrap();
+    active
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='implementing' WHERE task_id=?1",
+            [&task],
+        )
+        .unwrap();
+    let mut locks = Vec::new();
+    for (name, kind) in [
+        ("worker.lock", nix::fcntl::FlockArg::LockExclusiveNonblock),
+        ("controller.lock", nix::fcntl::FlockArg::LockSharedNonblock),
+    ] {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(active.project_dir().join(name))
+            .unwrap();
+        nix::fcntl::flock(file.as_raw_fd(), kind).unwrap();
+        locks.push(file);
+    }
+    let record = active.project_dir().join("opencode.process.json");
+    fs::write(&record, serde_json::json!({"pid":999999,"start":"1","boot_id":"fixture",
+        "project_id":"primary","task_id":"00000000-0000-0000-0000-000000000000",
+        "checkout":f.root.join("main"),"kind":"opencode","port":4101,"endpoint":"http://127.0.0.1:4101"}).to_string()).unwrap();
+    fs::set_permissions(record, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut second = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "second")
+        .unwrap();
+    second.max_rounds = 8;
+    let review = f.service.preview(second.clone(), None, None).unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    let review = f
+        .service
+        .preview_opencode_config("second", "opencode.json", "{}", None)
+        .unwrap();
+    f.service
+        .apply_opencode_config(review["review_id"].as_str().unwrap())
+        .unwrap();
+    fs::create_dir(f.root.join("third")).unwrap();
+    second.id = "third".into();
+    second.workspace = f.root.join("third").to_string_lossy().into();
+    second.opencode_url = "http://127.0.0.1:4103".into();
+    let review = f.service.preview(second, None, None).unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        f.service
+            .projects()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == "third")
+    );
+    assert_eq!(
+        active
+            .open_readonly()
+            .unwrap()
+            .get_task(task.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .status
+            .to_string(),
+        "implementing"
+    );
+    let draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    let review = f.service.preview(draft, None, None).unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn project_edit_protects_existing_and_new_linked_controller_bindings() {
+    use std::os::fd::AsRawFd;
+    let f = Fixture::new();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.initialize().unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(layout.project_dir().join("controller.lock"))
+        .unwrap();
+    nix::fcntl::flock(lock.as_raw_fd(), nix::fcntl::FlockArg::LockSharedNonblock).unwrap();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "second")
+        .unwrap();
+    draft.max_rounds = 8;
+    let review = f.service.preview(draft.clone(), None, None).unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    // Removing an old link still requires stopping its consumer.
+    fs::create_dir(f.root.join("third")).unwrap();
+    draft.workspace = f.root.join("third").to_string_lossy().into();
+    let review = f.service.preview(draft.clone(), None, None).unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    // Registering a formerly unregistered trusted workspace introduces a link.
+    let mut doc = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    doc["projects"].as_table_mut().unwrap().remove("second");
+    fs::write(&f.service.config, doc.to_string()).unwrap();
+    draft.workspace = f.root.join("second").to_string_lossy().into();
+    let review = f.service.preview(draft, None, None).unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    drop(lock);
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+}
+
+#[test]
+fn project_edit_protects_another_project_using_the_same_credentials() {
+    use std::os::fd::AsRawFd;
+    let f = Fixture::new();
+    let mut doc = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    doc["projects"]["second"]["password_file"] =
+        doc["projects"]["primary"]["password_file"].clone();
+    fs::write(&f.service.config, doc.to_string()).unwrap();
+    let (_, layout) = f.service.project("second").unwrap();
+    layout.initialize().unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(layout.project_dir().join("controller.lock"))
+        .unwrap();
+    nix::fcntl::flock(lock.as_raw_fd(), nix::fcntl::FlockArg::LockSharedNonblock).unwrap();
+    let draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    let review = f
+        .service
+        .preview(draft, Some("fixture-new-password".into()), None)
+        .unwrap();
+    assert!(
+        f.service
+            .apply(review["review_id"].as_str().unwrap())
+            .is_err()
+    );
+    drop(lock);
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+}
+
+#[test]
+fn config_edit_reports_live_service_and_ignores_its_record_after_exit() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        process::{Child, Command},
+    };
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let f = Fixture::new();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.initialize().unwrap();
+    let mut child = Service(Command::new("sleep").arg("30").spawn().unwrap());
+    let pid = child.0.id();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap();
+    let record = layout.project_dir().join("opencode.process.json");
+    fs::write(&record, serde_json::json!({"pid":pid,"start":start,
+        "boot_id":fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),
+        "project_id":"primary","task_id":"00000000-0000-0000-0000-000000000000",
+        "checkout":f.root.join("main"),"kind":"opencode","port":4101,"endpoint":"http://127.0.0.1:4101"}).to_string()).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    draft.max_rounds = 9;
+    let review = f.service.preview(draft, None, None).unwrap();
+    let error = f
+        .service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap_err();
+    assert!(error.contains("Проект primary") && error.contains("сервис opencode"));
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert!(record.exists()); // No record deletion or process signalling by config save.
+}
+
+#[test]
+fn config_edit_reports_invalid_state_instead_of_claiming_services_are_running() {
+    let f = Fixture::new();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.initialize().unwrap();
+    let draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    let review = f.service.preview(draft, None, None).unwrap();
+    fs::write(layout.marker(), "foreign fixture marker").unwrap();
+    let original = fs::read(&f.service.config).unwrap();
+    let error = f
+        .service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap_err();
+    assert!(error.contains("Проект primary") && error.contains("runtime_state_unowned"));
+    assert!(!error.contains("Остановите"));
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    assert_eq!(
+        fs::read_to_string(layout.marker()).unwrap(),
+        "foreign fixture marker"
+    );
 }

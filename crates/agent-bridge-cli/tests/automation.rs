@@ -78,6 +78,7 @@ impl Drop for Fixture {
 fn flags_and_plan_file_are_validated_before_runtime_mutation() {
     let f = Fixture::new();
     for args in [
+        vec![],
         vec!["--auto"],
         vec!["--plan", "missing"],
         vec!["--auto", "--auto", "--plan", "missing"],
@@ -151,4 +152,67 @@ fn readonly_status_pause_and_detached_stop_without_model_invocation() {
             .join("codex")
             .exists()
     );
+}
+
+#[test]
+fn auto_launch_detaches_real_supervisor_and_persists_model_blocker() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let plan = f.root.join("plan.json");
+    fs::write(&plan, f.plan().to_string()).unwrap();
+    let bin = f.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(bin.join("codex"), "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(bin.join("codex"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge"))
+        .arg("launch-codex")
+        .args(["--auto", "--plan"])
+        .arg(plan)
+        .args(["--project", "proj", "--config"])
+        .arg(f.project.source_path())
+        .arg("--state-root")
+        .arg(f.layout.state_root())
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "starting");
+    let id = report["run_id"].as_str().unwrap().parse().unwrap();
+    let store = AutomationRunStore::new(f.layout.clone());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let run = store.load(Some(id)).unwrap();
+        if run.status() == RunStatus::Blocked {
+            assert_eq!(run.document()["blocker"]["code"], "automation_model_failed");
+            assert_eq!(run.document()["steps"][0]["phase"], "prepare");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "supervisor did not persist blocker"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert!(
+        bridge_git::take_snapshot(f.project.workspace())
+            .unwrap()
+            .dirty_paths()
+            .is_empty()
+    );
+    assert!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .list_tasks(f.project.id(), false, 100, 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(f.cli("automation-stop", &[]).status.success());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while store.load(Some(id)).unwrap().status() != RunStatus::Stopped {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(30));
+    }
 }

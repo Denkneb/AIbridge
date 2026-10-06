@@ -4374,9 +4374,12 @@ limits не расширяются по модельному ответу. Ав�
   paused/blocked run, сохраняя stop control, и закрывает orphan submission intent.
   CLI tests проверяют flags, 1MB bound, readonly status, private worker identity,
   detached stop и terminal controls; coordinator tests — cancellation во время
-  model call и cooperative orphan close. Реальный Codex в тестах не вызывается.
+  model call и cooperative orphan close. Detached CLI launch проверен с real
+  supervisor и subprocess Codex double, который даёт persisted model blocker.
+  Обычный interactive Codex controller (9.12) этим этапом не реализован.
+  Реальный Codex в тестах не вызывается.
 
-### 16.10. Final verification/delivery
+### 16.10. Final verification/delivery (завершено)
 
 - **Контракт:** final integration task проходит тот же verifier/review gate;
   accepted cumulative artifact относительно original main. Final fingerprint
@@ -4385,6 +4388,24 @@ limits не расширяются по модельному ответу. Ав�
 - **Source:** `Coordinator._deliver:686-704`, `delivery.run_delivery`.
 - **Checks:** final failure/drift/partial apply/retry/manual-ready cases.
   Depends on 16.7, 9.18c/d, 16.4. Opens 15.5, 12.16.
+
+- **Реализовано:** final integration task использует тот же prepare/worker/
+  verifier/review/accept gate. Cumulative artifact строится относительно original
+  main. Delivery повторно проверяет final review round/fingerprint и config
+  binding, использует существующий admission-fenced materializer/journal.
+  Manual проходит dry-run и становится ready без main writes; completed только
+  после durable delivered, включая crash после delivery до run status save.
+  Полные fixture workflows используют real Git inheritance и real verifier;
+  модели заменены trusted doubles. Проверены manual-ready, partial apply,
+  post-delivery crash, final drift и failed final verification/revision limit.
+  Third-state delivery failure сохраняет accepted artifact и phase для explicit
+  retry; blocked run сам не продолжает apply после ручного восстановления.
+  Полный proof через production worker/lifecycle и optional live run остаются
+  отдельным незавершённым этапом 15.5.
+  Итоговая проверка: `cargo test --offline --workspace` — 1343 tests passed;
+  additional current CLI tests (3) и explicit delivery retry test прошли.
+  `cargo clippy --offline --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check` и `git diff --check` прошли.
 
 ## Ограничения Python и честный статус
 

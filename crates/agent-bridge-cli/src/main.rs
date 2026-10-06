@@ -11,7 +11,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
-  launch-codex      Launch Codex; --auto --plan PATH starts an approved workflow
+  launch-codex      Start an approved workflow (--auto --plan PATH required)
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
   automation-worker  Private detached workflow supervisor (--run UUID required)
   deliver-task      Build, validate or apply accepted worktree changes (--task ID)

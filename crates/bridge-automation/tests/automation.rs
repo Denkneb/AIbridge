@@ -1002,15 +1002,10 @@ fn coordinator(
     answer: Value,
     calls: Arc<AtomicU64>,
 ) -> Coordinator<Model> {
-    Coordinator::open(
-        f.project.clone(),
-        f.layout.clone(),
-        id,
-        Arc::new(|_| Ok(())),
-        vec![f.project.clone()],
-        Model { answer, calls },
-    )
-    .unwrap()
+    open_fixture_coordinator(f, id, || Model {
+        answer: answer.clone(),
+        calls: calls.clone(),
+    })
 }
 #[test]
 fn coordinator_submission_crash_replays_exactly_one_task() {
@@ -1240,4 +1235,394 @@ fn pause_during_model_call_discards_answer_and_preserves_phase() {
     assert_eq!(c.tick().unwrap(), Tick::Paused);
     assert_eq!(c.document()["steps"][0]["phase"], "prepare");
     assert!(c.document()["steps"][0]["prepared_task"].is_null());
+}
+
+struct WorkflowModel;
+impl ReviewClient for WorkflowModel {
+    fn call(
+        &mut self,
+        kind: Operation,
+        _: &std::path::Path,
+        _: &Value,
+        _: std::time::Duration,
+        _: &mut dyn FnMut() -> bool,
+    ) -> Result<Value, CodexError> {
+        Ok(match kind {
+            Operation::Prepare => {
+                json!({"task":"Implement the approved step and verify its criteria"})
+            }
+            Operation::Review => {
+                json!({"decision":"accept","summary":"Approved criteria verified","findings":[]})
+            }
+        })
+    }
+}
+fn workflow_coordinator(
+    f: &Fixture,
+    id: bridge_storage::automation::RunId,
+) -> Coordinator<WorkflowModel> {
+    open_fixture_coordinator(f, id, || WorkflowModel)
+}
+// Parallel subprocess fixtures can briefly inherit a flock before exec closes
+// CLOEXEC descriptors. Busy remains an authoritative refusal in production;
+// these recovery fixtures wait for that real owner to relinquish its fence.
+fn open_fixture_coordinator<M: ReviewClient>(
+    f: &Fixture,
+    id: bridge_storage::automation::RunId,
+    mut model: impl FnMut() -> M,
+) -> Coordinator<M> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match Coordinator::open(
+            f.project.clone(),
+            f.layout.clone(),
+            id,
+            Arc::new(|_| Ok(())),
+            vec![f.project.clone()],
+            model(),
+        ) {
+            Ok(c) => return c,
+            Err(e) if e.0 == "automation_busy" && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Err(e) => panic!("fixture coordinator open refused: {e}"),
+        }
+    }
+}
+/// Trusted executor fixture uses real registered Git checkouts, cumulative
+/// inheritance, post-inherit baseline and authoritative command verification.
+/// Only the external implementation model and review model are doubled.
+fn finish_workflow_round(f: &Fixture, item: &Value, final_failure: bool) -> PathBuf {
+    let id: bridge_domain::TaskId = item["task_id"].as_str().unwrap().parse().unwrap();
+    let mut storage = f.layout.open().unwrap();
+    let task = storage.get_task(id).unwrap().unwrap();
+    let record = storage.get_worktree(id, f.project.id()).unwrap().unwrap();
+    let root = if record.status != bridge_storage::WorktreeStatus::Created {
+        let binding = bridge_git::checkout::create_checkout(
+            f.project.workspace(),
+            &f.layout.project_dir(),
+            id,
+            task.base_head.as_deref().unwrap(),
+        )
+        .unwrap();
+        storage
+            .update_worktree_status(
+                id,
+                f.project.id(),
+                bridge_storage::WorktreeStatus::Creating,
+                None,
+            )
+            .unwrap();
+        if task
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .get("automation_parent")
+            .is_some()
+        {
+            bridge_worker::inheritance::inherit_checkout(
+                &storage,
+                &f.layout,
+                &task,
+                &binding.paths.checkout,
+            )
+            .unwrap();
+        }
+        let baseline = bridge_git::take_snapshot(&binding.paths.checkout)
+            .unwrap()
+            .to_json()
+            .unwrap();
+        storage
+            .update_worktree_baseline(
+                id,
+                f.project.id(),
+                &baseline.to_string(),
+                task.base_head.as_deref(),
+            )
+            .unwrap();
+        storage
+            .update_worktree_status(
+                id,
+                f.project.id(),
+                bridge_storage::WorktreeStatus::Created,
+                None,
+            )
+            .unwrap();
+        storage
+            .update_worktree_server(
+                id,
+                f.project.id(),
+                "http://127.0.0.1:9000",
+                std::num::NonZeroU16::new(9000).unwrap(),
+                None,
+            )
+            .unwrap();
+        binding.paths.checkout
+    } else {
+        PathBuf::from(record.path)
+    };
+    match item["step"]["id"].as_str().unwrap() {
+        "fix" => {
+            fs::write(
+                root.join("module.py"),
+                "def add(a, b):\n    return a + b\nassert add(2, 3) == 5\n",
+            )
+            .unwrap();
+        }
+        "consumer" => {
+            fs::write(
+                root.join("consumer.py"),
+                "from module import add\nassert add(4, 5) == 9\n",
+            )
+            .unwrap();
+        }
+        "__final__" if final_failure => {
+            fs::write(
+                root.join("consumer.py"),
+                "raise RuntimeError('integration failed')\n",
+            )
+            .unwrap();
+        }
+        "__final__" => {}
+        _ => panic!("unexpected fixture step"),
+    }
+    let round: u32 = storage
+        .connection()
+        .query_row(
+            "SELECT MAX(round_number) FROM rounds WHERE task_id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let reference = bridge_storage::RoundRef {
+        task_id: id,
+        project_id: f.project.id().clone(),
+        round_number: round,
+    };
+    storage
+        .prepare_round(reference.clone(), format!("outbound-{round}"))
+        .unwrap();
+    storage.mark_round_sent(reference.clone()).unwrap();
+    storage.mark_round_observing(reference.clone()).unwrap();
+    bridge_verifier::run_round_verification_persisted(
+        &mut storage,
+        reference.clone(),
+        &root,
+        &task
+            .test_commands
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        std::time::Duration::from_secs(5),
+        4096,
+    )
+    .unwrap();
+    storage
+        .finish_round(bridge_storage::FinishRoundInput {
+            round: reference,
+            round_status: bridge_domain::RoundStatus::Complete,
+            task_status: bridge_domain::TaskStatus::AwaitingReview,
+            response_message_id: None,
+            response: None,
+            error_code: None,
+            result_json: None,
+        })
+        .unwrap();
+    root
+}
+fn drive_to_delivery(f: &Fixture, c: &mut Coordinator<WorkflowModel>) -> PathBuf {
+    let mut last = None;
+    for _ in 0..30 {
+        if c.document()["phase"] == "deliver" {
+            return last.unwrap();
+        }
+        let index = c.document()["index"].as_u64().unwrap() as usize;
+        let item = c.document()["steps"][index].clone();
+        if item["phase"] == "active" {
+            last = Some(finish_workflow_round(f, &item, false));
+        }
+        assert_eq!(c.tick().unwrap(), Tick::Continue, "{}", c.document());
+    }
+    panic!("workflow did not reach delivery")
+}
+#[test]
+fn complete_workflow_preserves_inherited_bytes_and_manual_ready_leaves_main_clean() {
+    let f = Fixture::new();
+    f.repo();
+    let mut approved = plan();
+    approved["delivery"] = json!("manual");
+    let original = bridge_git::take_snapshot(f.project.workspace())
+        .unwrap()
+        .to_json()
+        .unwrap();
+    let run = create_run(&f.project, &f.layout, &approved).unwrap();
+    let mut c = workflow_coordinator(&f, run.id());
+    let final_root = drive_to_delivery(&f, &mut c);
+    assert_eq!(
+        fs::read(final_root.join("consumer.py")).unwrap(),
+        b"from module import add\nassert add(4, 5) == 9\n"
+    );
+    assert_eq!(c.tick().unwrap(), Tick::Done);
+    assert_eq!(c.document()["status"], "ready");
+    assert_eq!(
+        bridge_git::take_snapshot(f.project.workspace())
+            .unwrap()
+            .to_json()
+            .unwrap(),
+        original
+    );
+    let id: bridge_domain::TaskId = c.document()["steps"][2]["task_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let artifact = bridge_delivery::load_artifact(
+        &PathBuf::from(
+            f.layout
+                .open_readonly()
+                .unwrap()
+                .get_worktree(id, f.project.id())
+                .unwrap()
+                .unwrap()
+                .runtime_dir
+                .unwrap(),
+        )
+        .join("artifact"),
+    )
+    .unwrap();
+    assert_eq!(artifact.entries.len(), 2);
+}
+#[test]
+fn complete_workflow_delivery_resumes_partial_apply_and_post_delivery_crash() {
+    for boundary in ["after_op:0", "after_delivery"] {
+        let f = Fixture::new();
+        f.repo();
+        let original = bridge_artifact::fingerprint(
+            &bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        );
+        let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+        let mut c = workflow_coordinator(&f, run.id());
+        let final_root = drive_to_delivery(&f, &mut c);
+        assert_eq!(
+            c.tick_with_fault(|p| p == boundary).unwrap_err().0,
+            "simulated_crash"
+        );
+        assert_eq!(
+            AutomationRunStore::new(f.layout.clone())
+                .load(Some(run.id()))
+                .unwrap()
+                .status(),
+            RunStatus::Running
+        );
+        drop(c);
+        let mut c = workflow_coordinator(&f, run.id());
+        assert_eq!(c.tick().unwrap(), Tick::Done, "{}", c.document());
+        assert_eq!(c.document()["status"], "completed");
+        for path in ["module.py", "consumer.py"] {
+            assert_eq!(
+                fs::read(f.project.workspace().join(path)).unwrap(),
+                fs::read(final_root.join(path)).unwrap()
+            );
+        }
+        let current = bridge_artifact::fingerprint(
+            &bridge_git::take_snapshot(f.project.workspace()).unwrap(),
+        );
+        assert_eq!(current["head"], original["head"]);
+        assert_eq!(current["index_fingerprint"], original["index_fingerprint"]);
+    }
+}
+#[test]
+fn final_checkout_drift_and_failed_final_verification_cannot_deliver() {
+    for mode in ["drift", "failed"] {
+        let f = Fixture::new();
+        f.repo();
+        let original = bridge_git::take_snapshot(f.project.workspace())
+            .unwrap()
+            .to_json()
+            .unwrap();
+        let mut approved = plan();
+        approved["max_revisions"] = json!(1);
+        let run = create_run(&f.project, &f.layout, &approved).unwrap();
+        let mut c = workflow_coordinator(&f, run.id());
+        if mode == "drift" {
+            let root = drive_to_delivery(&f, &mut c);
+            fs::write(root.join("module.py"), "unexpected final drift\n").unwrap();
+            assert_eq!(c.tick().unwrap(), Tick::Blocked);
+        } else {
+            let mut blocked = false;
+            for _ in 0..30 {
+                let index = c.document()["index"].as_u64().unwrap() as usize;
+                let item = c.document()["steps"][index].clone();
+                if item["phase"] == "active" {
+                    finish_workflow_round(&f, &item, item["step"]["id"] == "__final__");
+                }
+                if c.tick().unwrap() == Tick::Blocked {
+                    blocked = true;
+                    break;
+                }
+            }
+            assert!(blocked, "{}", c.document());
+            assert_eq!(c.document()["blocker"]["code"], "automation_revision_limit");
+        }
+        assert_eq!(
+            bridge_git::take_snapshot(f.project.workspace())
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            original
+        );
+    }
+}
+
+#[test]
+fn delivery_failure_preserves_accepted_artifact_for_explicit_retry() {
+    let f = Fixture::new();
+    f.repo();
+    let run = create_run(&f.project, &f.layout, &plan()).unwrap();
+    let mut c = workflow_coordinator(&f, run.id());
+    let root = drive_to_delivery(&f, &mut c);
+    let id: bridge_domain::TaskId = c.document()["steps"][2]["task_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        c.tick_with_fault(|p| p == "after_op:0").unwrap_err().0,
+        "simulated_crash"
+    );
+    fs::write(
+        f.project.workspace().join("consumer.py"),
+        "unrecognized third state\n",
+    )
+    .unwrap();
+    assert_eq!(c.tick().unwrap(), Tick::Blocked);
+    assert_eq!(c.document()["phase"], "deliver");
+    assert_eq!(c.document()["blocker"]["code"], "needs_manual_recovery");
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id)
+            .unwrap()
+            .unwrap()
+            .status,
+        bridge_domain::TaskStatus::Accepted
+    );
+    assert_eq!(
+        fs::read(f.project.workspace().join("consumer.py")).unwrap(),
+        b"unrecognized third state\n"
+    );
+    fs::write(
+        f.project.workspace().join("consumer.py"),
+        fs::read(root.join("consumer.py")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(c.tick().unwrap(), Tick::Blocked);
+    let mut doc = c.document().clone();
+    doc["blocker"] = Value::Null;
+    AutomationRunStore::new(f.layout.clone())
+        .save(&doc, RunStatus::Running)
+        .unwrap();
+    assert_eq!(c.tick().unwrap(), Tick::Done);
+    assert_eq!(c.document()["status"], "completed");
 }

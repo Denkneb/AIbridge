@@ -1,6 +1,7 @@
-//! Approved plan validation and fenced run creation. No model or worker launch.
+//! Approved sequential automation with isolated implementation and read-only review.
 pub mod codex;
 pub mod coordinator;
+mod delivery;
 pub mod lifecycle;
 pub mod plan;
 pub mod run;

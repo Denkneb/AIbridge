@@ -138,7 +138,7 @@ impl<M: ReviewClient> Coordinator<M> {
             .clone();
         Ok(())
     }
-    fn task(&self, id: TaskId) -> Result<Task> {
+    pub(crate) fn task(&self, id: TaskId) -> Result<Task> {
         let task = self
             .layout
             .open_readonly()
@@ -148,6 +148,11 @@ impl<M: ReviewClient> Coordinator<M> {
             .ok_or(CoordinatorError("automation_task_missing"))?;
         if task.project_id != *self.project.id()
             || Path::new(&task.workspace) != self.project.workspace()
+            || task
+                .snapshot
+                .as_ref()
+                .and_then(|s| s["automation_run_id"].as_str())
+                != Some(self.id.to_string().as_str())
         {
             return Err(CoordinatorError("automation_task_binding_changed"));
         }
@@ -366,7 +371,7 @@ impl<M: ReviewClient> Coordinator<M> {
             return Err(CoordinatorError("automation_time_limit"));
         }
         if self.document["phase"] == "deliver" {
-            return Err(CoordinatorError("automation_delivery_pending"));
+            return self.deliver(fault);
         }
         check_binding(&self.project, &self.layout, &run)
             .map_err(|_| CoordinatorError("automation_binding_changed"))?;
@@ -606,7 +611,9 @@ fn validate_document(project: &ProjectEntry, doc: &Value) -> Result<()> {
     let final_step = &items
         .last()
         .ok_or(CoordinatorError("automation_state_corrupt"))?["step"];
-    if final_step["id"] != "__final__"
+    if final_step["task"] != crate::run::FINAL_TASK
+        || final_step["acceptance_criteria"] != json!(crate::run::FINAL_CRITERIA)
+        || final_step["id"] != "__final__"
         || final_step["allowed_paths"] != json!(scopes)
         || final_step["test_commands"] != json!(plan.final_test_commands())
         || final_step["profile"] != Value::Null

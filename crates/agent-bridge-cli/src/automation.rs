@@ -19,7 +19,6 @@ use std::{
     time::Duration,
 };
 pub enum Action {
-    Interactive,
     Start(PathBuf),
     Status(Option<RunId>),
     Pause(Option<RunId>),
@@ -58,7 +57,9 @@ pub fn parse(
             (true, Some(p)) => Action::Start(p.into()),
             (true, None) => return Err("--auto requires --plan"),
             (false, Some(_)) => return Err("--plan requires --auto"),
-            (false, None) => Action::Interactive,
+            (false, None) => {
+                return Err("--auto --plan required; interactive Codex controller not implemented");
+            }
         },
         "automation-status" => Action::Status(id),
         "automation-pause" => Action::Pause(id),
@@ -79,18 +80,6 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
     let store = AutomationRunStore::new(layout.clone());
     let executable = std::env::current_exe().map_err(|_| "bridge executable unavailable")?;
     let report = match action {
-        Action::Interactive => {
-            let status = std::process::Command::new("codex")
-                .current_dir(project.workspace())
-                .status()
-                .map_err(|_| "codex launch failed")?;
-            return Ok(ExitCode::from(
-                status
-                    .code()
-                    .and_then(|c| u8::try_from(c).ok())
-                    .unwrap_or(1),
-            ));
-        }
         Action::Start(plan) => {
             let bytes = read_bounded(&plan, 1_000_000)
                 .map_err(|_| "approved plan unavailable or exceeds 1MB")?;
@@ -181,5 +170,5 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
 fn status(run: &bridge_storage::automation::AutomationRun, live: bool) -> Value {
     let doc = run.document();
     let i = doc["index"].as_u64().unwrap_or(0) as usize;
-    json!({"run_id":run.id().to_string(),"status":run.status().as_str(),"control":run.control().as_str(),"supervisor_running":live,"phase":doc["phase"],"index":i,"steps":doc["steps"].as_array().map(Vec::len),"current_step":doc["steps"][i]["step"]["id"],"task_id":doc["steps"][i]["task_id"],"blocker_code":doc["blocker"]["code"],"elapsed":doc["elapsed"]})
+    json!({"run_id":run.id().to_string(),"status":run.status().as_str(),"control":run.control().as_str(),"supervisor_running":live,"phase":doc["phase"],"index":i,"steps":doc["steps"].as_array().map(Vec::len),"final_task_id":doc["steps"].as_array().and_then(|s|s.last()).map(|s|s["task_id"].clone()),"current_step":doc["steps"][i]["step"]["id"],"task_id":doc["steps"][i]["task_id"],"blocker_code":doc["blocker"]["code"],"elapsed":doc["elapsed"]})
 }

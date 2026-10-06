@@ -20,12 +20,21 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 ## Расхождение версий и ближайший шаг
 
-Этапы автоматизации **16.1–16.2** завершены как application services в
-`bridge-automation`: проверка утверждённого плана, создание одного unfinished
-run под automation/admission locks, final integration step и проверка
-config/Git binding. Проверены 30 pinned plan scenarios и создание/drift/lock
-cases. Следующий этап — **16.3**, read-only Codex process adapter; запуск
-автоматического координатора из CLI пока не подключён.
+Этапы автоматизации **16.1–16.10** реализованы: утверждённый JSON-план,
+отдельные worktree, наследование принятого результата, read-only Codex
+prepare/review, независимые verifier/acceptance checks, durable coordinator,
+CLI controls и восстановление доставки по журналу. Промежуточные результаты
+закоммичены по этапам. Следующий этап — **15.5**, сквозной workflow proof через production worker/
+lifecycle и отдельный live прогон. Настоящие модели пока не вызывались.
+
+Запуск: `agent-bridge launch-codex --auto --plan /absolute/plan.json --project ID
+--config /absolute/projects.toml --state-root /absolute/rust-state`.
+Для управления используются `automation-status`, `automation-pause`,
+`automation-resume`, `automation-stop` с теми же project/config/state-root;
+`--run UUID` выбирает конкретный запуск, без него выбирается последний.
+`delivery=manual` завершает run как `ready`, сохраняя main чистым; status
+возвращает `final_task_id` для последующего `deliver-task --apply`.
+`delivery=apply` завершает run как `completed` после durable delivery.
 
 Recovery context service **7.10c** готов: attempted round подключается к saved
 session/runtime без нового prompt, checkout или baseline. Identity-checked
@@ -59,7 +68,7 @@ Transport/infrastructure errors сохраняют безопасные redacted
 live parallel smoke остаётся 15.3. Также завершены domain
 1.8, config 2.13/2.14, storage 3.15 и question blocker 7.7/recovery services 7.10a/b. Schema target
 теперь v17: 3.13a–c завершены (schema + frozen delivery policy + automation slot);
-3.14 добавляет guarded automation run storage. Automatic plan coordinator и его вызовы моделей впереди. MCP stdio/HTTP и standalone delegated
+3.14 добавляет guarded automation run storage. Automatic plan coordinator и его bounded read-only model adapter подключены. MCP stdio/HTTP и standalone delegated
 handlers готовы; остальные CLI commands и полная error-policy parity worker
 ещё впереди.
 7.8a завершён как service: configured permission decisions и Once replies текущей
@@ -1500,12 +1509,11 @@ refresh; единого хвостового «когда-нибудь» нет.
   **0B.4 завершён** (47 MCP source-parity scenarios);
   **0B.5 завершён** (77 runtime/automation cases);
   **7.13 завершён** (findings validation/persistence/dispatch);
-  согласованный блок 7.14/7.15/8.18/7.18 завершён; 7.16 завершён на уровне application services; следующий блок — **7.17**; delta fixture refresh завершён; новые v16/v17 задачи остаются открыты;
-  question blocker service **7.7 завершён**; следующий исторический шаг — **7.8** (Auto-approval integration), а
-  возможности v7–v17 (structured findings, budgets, workflow/dependencies,
-  checkpoints, worktree execution, profiles, parallel writers, quarantine,
-  delivery, diagnostics/hook, config migration, on_accept и automatic plan
-  execution) в Rust **не завершены**.
+  согласованный блок 7.14/7.15/8.18/7.18 завершён; 7.16 и 7.17 завершены на уровне application services; delta fixture refresh завершён; delivery и automation 16.1–16.10 реализованы;
+  question/permission/observation/recovery и verifier подключены к worker.
+  Этот исторический список foundation не означает полного CLI/GUI parity:
+  оставшиеся live proofs, diagnostics/hooks, GUI и другие команды перечислены
+  в актуальном implementation plan.
 - Полный план и очередь задач: [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ## Документация

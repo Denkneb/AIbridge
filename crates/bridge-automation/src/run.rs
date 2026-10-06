@@ -18,6 +18,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) const FINAL_TASK: &str = "Validate the combined implementation and fix integration defects inside the approved workflow scope. Preserve all accepted step criteria.";
+pub(crate) const FINAL_CRITERIA: [&str; 2] = [
+    "All approved step criteria remain satisfied",
+    "Final integration checks pass",
+];
+
 /// Project automation fence, held before admission. Requires proven Rust state.
 pub struct AutomationLock {
     _file: File,
@@ -128,9 +134,9 @@ pub fn create_run(
         .map(|s| json!({"step":s,"phase":"prepare","task_id":null,"revisions":0}))
         .collect::<Vec<_>>();
     steps.push(json!({"step":{
-        "id":"__final__", "task":"Validate the combined implementation and fix integration defects inside the approved workflow scope. Preserve all accepted step criteria.",
+        "id":"__final__", "task":FINAL_TASK,
         "allowed_paths":scopes,"test_commands":plan.final_test_commands(),
-        "acceptance_criteria":["All approved step criteria remain satisfied","Final integration checks pass"],"profile":null
+        "acceptance_criteria":FINAL_CRITERIA,"profile":null
     },"phase":"prepare","task_id":null,"revisions":0}));
     let document = json!({"run_id":uuid::Uuid::new_v4().to_string(),"plan":plan,"binding":bound,"origin":original,
         "started":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::State)?.as_secs_f64(),

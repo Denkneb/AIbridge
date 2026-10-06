@@ -1644,3 +1644,92 @@ fn hook_context_has_bounded_identity_only_payload_and_refuses_injection() {
     );
     assert!(bridge_runtime::hook::context(&[]).unwrap().is_none());
 }
+
+#[test]
+fn attachment_routes_task_checkout_and_refuses_stale_or_unbound_targets() {
+    let _network = network_fence();
+    let f = Fixture::new();
+    let server = f.start("serve").unwrap();
+    let mut s = f.layout.open().unwrap();
+    s.update_worktree_server(
+        f.task,
+        f.project.id(),
+        &format!("http://127.0.0.1:{}", server.port),
+        std::num::NonZeroU16::new(server.port).unwrap(),
+        None,
+    )
+    .unwrap();
+    let resolve = || {
+        bridge_runtime::attachment::resolve(
+            &f.project,
+            &f.layout,
+            Some(f.task),
+            false,
+            Duration::from_millis(300),
+        )
+    };
+    let target = resolve().unwrap();
+    assert_eq!(target.workspace(), f.checkout);
+    assert_eq!(
+        target.endpoint(),
+        format!("http://127.0.0.1:{}", server.port)
+    );
+    assert_eq!(target.argv()[0], "attach");
+    let capture = f.root.join("attach.json");
+    let code = "import json,os,sys;open(sys.argv[1],'w').write(json.dumps({'argv':sys.argv[2:],'cwd':os.getcwd(),'auth':os.environ.get('OPENCODE_SERVER_PASSWORD')=='fixture-password'}));sys.exit(7)";
+    let command = ServerCommand::executable(
+        Path::new("/usr/bin/python3"),
+        vec!["-c".into(), code.into(), capture.clone().into_os_string()],
+    )
+    .unwrap();
+    assert_eq!(target.launch(&command).unwrap().code(), Some(7));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
+    assert_eq!(report["argv"], serde_json::json!(target.argv()));
+    assert_eq!(report["cwd"], serde_json::json!(f.checkout));
+    assert_eq!(report["auth"], true);
+
+    assert!(!target.argv().iter().any(|v| v == "--session"));
+    assert!(
+        bridge_runtime::attachment::resolve(
+            &f.project,
+            &f.layout,
+            Some(f.task),
+            true,
+            Duration::from_millis(300)
+        )
+        .is_err()
+    );
+    s.connection()
+        .execute("UPDATE tasks SET session_id='ses_fixture_1'", [])
+        .unwrap();
+    std::fs::write(f.runtime.join("fixture-mode"), "attach-test").unwrap();
+    let attached = bridge_runtime::attachment::resolve(
+        &f.project,
+        &f.layout,
+        Some(f.task),
+        true,
+        Duration::from_millis(300),
+    )
+    .unwrap();
+    assert_eq!(attached.argv().last().unwrap(), "ses_fixture_1");
+    s.connection()
+        .execute(
+            "UPDATE worktrees SET server_endpoint='http://127.0.0.1:1'",
+            [],
+        )
+        .unwrap();
+    assert!(resolve().is_err());
+    s.update_worktree_server(
+        f.task,
+        f.project.id(),
+        &format!("http://127.0.0.1:{}", server.port),
+        std::num::NonZeroU16::new(server.port).unwrap(),
+        None,
+    )
+    .unwrap();
+    s.connection()
+        .execute("UPDATE tasks SET status='accepted'", [])
+        .unwrap();
+    assert!(resolve().is_err());
+}

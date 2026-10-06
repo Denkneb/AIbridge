@@ -13,6 +13,7 @@ const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root
 
 Commands:
   hook-status      Fail-open read-only Codex UserPromptSubmit context
+  console/attach-opencode  Attach to project or task-scoped OpenCode (--task ID)
   status           Read-only runtime readiness/diagnostics (--json, --all)
   launch-codex      Start an approved workflow (--auto --plan PATH required)
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
@@ -146,7 +147,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             "--project" => &mut project,
             "--config" => &mut config,
             "--state-root" => &mut state_root,
-            "--task" if command == "worker" || command == "deliver-task" => &mut task,
+            "--task"
+                if command == "worker"
+                    || command == "deliver-task"
+                    || command == "console"
+                    || command == "attach-opencode" =>
+            {
+                &mut task
+            }
             "--round" if command == "worker" => &mut round,
             _ => return Err("unknown option; use --help"),
         };

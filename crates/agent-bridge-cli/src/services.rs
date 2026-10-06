@@ -9,17 +9,44 @@ use std::{
 };
 pub enum Action {
     Hook,
-    Status { json: bool, all: bool },
+    Attach {
+        task: Option<bridge_domain::TaskId>,
+        session: bool,
+    },
+    Status {
+        json: bool,
+        all: bool,
+    },
 }
 pub fn is_command(s: &OsStr) -> bool {
-    s == "status" || s == "hook-status"
+    matches!(
+        s.to_str(),
+        Some("status" | "hook-status" | "console" | "attach-opencode")
+    )
 }
 pub fn parse(
     command: &OsStr,
-    _: Option<OsString>,
+    task: Option<OsString>,
     json: bool,
     all: bool,
 ) -> Result<Action, &'static str> {
+    if command == "console" || command == "attach-opencode" {
+        if json || all {
+            return Err("unsupported attach flag");
+        }
+        let task = task
+            .map(|s| {
+                s.into_string()
+                    .map_err(|_| "invalid task")
+                    .and_then(|s| s.parse().map_err(|_| "invalid task"))
+            })
+            .transpose()?;
+        let session = command == "attach-opencode";
+        if session && task.is_none() {
+            return Err("--task required");
+        }
+        return Ok(Action::Attach { task, session });
+    }
     if command == "hook-status" {
         if json || all {
             return Err("unsupported hook flag");
@@ -52,6 +79,33 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
     }
     let config = load_config_with_state_root(&args.config, &args.state_root)
         .map_err(|_| "config unavailable")?;
+    if let Action::Attach { task, session } = action {
+        use std::os::unix::process::ExitStatusExt;
+        let project = config
+            .project(&args.project)
+            .ok_or("project not configured")?;
+        let layout = RustStateLayout::new(args.state_root, project.id().clone())
+            .map_err(|_| "state invalid")?;
+        let target = bridge_runtime::attachment::resolve(
+            project,
+            &layout,
+            task,
+            session,
+            Duration::from_secs(2),
+        )
+        .map_err(|e| e.to_string())?;
+        let status = target
+            .launch(&bridge_runtime::ServerCommand::opencode())
+            .map_err(|e| e.to_string())?;
+        return Ok(ExitCode::from(
+            u8::try_from(
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
+            )
+            .unwrap_or(1),
+        ));
+    }
     let Action::Status { json, all } = action else {
         unreachable!()
     };

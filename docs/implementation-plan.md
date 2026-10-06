@@ -3874,12 +3874,19 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
     config/state ошибка даёт empty stdout/stderr и exit 0; stdin не читается,
     OpenCode/recovery/initializer не вызываются. Pure injection/bound tests и
     real CLI owned/missing/corrupt-state tests прошли; targeted Clippy чист.
-- **9.19c. `console`/`attach-opencode --task` routing.**
+- **9.19c. `console`/`attach-opencode --task` routing (завершено).**
   - **Цель:** task-scoped console/attach routing.
   - **Source evidence:** `cli.py:549-574,1343-1433`; `worktree_runtime.py`.
   - **Критерии приёмки:** routing к task-scoped server/checkout.
   - **Targeted checks:** console/attach routing tests.
   - **Зависит от:** 7.16b.
+
+  - **Реализовано:** readonly saved task/mode/worktree/base/runtime/endpoint
+    routing, strict actual server root и attached session identity. Worktree
+    terminal/missing/removed/mismatched records refused. Trusted argv,
+    task checkout cwd, auth через env и TUI exit/signal propagation.
+    Routing/refusal/session и real subprocess argv/env/exit fixture прошли;
+    server/worker/recovery автоматически не запускаются.
 
 ### 9.20. OpenCode config migration helper (не завершено)
 

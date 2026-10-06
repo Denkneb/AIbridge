@@ -95,6 +95,7 @@ fn main() {
    "/session"=>serde_json::json!([]),
    "/permission"=>if mode=="permission"{serde_json::json!([{"id":"per_fixture","sessionID":"ses_fixture_1","permission":"bash","patterns":["pwd"]}])}else{serde_json::json!([])},
    "/question"=>if mode=="question"{serde_json::json!([{"id":"que_fixture","sessionID":"ses_fixture_1","questions":[]}])}else if mode=="foreign-question"{serde_json::json!([{"id":"que_foreign","sessionID":"ses_other","questions":[]}])}else{serde_json::json!([])},
+   "/session/ses_fixture_1" if mode=="attach-test"=>serde_json::json!({"id":"ses_fixture_1","directory":root}),
    _=>serde_json::json!({}),
   }.to_string();
         let response = format!(

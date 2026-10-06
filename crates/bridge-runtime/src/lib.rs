@@ -3,6 +3,7 @@
 //! All service artifacts live outside the proven checkout. The controller
 //! launcher uses existing HTTP MCP endpoints; it does not start bridge servers.
 //! Worktree callers hold the task lifecycle/worker fence.
+pub mod attachment;
 pub mod controller;
 pub mod controller_permissions;
 pub mod diagnostics;

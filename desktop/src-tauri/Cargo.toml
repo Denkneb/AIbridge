@@ -1,0 +1,26 @@
+[package]
+name = "aibridge-desktop"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bridge-config = { path = "../../crates/bridge-config" }
+bridge-domain = { path = "../../crates/bridge-domain" }
+bridge-storage = { path = "../../crates/bridge-storage" }
+bridge-runtime = { path = "../../crates/bridge-runtime" }
+bridge-worker = { path = "../../crates/bridge-worker" }
+portable-pty = "0.9"
+toml_edit = "0.22"
+
+bridge-desktop = { path = "../../crates/bridge-desktop" }
+tauri-plugin-dialog = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+desktop-smoke = []

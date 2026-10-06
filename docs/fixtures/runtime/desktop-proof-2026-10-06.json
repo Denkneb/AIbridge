@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "checks": {
+    "react_rendered": true,
+    "project_binding": true,
+    "readonly_dashboard": true,
+    "preview_redaction": true,
+    "real_webview_ipc_pty": true,
+    "xterm_connected": true,
+    "split_keyboard": true,
+    "settings_rendered": true,
+    "terminal_survives_rerender": true
+  },
+  "scope": "actual X11 Tauri WebView, React, IPC and PTY; no real models",
+  "state_uninitialized": true,
+  "exit_code": 0
+}

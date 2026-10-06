@@ -1,0 +1,1 @@
+{"identifier":"main","description":"Local application window only; no generic filesystem, shell or SQL permissions.","windows":["main"],"permissions":["core:default","dialog:allow-open"]}

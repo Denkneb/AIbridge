@@ -1564,3 +1564,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 python3 docs/fixtures/sqlite/verify.py
 git diff --check
 ```
+
+Desktop Tauri + React: [сборка, запуск и проверки](desktop/README.md).

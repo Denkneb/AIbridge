@@ -64,9 +64,10 @@ Targeted checks:
   execution, executor profiles, recovery и frozen on_accept delivery. Local
   controller и реальный provider/worktree/verifier/delivery smoke проверены
   2026-10-05; [отчёт](live-smoke.md). Parallel services покрыты fixtures,
-  live parallel matrix 15.3 остаётся отдельной проверкой. Diagnostics/hook/attach,
+  live parallel matrix 15.3 проверена 2026-10-06. Diagnostics/hook/attach,
   automatic plan coordinator и explicit local service lifecycle реализованы;
-  config migration и GUI остаются отдельными незавершёнными потоками.
+  config migration и desktop/PTY prototype с settings/dashboard реализованы
+  2026-10-06; полная GUI/Python parity этим не заявляется.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
@@ -3935,11 +3936,13 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 
 **Готовность потока:** совместимы argv, exit codes и безопасные ошибки.
 
-## Поток 10. Tauri 2 + React/TypeScript/Vite foundation (не завершён)
+## Поток 10. Tauri 2 + React/TypeScript/Vite foundation (prototype завершён)
 
 Стек принят 2026-10-04, см. [решение](risks-and-decisions.md#десктопный-ui-tauri-2-react-typescript-vite).
-Rust backend и ближайшая задача 7.14 сохраняются. GUI пока не реализован.
-Полные settings/dashboard начинаются после успешного desktop/PTY prototype.
+Desktop реализован в `desktop/`, общие headless services — `bridge-desktop`.
+Настоящий production WebView/IPC/PTY smoke под X11 прошёл 2026-10-06;
+Wayland и interactive provider compatibility 13.13/13.14 проверяются отдельно.
+Инструкции запуска и границы: [desktop README](../desktop/README.md).
 
 ### 10.1. Tauri window и React/TypeScript/Vite scaffold
 
@@ -3987,7 +3990,12 @@ Rust backend и ближайшая задача 7.14 сохраняются. GUI
 - **Проверки:** real PTY integration и packaged Tauri smoke; mock UI не заменяет
   проверку IPC/WebView/PTY lifecycle.
 
-## Поток 11. Настройки проектов
+## Поток 11. Настройки проектов (реализован)
+
+Typed settings, picker, preview/apply, создание/clone, masked credentials,
+whole-config validation, backups и lifecycle actions реализованы. Shared fences
+запрещают запись при активных задачах/controller; существующие значения secrets
+не передаются во frontend. Проверены first-project и stale-preview сценарии.
 
 ### 11.1. Read-only project list
 
@@ -4015,7 +4023,13 @@ Rust backend и ближайшая задача 7.14 сохраняются. GUI
 
 **Готовность потока:** проект настраивается без ручного редактирования TOML.
 
-## Поток 12. Dashboard
+## Поток 12. Dashboard (desktop реализация готова)
+
+Read-only linked snapshots, global search/status/page, virtual rows, selection,
+periodic/WAL refresh, attachment и detail cards реализованы. Workflow edges
+показывают прямые зависимости выбранной задачи; узлы вне текущей страницы
+помечаются явно. Writer reservations и waiting count не скрываются.
+Полная визуальная parity с curses отдельно не заявляется.
 
 ### 12.1. Read-only task query service
 
@@ -4037,7 +4051,11 @@ Rust backend и ближайшая задача 7.14 сохраняются. GUI
 
 ### 12.10. Periodic refresh
 
-### 12.11. WAL notification optimization
+### 12.11. WAL notification optimization (реализовано)
+
+Content-free stamps DB/WAL/marker/config проверяются каждые 2 секунды;
+неизменившиеся snapshots не перечитываются. Полное обновление раз в 30 секунд
+остаётся fallback при timestamp granularity или замене базы.
 
 ### 12.12. Open/attach session action
 
@@ -4070,7 +4088,7 @@ Rust backend и ближайшая задача 7.14 сохраняются. GUI
 
 **Готовность потока:** паритет с curses dashboard, UI read-only.
 
-### 12.16. Delivery и automation run cards (не завершено)
+### 12.16. Delivery и automation run cards (реализовано)
 
 - **Цель:** read-only delivery state/last refusal и run/step/control/blocker
   progress, distinct ready/completed.
@@ -4680,3 +4698,27 @@ Five project/dashboard integration checks, two actual PTY checks and targeted
 all-targets Clippy passed. Tauri/WebView production smoke is tracked separately.
 Shared setup now enforces project-directory mode 0700; lifecycle regressions
 passed. The ordinary CLI still builds without Tauri/GTK dependencies.
+
+
+### Desktop integration и итог шести этапов — 2026-10-06
+
+Согласованные этапы 15.3, 9.15, 9.16/9.17, 9.20, 10.1–10.6 и settings/dashboard
+11/12 реализованы и закоммичены промежуточными блоками. Linux Tauri target
+отделён от headless workspace, production assets embedded; capabilities/CSP
+ограничены typed IPC и directory picker. Настоящее окно под Xvfb проверило
+React, safe project binding, read-only dashboard, credential preview redaction,
+PTY input/resize, xterm, keyboard split, settings и сохранение terminal DOM/session
+при смене вкладок: [sanitized proof](fixtures/runtime/desktop-proof-2026-10-06.json).
+Два real PTY tests отдельно проверяют UTF-8, большой output, backpressure и close.
+
+1374 unit/integration tests предыдущей полной workspace matrix прошли; doctest
+первого запуска встретил missing crate build artifact, отдельный повтор всех
+workspace doctests прошёл. После финальных изменений отдельно прошли шесть
+project/dashboard tests (включая 101-round usage при 100-row display cap), четыре
+quarantine tests и соответствующий Clippy. Frontend typecheck/Vite build и
+production Tauri build/Clippy прошли. SQLite v6/delta corpus не изменялся.
+В контейнере GTK/WebKit/Xvfb зависимости распакованы только в `/tmp`; smoke
+использовал локальную настройку helper prefix этой копии WebKit. Ни системные
+библиотеки, ни Python state/history не изменялись. Wayland, provider TUI
+compatibility 13.13/13.14 и расширенная live automation matrix 15.5 этим smoke
+не закрываются.

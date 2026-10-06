@@ -1,0 +1,6 @@
+{
+ "$schema":"https://schema.tauri.app/config/2","productName":"AIbridge","version":"0.1.0","identifier":"dev.aibridge.desktop",
+ "build":{"beforeDevCommand":"npm run dev","beforeBuildCommand":"npm run build","devUrl":"http://127.0.0.1:1420","frontendDist":"../dist"},
+ "app":{"windows":[{"label":"main","title":"AIbridge","width":1280,"height":820,"minWidth":860,"minHeight":560}],"security":{"csp":"default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:","capabilities":["main"]}},
+ "bundle":{"active":false}
+}

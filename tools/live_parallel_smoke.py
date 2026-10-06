@@ -38,6 +38,7 @@ def main():
                    PYTHONDONTWRITEBYTECODE="1", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null",
                    GIT_OPTIONAL_LOCKS="0",
                    AB_ROUND_DEADLINE="180", AB_HTTP_TIMEOUT="10", AB_POLL_INTERVAL="0.25",
+                   NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                    OPENCODE_CONFIG_CONTENT=json.dumps({"permission": {"external_directory": "deny"}}))
         for key in ("HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
             directory = root / key.lower()
@@ -51,6 +52,10 @@ def main():
         main.mkdir()
         release = threading.Event()
         arrivals, completions = {}, {}
+        # Unpredictable response bytes force the executor to actually reach
+        # the barrier; writing a guessed fixture result cannot pass verification.
+        expected = {key: (key + ':' + os.urandom(16).hex() + '\n').encode()
+                    for key in ('left', 'right')}
         lock = threading.Lock()
 
         class Barrier(BaseHTTPRequestHandler):
@@ -67,9 +72,9 @@ def main():
                 with lock:
                     completions[key] = time.monotonic()
                 self.send_response(200)
-                self.send_header("Content-Length", "2")
+                self.send_header("Content-Length", str(len(expected[key])))
                 self.end_headers()
-                self.wfile.write(b"ok")
+                self.wfile.write(expected[key])
 
             def log_message(self, *_):
                 pass
@@ -77,10 +82,13 @@ def main():
         http = ThreadingHTTPServer(("127.0.0.1", 0), Barrier)
         threading.Thread(target=http.serve_forever, daemon=True).start()
         (main / "rendezvous.py").write_text(
-            "import sys,urllib.request\n"
-            f"urllib.request.urlopen('http://127.0.0.1:{http.server_port}/'+sys.argv[1],timeout=165).read()\n")
+            "import sys,urllib.request\nfrom pathlib import Path\n"
+            f"data=urllib.request.urlopen('http://127.0.0.1:{http.server_port}/'+sys.argv[1],timeout=165).read()\n"
+            "Path(sys.argv[1]+'.txt').write_bytes(data)\n")
         (main / "check.py").write_text(
-            "import sys\nfrom pathlib import Path\np=Path(sys.argv[1])\nassert p.read_bytes()==(p.stem+'\\n').encode()\n")
+            "import sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1])\n"
+            f"expected={repr({key: hashlib.sha256(value).hexdigest() for key, value in expected.items()})}\n"
+            "assert hashlib.sha256(p.read_bytes()).hexdigest()==expected[p.stem]\n")
 
         def git(*argv):
             return subprocess.check_output(["git", *argv], cwd=main, env=env, stderr=subprocess.DEVNULL).strip()
@@ -109,7 +117,10 @@ def main():
                 process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": seq, "method": method,
                                                "params": params or {}}) + "\n")
                 process.stdin.flush()
-                if not selector.select(20):
+                # First task startup includes actual provider initialization.
+                # Keep it bounded, but allow the production startup deadline.
+                report["last_rpc"] = method if method != "tools/call" else params["name"]
+                if not selector.select(90):
                     raise TimeoutError("rpc")
                 response = json.loads(process.stdout.readline())
                 assert response["id"] == seq and "error" not in response
@@ -126,14 +137,15 @@ def main():
                 process.stdin.flush()
                 for key in ("left", "right"):
                     submitted = tool("submit_task", {"request_id": key,
-                        "task": f"In the exact checkout provided, first run python3 -B rendezvous.py {key}. This intentional local barrier may wait for the other task; wait for it to finish. Then immediately create the NEW relative file {key}.txt with exactly {key} followed by one newline. Do not search for it, inspect parent/external directories or change any other file. Run python3 -B check.py {key}.txt and finish.",
+                        "task": f"Run exactly python3 -B rendezvous.py {key} in the provided checkout. This REQUIRED command waits at an intentional local barrier for the second executor, then writes {key}.txt with unpredictable server response bytes. Wait for it to complete. Do not write or guess the file contents yourself; only this command can obtain the required bytes. Then run python3 -B check.py {key}.txt and finish. Do not inspect parent/external directories or modify any other file.",
                         "allowed_paths": [key + ".txt"], "test_commands": [f"python3 -B check.py {key}.txt"]})
                     assert "error" not in submitted
                     tasks.append(submitted["task_id"])
                 deadline = time.monotonic() + 170
                 while len(arrivals) != 2:
                     for task in tasks:
-                        status = tool("task_status", {"task_id": task})["status"]
+                        status = tool("task_status", {"task_id": task, "wait_seconds": 0})["status"]
+                        report.setdefault("observed_statuses", {})[task == tasks[0] and "left" or "right"] = status
                         if status in ("needs_user", "failed", "delivery_unknown", "closed"):
                             report["blocked_status"] = status
                             raise RuntimeError("task_blocked")
@@ -147,7 +159,7 @@ def main():
                 release.set()
                 for task in tasks:
                     while True:
-                        state = tool("task_status", {"task_id": task})
+                        state = tool("task_status", {"task_id": task, "wait_seconds": 0})
                         if state["status"] == "awaiting_review":
                             assert state["verification"]["status"] == "passed"
                             break
@@ -172,6 +184,9 @@ def main():
                               distinct_checkouts_and_ports=True, main_head_index_content_unchanged=True)
             except Exception as exc:
                 report["failure_type"] = type(exc).__name__
+                report["failure_stage"] = str(exc) if isinstance(exc, TimeoutError) else "task_execution"
+                report["barrier_arrivals"] = len(arrivals)
+                report["barrier_completions"] = len(completions)
             finally:
                 release.set()
                 for task in tasks:
@@ -182,7 +197,7 @@ def main():
                 cleanup_deadline = time.monotonic() + 10
                 while tasks and time.monotonic() < cleanup_deadline:
                     try:
-                        if all(tool("task_status", {"task_id": task})["status"] in ("closed", "accepted") for task in tasks):
+                        if all(tool("task_status", {"task_id": task, "wait_seconds": 0})["status"] in ("closed", "accepted") for task in tasks):
                             break
                     except Exception:
                         break

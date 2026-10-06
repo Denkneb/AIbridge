@@ -4193,7 +4193,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   verification_relative, runtime_files_outside, primary_copy_unchanged.
   Depends on 7.16b.
 
-### 15.3. `smoke-opencode --parallel-worktrees` (deterministic proof завершён; live отдельно)
+### 15.3. `smoke-opencode --parallel-worktrees` (deterministic и live proof завершены)
 
 - **Source evidence:** `parallel_worktree_smoke.py:1-1514`;
   `tests/test_parallel_worktree_smoke.py`.
@@ -4215,6 +4215,17 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   reservations после review. Main HEAD/index/content неизменны; один prompt
   на task. Concurrent manager start/reuse и bounded lock wait дополнительно
   покрывает `bridge-runtime/tests/runtime.rs`. Live provider matrix отдельно.
+
+- **Live proof 2026-10-06:** installed OpenCode 1.18.34 and real
+  opencode-go/minimax-m2.7 executed two isolated tasks through a local rendezvous.
+  Unpredictable barrier response bytes are verified by hashes, proving actual
+  executor overlap. Third overlapping submit refused, both accepted, two
+  attempted rounds, independent checkouts/ports, zero reservations; main raw
+  index bytes, HEAD and contents unchanged. Runner uses explicit zero-wait
+  status polls (default long-poll previously deadlocked barrier release).
+  Sanitized evidence: [live-parallel-2026-10-06.json](fixtures/runtime/live-parallel-2026-10-06.json).
+  Credentials were only copied into disposable private state; original auth
+  and user project/state were not changed. Initial failed probes are not passes.
 
 ### 15.4. Explicit local service lifecycle и полная CI matrix (локально завершено)
 

@@ -1,0 +1,18 @@
+{
+  "scope": "two real parallel worktree tasks, manual acceptance",
+  "model": "opencode-go/minimax-m2.7",
+  "outcome": "passed",
+  "opencode_version": "1.18.34",
+  "last_rpc": "task_status",
+  "observed_statuses": {
+    "left": "implementing",
+    "right": "implementing"
+  },
+  "third_overlapping_task_refused": true,
+  "execution_intervals_overlap": true,
+  "rounds": 2,
+  "attempted": 2,
+  "reservations_after_accept": 0,
+  "distinct_checkouts_and_ports": true,
+  "main_head_index_content_unchanged": true
+}

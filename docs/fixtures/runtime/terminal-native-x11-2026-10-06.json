@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "checks": {
+    "react_rendered": true,
+    "project_binding": true,
+    "readonly_dashboard": true,
+    "preview_redaction": true,
+    "real_webview_ipc_pty": true,
+    "xterm_connected": true,
+    "ansi_cursor_alternate": true,
+    "unicode_wide_combining": true,
+    "selection": true,
+    "large_paste_bytes": true,
+    "bracketed_paste": true,
+    "bounded_scrollback": true,
+    "large_paste_queued": true,
+    "keyboard_sigint": true,
+    "mouse_reporting": true,
+    "native_clipboard_unicode": true,
+    "split_keyboard": true,
+    "settings_rendered": true,
+    "terminal_survives_rerender": true,
+    "codex_actual_tui_render_input_resize": true,
+    "opencode_actual_tui_render_input_resize": true
+  },
+  "scope": "actual x11 Tauri WebView, React, IPC and PTY; no real models",
+  "state_uninitialized": false,
+  "live_tui": true,
+  "exit_code": 0
+}

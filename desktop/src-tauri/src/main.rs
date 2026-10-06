@@ -227,6 +227,66 @@ async fn terminal_close(state: State<'_, AppState>, session: String) -> Result<(
         .map_err(|_| "terminal cleanup failed".to_owned())?
 }
 #[tauri::command]
+async fn clipboard_read(app: tauri::AppHandle) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        if gtk::gdk::Display::default()
+            .and_then(|d| d.default_seat())
+            .is_none()
+        {
+            let _ = tx.send(Err("clipboard input seat unavailable".to_owned()));
+            return;
+        }
+        gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).request_text(move |_, text| {
+            let result = match text {
+                Some(text) if text.len() <= 1024 * 1024 => Ok(text.to_owned()),
+                None => Ok(String::new()),
+                _ => Err("clipboard text too large".to_owned()),
+            };
+            let _ = tx.send(result);
+        });
+    })
+    .map_err(|_| "clipboard unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "clipboard read timed out".to_owned())
+    })
+    .await
+    .map_err(|_| "clipboard read failed".to_owned())??
+}
+#[tauri::command]
+async fn clipboard_write(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    if text.len() > 1024 * 1024 {
+        return Err("clipboard text too large".into());
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        if gtk::gdk::Display::default()
+            .and_then(|d| d.default_seat())
+            .is_none()
+        {
+            let _ = tx.send(Err("clipboard input seat unavailable".to_owned()));
+            return;
+        }
+        gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(&text);
+        let _ = tx.send(Ok(()));
+    })
+    .map_err(|_| "clipboard unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "clipboard write timed out".to_owned())
+    })
+    .await
+    .map_err(|_| "clipboard write failed".to_owned())??
+}
+#[tauri::command]
+fn smoke_options() -> Result<Value, String> {
+    if !cfg!(feature = "desktop-smoke") {
+        return Err("smoke build required".into());
+    }
+    Ok(serde_json::json!({"live_tui":std::env::var_os("AIBRIDGE_DESKTOP_LIVE_TUI").is_some()}))
+}
+#[tauri::command]
 async fn smoke_complete(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -290,6 +350,9 @@ fn main() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            clipboard_read,
+            clipboard_write,
+            smoke_options,
             smoke_complete
         ])
         .on_page_load(|window, payload| {

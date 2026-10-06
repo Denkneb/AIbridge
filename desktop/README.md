@@ -84,18 +84,20 @@ On this container's Debian WebKit build, `WEBKIT_EXEC_PATH` alone does not
 relocate helper processes. The recorded rootless proof used a temporary copy
 of WebKit with its compiled helper prefix redirected to extracted helpers.
 The runner does not perform that patch automatically; installed dependencies
-use their normal system paths. X11 was verified; Wayland and live provider
-TUI compatibility remain separate checks.
+use their normal system paths. X11 and Wayland were verified with actual Codex/OpenCode TUI startup, input and
+resize. TUI tests use private empty homes; model execution is verified separately
+by `tools/live_automation_smoke.py`.
 
 Terminal input is serialized in 4 KiB chunks with a 1 MiB pending cap and bounded
-retry when the Rust queue is full. Ctrl+C remains SIGINT; Ctrl+Shift+C/V use the
-WebView clipboard, with explicit errors if clipboard access is unavailable.
+retry when the Rust queue is full. Ctrl+C remains SIGINT; Ctrl+Shift+C/V use native GTK clipboard IPC, with 1 MiB bounds, a two-second deadline and
+explicit errors if clipboard access or the display input seat is unavailable.
 Project switches preserve the bound session; Open/Attach replace it explicitly.
 The smoke frontend build exposes its xterm instance only for compatibility checks;
 ordinary Vite builds remove this test hook. The actual WebView proof covers ANSI,
 alternate screen, wide/combining Unicode, selection, bracketed paste, 12,000-character
-paste without byte loss, and bounded scrollback. OS clipboard and mouse/provider
-interaction require separate live checks.
+paste without byte loss, and bounded scrollback. Native Unicode clipboard roundtrip and SGR mouse reporting also pass in the
+actual WebView. Codex/OpenCode render and accept input/resize in both display
+backends. Model execution has a separate live workflow proof.
 
 “Во внешнем терминале” uses the installed `x-terminal-emulator -e` with the same
 fixed profile and project binding, without a shell command string. Missing terminal
@@ -103,3 +105,16 @@ support produces an explicit error. External windows have their own lifecycle.
 Interactive `launch-codex` needs no `--auto`; `--auto --plan PATH` retains approved
 workflow behavior. MCP credentials stay in child environment, never argv or frontend.
 Codex hooks remain subject to Codex's ordinary hook trust flow.
+
+Wayland proof uses Weston with a virtual X11 input seat and Pixman renderer so
+native GTK clipboard has a real seat. System libraries are unchanged. Installed
+Weston/Xvfb or the optional extracted sysroot are needed for the smoke runner:
+
+```sh
+python3 tools/desktop_smoke.py --desktop /absolute/aibridge-desktop \
+  --display-backend wayland --live-tui --output /tmp/wayland-proof.json
+```
+
+`--live-tui` uses private empty Codex/OpenCode homes to verify interactive startup,
+input, resize and cleanup, including initial login/trust screens. It does not
+perform a provider task. The separate live automation proof uses copied auth.

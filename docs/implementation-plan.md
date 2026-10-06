@@ -3950,7 +3950,8 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
 Стек принят 2026-10-04, см. [решение](risks-and-decisions.md#десктопный-ui-tauri-2-react-typescript-vite).
 Desktop реализован в `desktop/`, общие headless services — `bridge-desktop`.
 Настоящий production WebView/IPC/PTY smoke под X11 прошёл 2026-10-06;
-Wayland и interactive provider compatibility 13.13/13.14 проверяются отдельно.
+X11/Wayland TUI startup/input/resize 13.13/13.14 также проверены отдельными
+санитизированными native terminal proofs; реальные модели — в live automation proof.
 Инструкции запуска и границы: [desktop README](../desktop/README.md).
 
 ### 10.1. Tauri window и React/TypeScript/Vite scaffold
@@ -4106,6 +4107,14 @@ Content-free stamps DB/WAL/marker/config проверяются каждые 2 �
 - **Проверки:** card model fixtures. Depends on 8.19b, 16.9.
 
 ## Поток 13. Embedded terminal
+
+Core 13.1–13.12/13.16 реализованы и проверены actual PTY/WebView proofs.
+Native GTK clipboard has bounded typed IPC and refuses displays without an input
+seat before entering GTK clipboard APIs. SGR mouse, Ctrl+C, Unicode paste and
+scrollback pass. Real Codex/OpenCode TUI startup/input/resize 13.13/13.14 pass on
+X11 and Wayland with private empty homes; login/trust UI can remain visible.
+13.15 fixed-profile external-terminal routing is implemented; no generic shell IPC.
+
 
 ### 13.1. xterm.js React adapter
 
@@ -4789,3 +4798,15 @@ second-project lifecycle passed. 63 readiness samples, 0 steady readiness failur
 This closes disposable rehearsal preparation, not a user project's cutover or
 sustained production soak. Actual 14.1/14.5/14.7–14.9 operational acceptance awaits
 selected project/config and an agreed observation period; Python remains fallback.
+
+### Native terminal and real TUI proof — 2026-10-06
+
+13.1–13.12/13.16 core and real TUI startup/input/resize 13.13/13.14 verified on
+X11 and Wayland. Native GTK Unicode clipboard, SGR mouse, Ctrl+C, bracketed/large
+paste, bounded scrollback and retained session all pass. The clipboard refuses
+missing input seats safely and uses a two-second bounded async response; headless
+CLI remains free of GTK. Wayland runner uses Weston/Pixman nested in virtual X11
+for an input seat, without system installation. Real TUI tests use empty private
+homes and may show login/trust UI; actual model prepare/review/execution is proven
+separately by 15.5. Evidence: `fixtures/runtime/terminal-native-x11-2026-10-06.json`
+and `fixtures/runtime/terminal-native-wayland-2026-10-06.json`.

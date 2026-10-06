@@ -27,6 +27,7 @@ dependencies = [
  "bridge-runtime",
  "bridge-storage",
  "bridge-worker",
+ "gtk",
  "portable-pty",
  "serde",
  "serde_json",

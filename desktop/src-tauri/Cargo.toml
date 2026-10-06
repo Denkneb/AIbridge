@@ -19,6 +19,7 @@ toml_edit = "0.22"
 
 bridge-desktop = { path = "../../crates/bridge-desktop" }
 tauri-plugin-dialog = "2"
+gtk = "0.18"
 
 [features]
 default = ["custom-protocol"]

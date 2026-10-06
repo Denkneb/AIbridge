@@ -53,9 +53,12 @@ pub fn build_codex_args(
     let mut overrides = vec![
         format!(
             "developer_instructions={}",
-            quoted(&CONTROLLER_PROMPT.replace(
-                "тебе запрещены конфигурацией",
-                "тебе запрещены этими постоянными правилами"
+            quoted(&format!(
+                "Правила постоянны (включая /new).\n{}",
+                CONTROLLER_PROMPT.replace(
+                    "тебе запрещены конфигурацией",
+                    "тебе запрещены этими постоянными правилами"
+                )
             ))
         ),
         "sandbox_mode=\"read-only\"".to_owned(),
@@ -129,7 +132,32 @@ pub fn build_codex_args(
     for value in overrides {
         args.extend(["-c".into(), value.into()]);
     }
-    args.push(format!("Начни с agent_bridge.project_info для проекта {}, сверь workspace, затем task_status без ID. Покажи состояние и предложи конкретный план; реализацию передавай через мост после согласования. Dashboard доступен в AIbridge desktop.", primary.id()).into());
+    let console = [
+        executable,
+        "console",
+        "--project",
+        primary.id().as_str(),
+        "--config",
+        config,
+        "--state-root",
+        state,
+    ]
+    .iter()
+    .map(|s| shell(s))
+    .collect::<Vec<_>>()
+    .join(" ");
+    let dashboard = [
+        "aibridge-desktop",
+        "--config",
+        config,
+        "--state-root",
+        state,
+    ]
+    .iter()
+    .map(|s| shell(s))
+    .collect::<Vec<_>>()
+    .join(" ");
+    args.push(format!("Начни с agent_bridge.project_info для проекта {}, сверь workspace, затем task_status без ID. Покажи состояние и команды подключения:\nconsole:\n{console}\ndashboard (read-only AIbridge desktop):\n{dashboard}\nПока нет task/session, показывай console без --task. Предложи конкретный план; реализацию передавай через мост после согласования.", primary.id()).into());
     Ok(args)
 }
 /// Inherits provider environment and stdio, keeps the controller fence until exit.

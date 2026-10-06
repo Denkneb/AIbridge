@@ -19,6 +19,9 @@ def main():
     parser.add_argument('--sysroot', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--screenshot', type=Path)
+    parser.add_argument('--display-backend', choices=['x11', 'wayland'], default='x11')
+    parser.add_argument('--weston', type=Path, help='headless Weston executable for Wayland')
+    parser.add_argument('--live-tui', action='store_true', help='launch installed Codex/OpenCode in the actual pane with isolated homes')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='aibridge-desktop-smoke-') as tmp:
         root = Path(tmp)
@@ -29,52 +32,85 @@ def main():
                           '\nopencode_url="http://127.0.0.1:4199"\npassword_file=' +
                           json.dumps(str(root / 'password')) + '\nmax_rounds=3\n')
         env = dict(os.environ)
+        if args.live_tui:
+            env['AIBRIDGE_DESKTOP_LIVE_TUI'] = '1'
+            for key in ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']:
+                directory = root / key.lower()
+                directory.mkdir(mode=0o700)
+                env[key] = str(directory)
+            for key in list(env):
+                if key.startswith('AGENT_BRIDGE_MCP_TOKEN') or key in ['OPENCODE_SERVER_PASSWORD', 'OPENCODE_SERVER_USERNAME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_CONTENT', 'CODEX_THREAD_ID']:
+                    env.pop(key)
+            env['AIBRIDGE_CLI'] = str(Path('target/debug/agent-bridge').resolve())
         env['AIBRIDGE_DESKTOP_SMOKE_RESULT'] = str(root / 'result.json')
         # WebKit bubblewrap cannot create a nested sandbox inside this build
         # container. This override is scoped solely to this disposable smoke.
         env['WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS'] = '1'
         env['LIBGL_ALWAYS_SOFTWARE'] = '1'
-        env['GDK_BACKEND'] = 'x11'
+        env['GDK_BACKEND'] = args.display_backend
         xvfb = 'Xvfb'
         if args.sysroot:
             xvfb = str(args.sysroot / 'usr/bin/Xvfb')
-            env['LD_LIBRARY_PATH'] = str(args.sysroot / 'usr/lib/x86_64-linux-gnu')
+            env['LD_LIBRARY_PATH'] = os.pathsep.join([str(args.sysroot / 'usr/lib/x86_64-linux-gnu'), str(args.sysroot / 'usr/lib/x86_64-linux-gnu/weston')])
             env['WEBKIT_EXEC_PATH'] = str(args.sysroot / 'usr/lib/x86_64-linux-gnu/webkit2gtk-4.1')
-        env['DISPLAY'] = ':193'
+        if args.display_backend == 'wayland':
+            runtime = root / 'wayland'
+            runtime.mkdir(mode=0o700)
+            env['XDG_RUNTIME_DIR'] = str(runtime)
+            env['WAYLAND_DISPLAY'] = 'bridge-proof'
+            env['DISPLAY'] = ':194'
+            weston = str(args.weston or (args.sysroot / 'usr/bin/weston' if args.sysroot else 'weston'))
+            server_argv = [weston, '--backend=x11-backend.so', '--use-pixman', '--socket=bridge-proof', '--idle-time=0', '--width=1280', '--height=900', '--no-config', '--shell=kiosk-shell.so']
+            if args.sysroot:
+                env['WESTON_MODULE_MAP'] = ';'.join([
+                    'x11-backend.so=' + str(args.sysroot / 'usr/lib/x86_64-linux-gnu/libweston-9/x11-backend.so'),
+                    'kiosk-shell.so=' + str(args.sysroot / 'usr/lib/x86_64-linux-gnu/weston/kiosk-shell.so')])
+            ready_path = runtime / 'bridge-proof'
+        else:
+            env['DISPLAY'] = ':193'
+            server_argv = [xvfb, env['DISPLAY'], '-screen', '0', '1280x900x24', '-nolisten', 'tcp']
+            ready_path = Path('/tmp/.X11-unix/X193')
         with (root / 'xvfb.log').open('w') as xlog, (root / 'desktop.log').open('w') as log:
-            server = subprocess.Popen([xvfb, env['DISPLAY'], '-screen', '0', '1280x900x24', '-nolisten', 'tcp'], env=env, stdout=xlog, stderr=xlog)
-            desktop = None
+            display_server = server = desktop = None
             try:
+                if args.display_backend == 'wayland':
+                    display_server = subprocess.Popen([xvfb, env['DISPLAY'], '-screen', '0', '1280x900x24', '-nolisten', 'tcp'], env=env, stdout=xlog, stderr=xlog)
+                    deadline = time.monotonic() + 10
+                    while not Path('/tmp/.X11-unix/X194').exists():
+                        if display_server.poll() is not None or time.monotonic() > deadline:
+                            raise RuntimeError('wayland_virtual_input_display_unavailable')
+                        time.sleep(.05)
+                server = subprocess.Popen(server_argv, env=env, stdout=xlog, stderr=xlog)
                 deadline = time.monotonic() + 10
-                while not Path('/tmp/.X11-unix/X193').exists():
+                while not ready_path.exists():
                     if server.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError('virtual_display_unavailable')
                     time.sleep(.05)
                 desktop = subprocess.Popen([str(args.desktop.resolve()), '--config', str(config), '--state-root', str(root / 'state')], env=env, stdout=log, stderr=log)
-                deadline = time.monotonic() + 50
+                deadline = time.monotonic() + (110 if args.live_tui else 50)
                 while not (root / 'result.json').exists():
                     if desktop.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError('desktop_webview_smoke_unavailable')
                     time.sleep(.1)
                 report = json.loads((root / 'result.json').read_text())
-                report.update(scope='actual X11 Tauri WebView, React, IPC and PTY; no real models', state_uninitialized=not (root / 'state').exists())
-                if args.screenshot:
+                report.update(scope=f'actual {args.display_backend} Tauri WebView, React, IPC and PTY; no real models', state_uninitialized=not (root / 'state').exists(), live_tui=args.live_tui)
+                if args.screenshot and args.display_backend == 'x11':
                     subprocess.run(['import', '-window', 'root', str(args.screenshot.resolve())], env=env, check=True, timeout=5)
                 code = desktop.wait(timeout=10)
                 report['exit_code'] = code
                 args.output.write_text(json.dumps(report, indent=2) + '\n')
                 print(json.dumps(report))
                 return int(not report['passed'] or code != 0)
-            except RuntimeError as exc:
-                # Fixed labels only. Private fixture logs are not persisted.
-                report = {'passed': False, 'failure': str(exc), 'exit_code': desktop.poll() if desktop else None}
+            except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                # Fixed labels only. Debug fixture logs remain under /tmp.
+                report = {'passed': False, 'failure': str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__, 'exit_code': desktop.poll() if desktop else None}
                 Path('/tmp/aibridge-desktop-smoke.log').write_bytes((root / 'desktop.log').read_bytes())
                 Path('/tmp/aibridge-xvfb-smoke.log').write_bytes((root / 'xvfb.log').read_bytes())
                 args.output.write_text(json.dumps(report, indent=2) + '\n')
                 print(json.dumps(report))
                 return 1
             finally:
-                for process in (desktop, server):
+                for process in (desktop, server, display_server):
                     if process and process.poll() is None:
                         process.terminate()
                         try:

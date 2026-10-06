@@ -81,6 +81,15 @@ fn local_controller_argv_hooks_rules_and_exit_are_process_scoped() {
             serde_json::to_value(value.as_str().unwrap().parse::<toml::Value>().unwrap()).unwrap()
         })
         .collect::<Vec<_>>();
+    let starter = v["args"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(starter.contains("console:\n") && starter.contains("'console' '--project' 'proj'"));
+    assert!(starter.contains("'aibridge-desktop' '--config'"));
     let m = entries.iter().find_map(|o| o.get("mcp_servers")).unwrap();
     let server = &m["agent_bridge"];
     assert_eq!(server["command"], env!("CARGO_BIN_EXE_agent-bridge"));

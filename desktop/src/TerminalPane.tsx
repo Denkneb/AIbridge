@@ -36,10 +36,10 @@ export function TerminalPane({project,attach}:{project:string;attach:{task:strin
   // Preserve Ctrl+C for SIGINT. Copy uses the conventional terminal shortcut.
   t.attachCustomKeyEventHandler(e=>{
    if(e.type==='keydown'&&e.ctrlKey&&e.shiftKey&&e.code==='KeyC'){
-    e.preventDefault();if(t.hasSelection())navigator.clipboard.writeText(t.getSelection()).catch(()=>setError('Буфер обмена недоступен'));return false;
+    e.preventDefault();if(t.hasSelection())invoke('clipboard_write',{text:t.getSelection()}).catch(()=>setError('Буфер обмена недоступен'));return false;
    }
    if(e.type==='keydown'&&e.ctrlKey&&e.shiftKey&&e.code==='KeyV'){
-    e.preventDefault();const id=session.current;navigator.clipboard.readText().then(text=>{if(id&&session.current===id)t.paste(text);}).catch(()=>setError('Буфер обмена недоступен'));return false;
+    e.preventDefault();const id=session.current;invoke<string>('clipboard_read').then(text=>{if(id&&session.current===id)t.paste(text);}).catch(()=>setError('Буфер обмена недоступен'));return false;
    }
    return true;
   });

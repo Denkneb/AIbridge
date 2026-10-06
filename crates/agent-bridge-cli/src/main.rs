@@ -1,4 +1,5 @@
 //! Runtime CLI. Implemented commands require explicit Rust configuration/state.
+mod add_project;
 mod automation;
 mod services;
 use bridge_config::load_config_with_state_root;
@@ -12,6 +13,7 @@ use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 const HELP: &str = "agent-bridge COMMAND --project ID --config PATH --state-root ABSOLUTE_PATH
 
 Commands:
+  add-project WORKSPACE --id ID  Preview or apply a new project binding
   setup/doctor/start/stop   Explicit Rust-owned lifecycle (--all supported)
   hook-status      Fail-open read-only Codex UserPromptSubmit context
   console/attach-opencode  Attach to project or task-scoped OpenCode (--task ID)
@@ -49,6 +51,7 @@ struct LaunchArgs {
     state_root: PathBuf,
 }
 enum Action {
+    AddProject(add_project::Args),
     Help,
     Version,
     Launch(LaunchArgs),
@@ -71,6 +74,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
     let Some(command) = args.next() else {
         return Err("command required; use --help");
     };
+    if command == "add-project" {
+        return add_project::parse(args).map(Action::AddProject);
+    }
     if command == "--help" || command == "-h" {
         return if args.next().is_none() {
             Ok(Action::Help)
@@ -391,6 +397,7 @@ fn deliver(args: LaunchArgs, id: TaskId, mode: DeliveryAction) -> Result<ExitCod
 fn main() -> ExitCode {
     let hook = env::args_os().nth(1).is_some_and(|a| a == "hook-status");
     match parse(env::args_os().skip(1)) {
+        Ok(Action::AddProject(args)) => finish(add_project::run(args)),
         Ok(Action::Help) => {
             println!("{HELP}");
             ExitCode::SUCCESS

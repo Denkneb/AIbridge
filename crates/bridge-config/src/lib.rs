@@ -947,12 +947,24 @@ fn load_config_inner(path: &Path, state_root: Option<&Path>) -> Result<Config> {
     let text = String::from_utf8(bytes).map_err(|source| {
         DomainError::invalid_input("configuration file is not valid UTF-8").with_source(source)
     })?;
-    let projects = parse_projects(&text)?;
-    let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let mut config = validate_projects(projects, config_dir)?;
+    let mut config = validate_config_text(&text, path, state_root)?;
     let source_path = std::fs::canonicalize(path).map_err(read_error)?;
     for project in config.projects.values_mut() {
         project.source_path = source_path.clone();
+    }
+    Ok(config)
+}
+
+/// Validates a proposed configuration without creating any files or state.
+/// Relative bindings resolve against the intended destination directory.
+/// # Errors
+/// Returns the same redacted validation errors as the file loader.
+pub fn validate_config_text(text: &str, path: &Path, state_root: Option<&Path>) -> Result<Config> {
+    let projects = parse_projects(text)?;
+    let config_dir = path.parent().unwrap_or_else(|| Path::new(""));
+    let mut config = validate_projects(projects, config_dir)?;
+    for project in config.projects.values_mut() {
+        project.source_path = path.to_owned();
     }
     if config
         .projects

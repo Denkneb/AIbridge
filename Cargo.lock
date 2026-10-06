@@ -15,6 +15,7 @@ dependencies = [
  "bridge-runtime",
  "bridge-storage",
  "bridge-worker",
+ "nix 0.27.1",
  "serde_json",
  "uuid",
 ]

@@ -3751,7 +3751,7 @@ Delta v17: вывод execution/delivery modes из validated config
 
 ### 9.14. Linked-project routing
 
-### 9.15. `add-project` dry-run/apply (не завершено)
+### 9.15. `add-project` dry-run/apply (завершено)
 
 - **Цель:** безопасное добавление проекта.
 - **Source evidence:** `add_project.py:94-459`; `cli.py:382-421,865`;
@@ -3761,6 +3761,14 @@ Delta v17: вывод execution/delivery modes из validated config
   credentials (`O_EXCL`, 0600) + offline checks.
 - **Критерии приёмки:** append-only byte-preserving config; state dir 0700.
 - **Targeted checks:** add-project dry-run/apply/backup tests.
+
+- **Реализовано 2026-10-06:** Rust CLI принимает абсолютный WORKSPACE, `--id`,
+  explicit config/state и dry-run/apply. Proposed TOML валидируется в памяти;
+  исходные bytes сохранены, порты проверяются на loopback. Apply удерживает
+  config lock, проверяет исходный текст, пишет exclusive timestamped backup
+  и fsynced same-directory replacement с сохранением mode. Setup создаёт
+  credentials 0600 и project state/secrets directories 0700. Повтор идентичной
+  привязки не пишет. Targeted integration tests (2), config/CLI Clippy прошли.
 
 ### 9.16. History prune gates (не завершено)
 

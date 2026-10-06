@@ -64,8 +64,9 @@ Targeted checks:
   execution, executor profiles, recovery и frozen on_accept delivery. Local
   controller и реальный provider/worktree/verifier/delivery smoke проверены
   2026-10-05; [отчёт](live-smoke.md). Parallel services покрыты fixtures,
-  live parallel matrix 15.3 остаётся открытой. Diagnostics/hook, config migration,
-  automatic plan coordinator и GUI остаются отдельными незавершёнными потоками.
+  live parallel matrix 15.3 остаётся отдельной проверкой. Diagnostics/hook/attach,
+  automatic plan coordinator и explicit local service lifecycle реализованы;
+  config migration и GUI остаются отдельными незавершёнными потоками.
 - **Поток 0A завершён:** manifest и config/MCP/SQLite/security/runtime corpus
   зафиксированы от Python v15. **1.6 и 1.7 завершены** (pure domain),
   **2.10–2.12 завершены** (config execution_mode/admission settings/profiles).
@@ -3842,7 +3843,7 @@ git staging/commit/ref moves/automatic apply и **no automatic rollback**.
   `tests/test_delivery_on_accept.py`, existing crash injection. Depends on
   9.18c/d, 0B.4. Opens 8.19a.
 
-### 9.19. Runtime status/diagnostics/hook/console (не завершено)
+### 9.19. Runtime status/diagnostics/hook/console (завершено)
 
 Не завершено. Разбито на независимые подзадачи.
 
@@ -4184,7 +4185,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   на task. Concurrent manager start/reuse и bounded lock wait дополнительно
   покрывает `bridge-runtime/tests/runtime.rs`. Live provider matrix отдельно.
 
-### 15.4. Explicit local service lifecycle и полная CI matrix
+### 15.4. Explicit local service lifecycle и полная CI matrix (локально завершено)
 
 - **Содержание:** явные lifecycle-команды `setup`/`doctor`/`start`/`stop`
   (существующие 9.2/9.3/9.7–9.10) и полный Rust workspace test/clippy, все v15
@@ -4201,6 +4202,24 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   новые процессы. Integration checks покрывают оба сервиса, repeat start/stop,
   console argv/exit, foreign live record, symlink credentials, foreign state и
   независимые ошибки `status --all`. Полная матрица проверяется отдельно ниже.
+
+- **Матрица:** `tools/check_matrix.py` объединяет workspace fmt/clippy/test,
+  self-contained SQLite corpora и все source verifier-ы 0A/0B на отдельных
+  временных v15/v17 checkout. Локально оба source contracts прошли полностью:
+  config 121/87, MCP 145 passes + 17 historical legacy skips / 47 strict cases,
+  security 51, runtime 29/77, SQLite v15 97 checks и v17 delta parity, manifest
+  AST/RAM verification. Skips не считаются passes. CI всегда запускает Rust
+  и self-contained corpus; source-parity job требует configured read-only
+  reference repository. Remote CI не запускался. Реальные model calls в CI
+  не входят; live parallel 15.3 и optional full automation 15.5 отмечаются
+  только по фактическому отдельному запуску.
+
+- **Финальная проверка 2026-10-06:** workspace fmt/clippy чисты,
+  `cargo test --offline --workspace`: **1356 passed, 0 failed, 0 ignored**.
+  [Sanitized local evidence](fixtures/runtime/local-matrix-2026-10-06.json)
+  содержит обе source pins и exit codes всех 12 fixture/source suites.
+  Parallel provider runner подготовлен в `tools/live_parallel_smoke.py`;
+  в этом блоке внешние модели не вызывались, live результат не заявляется.
 
 ### 15.5. Automation workflow proof (synthetic завершён; live optional)
 
@@ -4221,7 +4240,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   Остальные control/revision/delivery boundary cases покрыты существующими tests.
   Настоящие модели не вызывались; full live Codex+OpenCode proof не заявляется.
 
-## Поток 16. Approved automatic plan execution (v17, не завершён)
+## Поток 16. Approved automatic plan execution (v17, завершён)
 
 Source: `automation.py`, `automation_checkout.py`, `codex_client.py`,
 `docs/automatic-mode-plan.md`, `docs/automatic-plan.example.json` (v17).
@@ -4448,7 +4467,7 @@ limits не расширяются по модельному ответу. Ав�
   Third-state delivery failure сохраняет accepted artifact и phase для explicit
   retry; blocked run сам не продолжает apply после ручного восстановления.
   Полный proof через production worker/lifecycle и optional live run остаются
-  отдельным незавершённым этапом 15.5.
+  этапом 15.5, завершённым с deterministic model doubles; full live optional.
   Итоговая проверка: `cargo test --offline --workspace` — 1343 tests passed;
   additional current CLI tests (3) и explicit delivery retry test прошли.
   `cargo clippy --offline --workspace --all-targets -- -D warnings`,

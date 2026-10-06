@@ -22,3 +22,48 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Self-contained frozen fixtures
+        run: python3 -B tools/check_matrix.py --fixtures-only --skip-rust
+
+      - name: Matrix logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-matrix
+          path: target/check-matrix
+
+  source-parity:
+    if: ${{ vars.PYTHON_REFERENCE_REPOSITORY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout frozen reference source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PYTHON_REFERENCE_REPOSITORY }}
+          token: ${{ secrets.PYTHON_REFERENCE_TOKEN || github.token }}
+          ref: e52a46158cbeb4f3ae35063d395c05ea0ce144bc
+          fetch-depth: 0
+          path: python-reference
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install declared reference dependencies
+        run: |
+          python - <<'PY'
+          import subprocess, sys, tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path('python-reference/pyproject.toml').read_text())
+          dependencies = data['project']['dependencies'] + data['dependency-groups']['dev']
+          subprocess.run([sys.executable, '-m', 'pip', 'install', *dependencies], check=True)
+          PY
+      - name: Both frozen source contracts
+        run: python3 -B tools/check_matrix.py --reference "$GITHUB_WORKSPACE/python-reference" --skip-rust
+      - name: Source matrix logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-parity-matrix
+          path: target/check-matrix

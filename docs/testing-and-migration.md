@@ -2,6 +2,63 @@
 
 ## Набор проверок
 
+### Исполнимая матрица 15.4
+
+На границе потока запускается полный Rust workspace и self-contained SQLite corpus:
+
+```sh
+python3 -B tools/check_matrix.py --fixtures-only --offline
+```
+
+Полная source-parity matrix требует чистый read-only checkout Python HEAD
+`e52a46158cbeb4f3ae35063d395c05ea0ce144bc` и Python >=3.11 с зависимостями
+frozen `pyproject.toml` (включая dev group):
+
+```sh
+python3 -B tools/check_matrix.py \
+  --reference /home/denis/Python/agent_bridge --offline
+```
+
+Runner создаёт временные Git clones для v15 и v17, не переключает HEAD
+источника, не открывает Python runtime SQLite/history и запрещает запись
+Python bytecode. Если у источника есть `.venv`, используется её интерпретатор.
+Все verifier-ы запускаются, даже если один suite не прошёл. Логи и
+`summary.json` сохраняются в `target/check-matrix`; `--logs PATH` меняет место,
+`--skip-rust` допускается, когда workspace уже проверен отдельно. Exit 2 —
+infrastructure/config failure, exit 1 — failed selected suite. 17 известных
+legacy-v6 MCP skips выводятся отдельно и не засчитываются как parity passes;
+strict v15/v17 corpus не допускает skips.
+
+CI всегда запускает Rust checks и self-contained corpus. Job всех source
+verifier-ов включается repository variable `PYTHON_REFERENCE_REPOSITORY`;
+для закрытого reference нужен secret `PYTHON_REFERENCE_TOKEN` с read-only
+доступом. Checkout закреплён на v17 HEAD, fetch-depth=0 сохраняет v15 pin.
+Job сохраняет логи как artifact. Без этой настройки CI не заявляет source
+parity. Реальные model calls в CI не выполняются.
+
+`bridge-automation/tests/proof.rs` покрывает production workflow
+fix→consumer→final с crash/reopen и parallel worker overlap; локальные
+HTTP/model doubles позволяют выполнять проверки без внешних аккаунтов.
+Direct/worktree/linked runtime, manager lock и server reuse проверяются
+workspace integration tests. CLI service tests добавляют main OpenCode +
+настоящий Rust MCP lifecycle и rollback.
+
+Optional реальный parallel smoke подготовлен отдельно:
+
+```sh
+python3 -B tools/live_parallel_smoke.py \
+  --bridge "$PWD/target/debug/agent-bridge" \
+  --opencode /absolute/path/to/opencode \
+  --auth-source /absolute/path/to/auth.json \
+  --output /tmp/parallel-evidence.json
+```
+
+Он использует два временных worktree, две небольшие модельные задачи,
+loopback rendezvous и manual acceptance. Auth копируется в private временный
+XDG root, после cleanup остаётся sanitized evidence. Запуск требует разрешённой
+отправки тестовых prompts внешнему provider и оплачиваемой квоты; локальный
+model-double proof не означает успешного live smoke.
+
 ### Unit
 
 Config parsing, state transitions, command/permission policy, path confinement,

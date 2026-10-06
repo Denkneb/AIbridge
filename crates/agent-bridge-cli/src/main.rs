@@ -30,10 +30,12 @@ The state root must belong to Rust and be outside the bound project workspace.
 Local MCP entries launch this Rust binary with explicit config and state paths.
 
 Options:
-  --project ID        Configured project id (required)
+  --project ID        Configured project id (required unless --all)
+  --all               All configured projects (lifecycle/status only)
+  --json              Structured status/doctor output
   --config PATH       projects.toml path (required)
   --state-root PATH   Separate absolute Rust state root (required)
-  --task ID           Task UUID (worker/deliver-task, required)
+  --task ID           Task UUID (worker/delivery/attach required; console optional)
   --build             Build a private delivery artifact
   --dry-run           Validate delivery without target writes (default)
   --apply             Apply or resume the delivery journal

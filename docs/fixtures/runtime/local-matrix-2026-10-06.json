@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-06",
+  "scope": "local Rust workspace and frozen v15/v17 source parity",
+  "reference_pins": {
+    "v15": "86c65b55cc7cca0b9e917a36f4f6c317eac4cc1a",
+    "v17": "e52a46158cbeb4f3ae35063d395c05ea0ce144bc"
+  },
+  "rust": {
+    "fmt": "passed",
+    "clippy_all_targets": "passed",
+    "workspace_test": "passed",
+    "passed": 1356,
+    "failed": 0,
+    "ignored": 0
+  },
+  "source_suites": [
+    {
+      "suite": "fixtures-sqlite",
+      "exit_code": 0
+    },
+    {
+      "suite": "fixtures-delta",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-config-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-mcp-verify",
+      "exit_code": 0,
+      "counts": {
+        "passed": 145,
+        "failed": 0,
+        "skipped": 17
+      }
+    },
+    {
+      "suite": "v15-security-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-runtime-verify",
+      "exit_code": 0
+    },
+    {
+      "suite": "v15-parity-verify_parity",
+      "exit_code": 0,
+      "counts": {
+        "passed": 97,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "v17-docs-verify_contract_manifest",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-config-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-mcp-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-runtime-verify_v17",
+      "exit_code": 0
+    },
+    {
+      "suite": "v17-delta-verify_parity",
+      "exit_code": 0
+    }
+  ],
+  "remote_ci": "not_run",
+  "real_parallel_provider": "not_run_pending_explicit_provider_approval",
+  "automation_workflow": "production lifecycle with deterministic model doubles",
+  "note": "17 historical legacy-v6 MCP skips remain separate from passes; Python runtime state/history was not accessed."
+}

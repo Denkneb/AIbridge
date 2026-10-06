@@ -20,12 +20,25 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 
 ## Расхождение версий и ближайший шаг
 
+Main services управляются явными командами `setup`, `doctor --json`, `start`,
+`status --json`, `stop` с `--project ID --config PATH --state-root ABSOLUTE_PATH`;
+`--all` выбирает все настроенные проекты. Setup создаёт Rust-owned v17 state
+и отсутствующие private credentials. Start требует настроенный `mcp_url` и
+проверяет оба сервиса; ошибка откатывает только процессы текущего запуска.
+`hook-status` возвращает bounded read-only UserPromptSubmit context;
+`console [--task UUID]` и `attach-opencode --task UUID` используют проверенный
+endpoint/checkout и передают exit code OpenCode.
+
 Этапы автоматизации **16.1–16.10** реализованы: утверждённый JSON-план,
 отдельные worktree, наследование принятого результата, read-only Codex
 prepare/review, независимые verifier/acceptance checks, durable coordinator,
-CLI controls и восстановление доставки по журналу. Промежуточные результаты
-закоммичены по этапам. Следующий этап — **15.5**, сквозной workflow proof через production worker/
-lifecycle и отдельный live прогон. Настоящие модели пока не вызывались.
+CLI controls и восстановление доставки по журналу. **15.5** проверен через
+production worker/lifecycle с deterministic model doubles и crash/reopen.
+**15.3** доказывает parallel overlap, refusal и независимое acceptance на
+локальных servers. **9.19a–c** добавляют status/diagnostics, hook и task-scoped
+attach. **15.4** добавляет main service lifecycle и общую CI matrix;
+[команды и границы проверок](docs/testing-and-migration.md).
+Full live Codex+OpenCode automation proof остаётся отдельной optional проверкой.
 
 Запуск: `agent-bridge launch-codex --auto --plan /absolute/plan.json --project ID
 --config /absolute/projects.toml --state-root /absolute/rust-state`.

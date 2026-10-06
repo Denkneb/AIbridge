@@ -4290,7 +4290,7 @@ Smoke evidence не заменяется mock-only тестами. Полная 
   Parallel provider runner подготовлен в `tools/live_parallel_smoke.py`;
   в этом блоке внешние модели не вызывались, live результат не заявляется.
 
-### 15.5. Automation workflow proof (synthetic завершён; live optional)
+### 15.5. Automation workflow proof (synthetic и bounded live proof завершены)
 
 - **Цель:** synthetic multi-step Git workflow с deterministic model doubles,
   production verifier/lifecycle/materializer; отдельно optional live proof.
@@ -4750,3 +4750,15 @@ all-targets runtime/CLI Clippy passed. Terminal external fallback (13.15) routes
 fixed Shell/Codex/OpenCode/attach argv to `x-terminal-emulator -e`; external
 windows are independently managed. Actual provider TUI/Wayland proof follows
 separately. Auth or model availability is not inferred from offline tests.
+
+### Real automatic workflow — 2026-10-06
+
+15.5 bounded live proof passed via `tools/live_automation_smoke.py`: actual
+Codex `gpt-6.1-sol` prepare/review and OpenCode `opencode-go/minimax-m2.7`,
+two approved steps plus final verification task. All three tasks accepted in
+three rounds; inherited predecessor bytes and cumulative main result verified;
+run completed with HEAD and byte-exact Git index unchanged. Fresh private Rust
+v17 state and copied private auth were disposed. No Python runtime state/history
+participated. Sanitized evidence: `fixtures/runtime/live-automation-proof-2026-10-06.json`.
+Crash/revision/control boundary coverage remains in deterministic production-worker
+proofs; this live run establishes the real successful multi-step model path.

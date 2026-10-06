@@ -145,3 +145,17 @@ fixtures по-прежнему выполняются на независимы�
 
 Измеряются CLI/GUI startup, idle RSS, dashboard refresh на большой истории,
 `task_status` wake-up latency, terminal rendering/input latency и UI stalls.
+
+## Bounded real-model automation proof
+
+```sh
+python3 tools/live_automation_smoke.py \
+  --bridge /absolute/agent-bridge --opencode /absolute/opencode --codex /absolute/codex \
+  --opencode-auth /absolute/opencode-auth.json --codex-auth /absolute/codex-auth.json \
+  --output /tmp/live-automation.json
+```
+
+Runs a fixed two-step plan and final verifier with private copied credentials,
+independent real Codex review, OpenCode worktrees and cumulative delivery.
+Maximum workflow time is 600 seconds; only safe labels and booleans survive.
+Uses provider tokens; crash/revision/control cases remain in offline proofs.

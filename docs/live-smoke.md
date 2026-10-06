@@ -57,3 +57,13 @@ Transport/infrastructure errors намеренно используют безо
 Python error strings. Для delivery отдельные файлы заменяются атомарно, весь
 набор файлов общей атомарной транзакцией не является: после прерывания возможна
 смесь base/artifact файлов, которую доводит до результата журнал resume.
+
+## Real automatic workflow — 2026-10-06
+
+`tools/live_automation_smoke.py` passed with real Codex `gpt-6.1-sol` and
+OpenCode `opencode-go/minimax-m2.7`: two approved steps and final verification,
+three accepted tasks/rounds, inherited file bytes, cumulative delivery and
+byte-exact preservation of HEAD/index. [Sanitized report](fixtures/runtime/live-automation-proof-2026-10-06.json).
+Auth files were copied into private disposable homes; user project/history and
+Python runtime state were not used. The bounded successful run complements
+existing deterministic crash/revision/control proofs.

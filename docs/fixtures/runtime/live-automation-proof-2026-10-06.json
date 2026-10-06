@@ -1,0 +1,13 @@
+{
+  "outcome": "passed",
+  "scope": "real two-step Codex prepare/review and OpenCode worktree workflow",
+  "checks": {
+    "detached_launch": true,
+    "cumulative_bytes": true,
+    "head_preserved": true,
+    "index_preserved": true,
+    "three_accepted_tasks": true
+  },
+  "status": "completed",
+  "round_count": 3
+}

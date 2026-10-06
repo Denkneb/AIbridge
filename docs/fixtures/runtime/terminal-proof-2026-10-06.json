@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "checks": {
+    "react_rendered": true,
+    "project_binding": true,
+    "readonly_dashboard": true,
+    "preview_redaction": true,
+    "real_webview_ipc_pty": true,
+    "xterm_connected": true,
+    "ansi_cursor_alternate": true,
+    "unicode_wide_combining": true,
+    "selection": true,
+    "large_paste_bytes": true,
+    "bracketed_paste": true,
+    "bounded_scrollback": true,
+    "large_paste_queued": true,
+    "split_keyboard": true,
+    "settings_rendered": true,
+    "terminal_survives_rerender": true
+  },
+  "scope": "actual X11 Tauri WebView, React, IPC and PTY; no real models",
+  "state_uninitialized": true,
+  "exit_code": 0
+}

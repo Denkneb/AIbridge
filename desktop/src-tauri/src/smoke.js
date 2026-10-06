@@ -13,6 +13,32 @@
   const binding=()=>document.querySelector('.terminal-pane .muted')?.textContent;
   for(let i=0;i<100&&binding()!=='proof · shell';i++)await new Promise(r=>setTimeout(r,30));
   if(binding()!=='proof · shell')throw Error('xterm_session_missing');checks.xterm_connected=true;
+  const terminal=document.querySelector('.terminal-host').smokeTerminal;
+  if(!terminal)throw Error('smoke_frontend_build_required');
+  const write=bytes=>new Promise(resolve=>terminal.write(bytes,resolve));
+  await write('\x1b[?1049h\x1b[2J\x1b[H\x1b[31mRED\x1b[0m');
+  if(terminal.buffer.active.type!=='alternate'||terminal.buffer.active.getLine(0).translateToString(true)!=='RED'||terminal.buffer.active.getLine(0).getCell(0).getFgColor()!==1)throw Error('ansi_alternate');
+  await write('\x1b[?1049l');checks.ansi_cursor_alternate=true;
+  await write('\x1b[2J\x1b[H');const unicode=new TextEncoder().encode('界е\u0301');
+  await write(unicode.subarray(0,2));await write(unicode.subarray(2));
+  const line=terminal.buffer.active.getLine(0);if(line.getCell(0).getWidth()!==2||line.getCell(2).getChars()!=='е\u0301')throw Error('unicode_cells');checks.unicode_wide_combining=true;
+  terminal.select(0,0,3);if(terminal.getSelection()!=='界е\u0301')throw Error('selection');terminal.clearSelection();checks.selection=true;
+  const inputs=[];const listener=terminal.onData(data=>inputs.push(data));
+  await write('\x1b[?2004h');terminal.paste('printf BRACKETED_PROOF');listener.dispose();
+  if(inputs[0]!=='\x1b[200~printf BRACKETED_PROOF\x1b[201~')throw Error('bracketed_paste');
+  // Clear the shell edit buffer before exercising a large ordered paste.
+  terminal.input('\x15');terminal.paste("python3 -c \"print('LARGE_PASTE_OK',len('"+'ю'.repeat(12000)+"'))\" ");terminal.input('\r');
+  let pastePassed=false;
+  for(let i=0;i<300;i++){
+   for(let row=0;row<terminal.buffer.active.length;row++)if(terminal.buffer.active.getLine(row).translateToString(true)==='LARGE_PASTE_OK 12000')pastePassed=true;
+   if(pastePassed)break;await new Promise(r=>setTimeout(r,20));
+  }
+  if(!pastePassed)throw Error('large_paste_bytes');checks.large_paste_bytes=true;
+  await write('\x1b[?2004l');checks.bracketed_paste=true;
+  for(let i=0;i<5100;i++)terminal.writeln('scrollback');await write('');
+  if(terminal.buffer.active.length>terminal.rows+5000)throw Error('scrollback_limit');checks.bounded_scrollback=true;
+  terminal.clear();terminal.focus();checks.large_paste_queued=!document.querySelector('.terminal-pane .error');
+  if(!checks.large_paste_queued)throw Error('large_paste_failed');
   const xterm=document.querySelector('.xterm');if(!xterm)throw Error('xterm_missing');
   const separator=document.querySelector('[role="separator"]'),before=separator.getAttribute('aria-valuenow');separator.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));await new Promise(r=>setTimeout(r,100));if(separator.getAttribute('aria-valuenow')===before)throw Error('split_unchanged');checks.split_keyboard=true;
   const settings=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
@@ -20,5 +46,5 @@
   document.querySelector('nav button').click();await new Promise(r=>setTimeout(r,100));
   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();
   await invoke('smoke_complete',{passed:true,checks});
- }catch(_){await invoke('smoke_complete',{passed:false,checks});}
+ }catch(error){checks.failure=error.message;await invoke('smoke_complete',{passed:false,checks});}
 })();

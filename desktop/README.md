@@ -61,7 +61,7 @@ states remain distinct. Private paths, logs and suspected secrets are omitted.
 ```sh
 cargo test --offline -p bridge-desktop
 cargo clippy --offline -p bridge-desktop --all-targets -- -D warnings
-npm run --prefix desktop build
+AIBRIDGE_DESKTOP_SMOKE=1 npm run --prefix desktop build
 cargo build --manifest-path desktop/src-tauri/Cargo.toml --features desktop-smoke
 python3 tools/desktop_smoke.py \
   --desktop desktop/src-tauri/target/debug/aibridge-desktop \
@@ -85,3 +85,13 @@ of WebKit with its compiled helper prefix redirected to extracted helpers.
 The runner does not perform that patch automatically; installed dependencies
 use their normal system paths. X11 was verified; Wayland and live provider
 TUI compatibility remain separate checks.
+
+Terminal input is serialized in 4 KiB chunks with a 1 MiB pending cap and bounded
+retry when the Rust queue is full. Ctrl+C remains SIGINT; Ctrl+Shift+C/V use the
+WebView clipboard, with explicit errors if clipboard access is unavailable.
+Project switches preserve the bound session; Open/Attach replace it explicitly.
+The smoke frontend build exposes its xterm instance only for compatibility checks;
+ordinary Vite builds remove this test hook. The actual WebView proof covers ANSI,
+alternate screen, wide/combining Unicode, selection, bracketed paste, 12,000-character
+paste without byte loss, and bounded scrollback. OS clipboard and mouse/provider
+interaction require separate live checks.

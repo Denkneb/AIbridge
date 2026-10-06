@@ -4722,3 +4722,13 @@ production Tauri build/Clippy прошли. SQLite v6/delta corpus не изме
 библиотеки, ни Python state/history не изменялись. Wayland, provider TUI
 compatibility 13.13/13.14 и расширенная live automation matrix 15.5 этим smoke
 не закрываются.
+
+### Terminal compatibility hardening — 2026-10-06
+
+13.5/13.6/13.8/13.10/13.12 verified in actual X11 WebView with xterm and Rust PTY.
+Serialized 4 KiB input, bounded pending bytes/retry and generation-safe replacement
+fix large paste and late launch races. 12,000 Cyrillic characters reached the shell
+without loss. Selection verified; OS clipboard and mouse interaction remain live
+checks. Sanitized evidence: `fixtures/runtime/terminal-proof-2026-10-06.json`.
+Frontend typecheck/build and both real PTY integration tests passed. Smoke-only
+xterm access is compiled out of ordinary frontend builds.

@@ -37,7 +37,13 @@ fn identity(path: &Path) -> Value {
         Err(_) => Value::Null,
     }
 }
-fn record_safe(path: &Path) -> Result<(), &'static str> {
+fn record_safe(
+    path: &Path,
+    project: &str,
+    entry: &str,
+    slot: &Path,
+    dest: &Path,
+) -> Result<(), &'static str> {
     safe(path)?;
     let bytes = match fs::read(path) {
         Ok(v) => v,
@@ -48,6 +54,16 @@ fn record_safe(path: &Path) -> Result<(), &'static str> {
         return Err("process_unverifiable");
     }
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| "process_unverifiable")?;
+    if value["project_id"] != project
+        || value["task_id"] != entry
+        || value["kind"] != "worktree"
+        || value["boot_id"].as_str().is_none_or(str::is_empty)
+        || ![slot.join("checkout"), dest.join("checkout")]
+            .iter()
+            .any(|p| value["checkout"].as_str() == p.to_str())
+    {
+        return Err("process_binding_mismatch");
+    }
     let pid = value["pid"]
         .as_i64()
         .filter(|v| *v > 1)
@@ -116,7 +132,13 @@ fn collect(
             if path.exists() && !path.is_dir() {
                 blockers.push("path_not_directory");
             }
-            if let Err(e) = record_safe(&path.join("runtime/opencode.process.json")) {
+            if let Err(e) = record_safe(
+                &path.join("runtime/opencode.process.json"),
+                project.id().as_str(),
+                entry.entry_id.as_str(),
+                &slot,
+                &dest,
+            ) {
                 blockers.push(e);
             }
         }

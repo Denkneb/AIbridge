@@ -177,3 +177,12 @@ fn resumes_effect_before_registry_and_partial_registered_move() {
     fs::remove_dir_all(q.join("plain")).unwrap();
     quarantine::apply(&f.project, &f.layout, true, "plain").unwrap();
 }
+#[test]
+fn corrupt_or_foreign_stale_process_record_is_never_authority_to_move() {
+    let f = Fixture::new();
+    f.orphan("plain", false);
+    let slot = f.layout.project_dir().join("worktrees/plain");
+    fs::write(slot.join("runtime/opencode.process.json"),serde_json::json!({"pid":2147483647,"start":"1","boot_id":"old","project_id":"foreign","task_id":"plain","kind":"worktree","checkout":slot.join("checkout")}).to_string()).unwrap();
+    assert!(quarantine::apply(&f.project, &f.layout, false, "plain").is_err());
+    assert!(slot.exists());
+}

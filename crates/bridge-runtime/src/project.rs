@@ -91,7 +91,9 @@ pub fn setup(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runt
     for (p, l) in projects {
         validate(p, l)?;
         credential_preflight(p)?;
-        if l.project_dir().exists() {
+        // Desktop launch preferences may create the directory before setup.
+        // Only existing state artifacts require a proven owned database.
+        if l.database().exists() || l.marker().exists() {
             l.open_readonly().map_err(|_| RuntimeError::Ownership)?;
         }
     }

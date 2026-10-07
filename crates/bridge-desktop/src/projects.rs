@@ -145,7 +145,17 @@ impl ProjectService {
     pub fn lifecycle(&self, id: &str, command: &str) -> Result<Value, &'static str> {
         let (p, l) = self.project(id)?;
         match command {
-            "setup" => bridge_runtime::project::setup(&[(p, l)]).map_err(|_| "setup failed"),
+            "setup" => bridge_runtime::project::setup(&[(p, l)]).map_err(|error| match error {
+                bridge_runtime::RuntimeError::Ownership =>
+                    "setup failed: existing state is incomplete, incompatible or not owned by this project",
+                bridge_runtime::RuntimeError::Credentials =>
+                    "setup failed: credentials or OpenCode environment file unavailable; check private file permissions",
+                bridge_runtime::RuntimeError::Binding =>
+                    "setup failed: invalid state or credential path",
+                bridge_runtime::RuntimeError::Io =>
+                    "setup failed: unable to create or write state or credential files",
+                _ => "setup failed",
+            }),
             "doctor" => Ok(bridge_runtime::diagnostics::status(
                 &p,
                 &l,

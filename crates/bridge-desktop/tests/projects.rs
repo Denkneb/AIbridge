@@ -55,6 +55,39 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn setup_after_saving_codex_environment_preserves_preferences_and_is_idempotent() {
+    let f = Fixture::new();
+    let text = "KEY=fixture-private-value\n";
+    f.service.save_codex_env("primary", text).unwrap();
+    let (_, layout) = f.service.project("primary").unwrap();
+    assert!(layout.project_dir().is_dir());
+    assert!(!layout.database().exists());
+    assert!(!layout.marker().exists());
+
+    for _ in 0..2 {
+        assert_eq!(
+            f.service.lifecycle("primary", "setup").unwrap()["status"],
+            "ready"
+        );
+        layout.open_readonly().unwrap();
+        assert_eq!(f.service.read_codex_env("primary").unwrap(), text);
+    }
+}
+
+#[test]
+fn setup_refuses_unowned_database_before_creating_credentials() {
+    let f = Fixture::new();
+    f.service.save_codex_env("primary", "KEY=value\n").unwrap();
+    let (_, layout) = f.service.project("primary").unwrap();
+    fs::write(layout.database(), b"foreign-state").unwrap();
+    let error = f.service.lifecycle("primary", "setup").unwrap_err();
+    assert!(error.contains("not owned"));
+    assert_eq!(fs::read(layout.database()).unwrap(), b"foreign-state");
+    assert!(!layout.marker().exists());
+    assert!(!f.root.join("password").exists());
+}
+
+#[test]
 fn project_models_and_private_env_roundtrip_without_affecting_other_project() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();

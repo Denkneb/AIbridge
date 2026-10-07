@@ -114,6 +114,18 @@ async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, St
         .map_err(|_| "dashboard query failed".to_owned())?
 }
 #[tauri::command]
+async fn task_detail(state: State<'_, AppState>, project: String, task: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.task_detail(&project, &task).map_err(str::to_owned))
+        .await.map_err(|_| "Не удалось загрузить карточку задачи".to_owned())?
+}
+#[tauri::command]
+async fn task_rounds(state: State<'_, AppState>, project: String, task: String, before: u32, expected_revision: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.task_rounds(&project, &task, before, &expected_revision).map_err(str::to_owned))
+        .await.map_err(|_| "Не удалось загрузить историю раундов".to_owned())?
+}
+#[tauri::command]
 async fn dashboard_revision(
     state: State<'_, AppState>,
     project: String,
@@ -514,6 +526,8 @@ fn main() {
             task_set_status,
             task_recover,
             dashboard,
+            task_detail,
+            task_rounds,
             dashboard_revision,
             project_preview,
             project_apply,

@@ -585,15 +585,103 @@ fn wal_revision_and_usage_include_rounds_outside_visible_limit() {
             status: None,
         })
         .unwrap();
-    assert_eq!(result["tasks"][0]["rounds"].as_array().unwrap().len(), 100);
-    assert_eq!(result["tasks"][0]["usage"]["input"], 101);
-    assert_eq!(
-        result["tasks"][0]["delivery_refusal"]["code"],
-        "scope_overlap"
+    assert!(result["tasks"][0].get("rounds").is_none());
+    assert!(result["tasks"][0].get("usage").is_none());
+    let detail = f.service.task_detail("primary", &id).unwrap();
+    assert_eq!(detail["rounds"].as_array().unwrap().len(), 10);
+    assert_eq!(detail["rounds"][0]["number"], 101);
+    assert_eq!(detail["usage"]["input"], 101);
+    assert_eq!(detail["revision"], result["tasks"][0]["revision"]);
+    let mut numbers: Vec<u64> = detail["rounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["number"].as_u64().unwrap())
+        .collect();
+    let mut cursor = detail["next_before"].as_u64();
+    while let Some(before) = cursor {
+        let page = f
+            .service
+            .task_rounds(
+                "primary",
+                &id,
+                before as u32,
+                detail["revision"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert!(page["rounds"].as_array().unwrap().len() <= 10);
+        numbers.extend(
+            page["rounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["number"].as_u64().unwrap()),
+        );
+        cursor = page["next_before"].as_u64();
+    }
+    assert_eq!(numbers, (1..=101).rev().collect::<Vec<_>>());
+    assert!(f.service.task_detail("second", &id).is_err());
+    assert!(
+        f.service
+            .task_rounds("primary", &id, 0, detail["revision"].as_str().unwrap())
+            .is_err()
     );
+    storage
+        .connection()
+        .execute(
+            "UPDATE rounds SET updated_at='later' WHERE task_id=?1 AND round_number=1",
+            [&id],
+        )
+        .unwrap();
+    assert!(
+        f.service
+            .task_rounds("primary", &id, 91, detail["revision"].as_str().unwrap())
+            .is_err()
+    );
+    assert_eq!(detail["delivery_refusal"]["code"], "scope_overlap");
     assert!(!result.to_string().contains("/private/journal"));
+    assert!(!detail.to_string().contains("/private/journal"));
     assert_eq!(result["waiting_count"], 0);
     assert!(result["reservations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn task_revisions_track_selected_round_updates_without_invalidating_other_cards() {
+    let f = Fixture::new();
+    let first = f.task("primary", "first", "now");
+    let second = f.task("primary", "second", "now");
+    let first_revision = f.service.task_detail("primary", &first).unwrap()["revision"].clone();
+    let second_revision = f.service.task_detail("primary", &second).unwrap()["revision"].clone();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.open().unwrap().connection().execute(
+        r#"UPDATE rounds SET verifier_json='{"status":"passed"}',updated_at='later' WHERE task_id=?1"#,
+        [&second],
+    ).unwrap();
+    let snapshot = f
+        .service
+        .dashboard(Query {
+            project: "primary".into(),
+            active_only: false,
+            linked: false,
+            offset: 0,
+            limit: 100,
+            search: String::new(),
+            status: None,
+        })
+        .unwrap();
+    let rows = snapshot["tasks"].as_array().unwrap();
+    assert_eq!(
+        rows.iter().find(|t| t["task_id"] == first).unwrap()["revision"],
+        first_revision
+    );
+    assert_ne!(
+        rows.iter().find(|t| t["task_id"] == second).unwrap()["revision"],
+        second_revision
+    );
+    assert_eq!(
+        f.service.task_detail("primary", &second).unwrap()["rounds"][0]["verification"]["status"],
+        "passed"
+    );
 }
 
 #[test]
@@ -1203,27 +1291,13 @@ fn failed_task_recovery_is_explicit_and_available_only_for_bound_assistant_error
     let id = f.task("primary", "fixture", "2026-01-01T00:00:00Z");
     let (_, l) = f.service.project("primary").unwrap();
     let s = l.open().unwrap();
-    let query = || Query {
-        project: "primary".into(),
-        active_only: false,
-        linked: false,
-        offset: 0,
-        limit: 100,
-        search: String::new(),
-        status: None,
-    };
-    assert_eq!(
-        f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
-        false
-    );
+    let detail = || f.service.task_detail("primary", &id).unwrap();
+    assert_eq!(detail()["recoverable"], false);
     s.connection()
         .execute("UPDATE tasks SET status='failed' WHERE task_id=?1", [&id])
         .unwrap();
     s.connection().execute("UPDATE rounds SET status='failed',error_code='assistant_error',attempted=1,session_id='ses_fixture',outbound_message_id='msg_fixture' WHERE task_id=?1",[&id]).unwrap();
-    assert_eq!(
-        f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
-        true
-    );
+    assert_eq!(detail()["recoverable"], true);
     assert_eq!(
         s.get_task(id.parse().unwrap()).unwrap().unwrap().status,
         bridge_domain::TaskStatus::Failed
@@ -1235,10 +1309,7 @@ fn failed_task_recovery_is_explicit_and_available_only_for_bound_assistant_error
                 [code, &id],
             )
             .unwrap();
-        assert_eq!(
-            f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
-            false
-        );
+        assert_eq!(detail()["recoverable"], false);
         assert!(f.service.recover_failed_task("primary", &id).is_err());
         assert_eq!(
             s.get_task(id.parse().unwrap()).unwrap().unwrap().status,

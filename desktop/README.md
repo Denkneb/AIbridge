@@ -121,9 +121,17 @@ project services still use the explicit Start/Stop lifecycle.
 Dashboard reads owned Rust state for the selected project only, and supports Active/All, search, status filters and global pagination.
 DB/WAL change stamps skip unchanged snapshots, with a full refresh every 30
 seconds. Rows are virtualized, task selection is retained by ID, and refreshes do not
-launch workers or recover tasks. Details show verifier results, repository
+launch workers or recover tasks. List snapshots contain summaries and per-task
+revision stamps; round JSON, usage and repository details are fetched only for
+the selected task. An unchanged task keeps its open details during unrelated
+dashboard refreshes. Switching selection cancels stale detail/page responses.
+Details show verifier results, repository
 scope, findings, checkpoints, dependency edges, writer reservations/waiting count, saved usage and budget gates.
-Usage includes all saved rounds even when the details display is capped at 100.
+Round history starts with the latest ten rounds; “Загрузить ещё раунды” fetches
+ten older rounds using a cursor. If the task changes while a page is loading,
+the page is rejected rather than appended to stale history. Usage includes all
+saved rounds regardless of the displayed page; only the usage fields are read
+from saved result JSON.
 Delivery is shown separately from acceptance, and automation ready/completed
 states remain distinct. Private paths, logs and suspected secrets are omitted.
 

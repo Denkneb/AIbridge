@@ -206,16 +206,6 @@ impl ProjectService {
                 .connection()
                 .unchecked_transaction()
                 .map_err(|_| "snapshot unavailable")?;
-            let summaries = chosen
-                .iter()
-                .filter(|(id, _, _)| id == project.id().as_str())
-                .map(|(_, id, _)| {
-                    storage
-                        .get_task(id.parse().map_err(|_| "task identity invalid")?)
-                        .map_err(|_| "task data invalid")?
-                        .ok_or("task changed; refresh snapshot")
-                })
-                .collect::<Result<Vec<_>, _>>()?;
             active += storage
                 .count_tasks(project.id(), true)
                 .map_err(|_| "task data invalid")?;
@@ -225,78 +215,22 @@ impl ProjectService {
             writers += ledger.len();
             reservations.extend(ledger.into_iter().map(|r| json!({"task_id":r.task_id.to_string(),"project_id":r.project_id.as_str(),"parallel":r.parallel,"created_at":r.created_at})));
             waiting += tx.query_row("SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status='waiting_dependencies'", [project.id().as_str()], |r| r.get::<_, i64>(0)).map_err(|_| "waiting data invalid")?;
-            for t in summaries {
-                let(workflow,dependencies,mode,delivery,budget):(Option<String>,Option<String>,String,String,Option<String>)=tx.query_row("SELECT workflow_id,depends_on,execution_mode,delivery_mode,budget_json FROM tasks WHERE task_id=?1",[t.task_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|_|"task metadata invalid")?;
-                let delivery_state: Option<String> = tx
-                    .query_row(
-                        "SELECT delivery_state FROM worktrees WHERE task_id=?1",
-                        [t.task_id.to_string()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(|_| "delivery metadata invalid")?
-                    .flatten();
-                let refusal: Option<(String, String)> = tx.query_row("SELECT message,created_at FROM events WHERE task_id=?1 AND kind='delivery_refused' ORDER BY id DESC LIMIT 1", [t.task_id.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(|_| "delivery refusal invalid")?;
-                let refusal = refusal.map(|(message, time)| {
-                    let code = message.split(':').next().unwrap_or("");
-                    let code = if !code.is_empty()
-                        && code.len() <= 64
-                        && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-                    {
-                        code
-                    } else {
-                        "unavailable"
-                    };
-                    json!({"code":code,"created_at":safe_text(&time)})
-                });
-                let recoverable: bool = t.status == bridge_domain::TaskStatus::Failed && t.close_requested_at.is_none() && tx.query_row(
-                    "SELECT status='failed' AND error_code='assistant_error' AND attempted=1 AND session_id IS NOT NULL AND outbound_message_id IS NOT NULL FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 1",
-                    params![t.task_id.to_string(), project.id().as_str()], |r| r.get::<_, Option<bool>>(0),
-                ).optional().map_err(|_| "round data invalid")?.flatten().unwrap_or(false);
-                let mut rounds = vec![];
-
-                let mut stmt=tx.prepare("SELECT round_number,status,structured_findings,checkpoint_json,verifier_json,result_json FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 100").map_err(|_|"round data invalid")?;
-                let rows = stmt
-                    .query_map(params![t.task_id.to_string(), project.id().as_str()], |r| {
-                        Ok((
-                            r.get::<_, u32>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Option<String>>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                            r.get::<_, Option<String>>(4)?,
-                            r.get::<_, Option<String>>(5)?,
-                        ))
-                    })
-                    .map_err(|_| "round data invalid")?;
-                for row in rows {
-                    let (number, status, findings, checkpoint, verification, result) =
-                        row.map_err(|_| "round data invalid")?;
-                    let _ = result;
-                    rounds.push(json!({"number":number,"status":status,"findings":parsed(findings),"checkpoint":parsed(checkpoint),"verification":parsed(verification)}));
-                }
-                let mut all = tx.prepare("SELECT result_json FROM rounds WHERE task_id=?1 AND project_id=?2 AND result_json IS NOT NULL").map_err(|_| "usage data invalid")?;
-                let results = all
-                    .query_map(params![t.task_id.to_string(), project.id().as_str()], |r| {
-                        r.get::<_, String>(0)
-                    })
-                    .map_err(|_| "usage data invalid")?;
-                let mut usage = bridge_storage::usage::normalize_usage(&Value::Null);
-                for result in results {
-                    let result = result.map_err(|_| "usage data invalid")?;
-                    usage = bridge_storage::usage::add_usage(
-                        &usage,
-                        &bridge_storage::usage::total_saved_usage([Value::String(result)]),
-                    );
-                }
-                let budget = match budget {
-                    None => Value::Null,
-                    Some(b) => match bridge_storage::normalize_persisted_budget(Some(&b)) {
-                        Ok(Some(b)) => bridge_storage::usage::budget_state(&b, &usage),
-                        Ok(None) => Value::Null,
-                        Err(_) => json!({"gate":"corrupt"}),
-                    },
-                };
-                tasks.push(json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"recoverable":recoverable,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"delivery_refusal":refusal,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":rounds,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}));
+            for (_, id, _) in chosen
+                .iter()
+                .filter(|(id, _, _)| id == project.id().as_str())
+            {
+                let (title, status, updated_at): (String, String, String) = tx.query_row(
+                    "SELECT task,status,updated_at FROM tasks WHERE task_id=?1 AND project_id=?2",
+                    params![id, project.id().as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                ).map_err(|_| "task changed; refresh snapshot")?;
+                id.parse::<bridge_domain::TaskId>()
+                    .map_err(|_| "task identity invalid")?;
+                status
+                    .parse::<bridge_domain::TaskStatus>()
+                    .map_err(|_| "task data invalid")?;
+                let revision = task_revision(&tx, id)?;
+                tasks.push(json!({"task_id":id,"project_id":project.id().as_str(),"title":safe_text(&title),"status":status,"updated_at":updated_at,"revision":revision}));
             }
             drop(tx);
             let store = bridge_storage::automation::AutomationRunStore::new(layout);
@@ -321,4 +255,187 @@ impl ProjectService {
             json!({"tasks":tasks,"total":total,"active_count":active,"writer_count":writers,"waiting_count":waiting,"reservations":reservations,"runs":runs,"errors":errors,"offset":q.offset,"limit":q.limit}),
         )
     }
+    pub fn task_detail(&self, project: &str, task: &str) -> Result<Value, &'static str> {
+        let (project, layout) = self.project(project)?;
+        let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
+        let tx = storage
+            .connection()
+            .unchecked_transaction()
+            .map_err(|_| "snapshot unavailable")?;
+        let t = storage
+            .get_task(task.parse().map_err(|_| "task identity invalid")?)
+            .map_err(|_| "task data invalid")?
+            .ok_or("task not found")?;
+        if t.project_id != *project.id() {
+            return Err("task not found");
+        }
+        let(workflow,dependencies,mode,delivery,budget):(Option<String>,Option<String>,String,String,Option<String>)=tx.query_row("SELECT workflow_id,depends_on,execution_mode,delivery_mode,budget_json FROM tasks WHERE task_id=?1",[t.task_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|_|"task metadata invalid")?;
+        let delivery_state: Option<String> = tx
+            .query_row(
+                "SELECT delivery_state FROM worktrees WHERE task_id=?1",
+                [t.task_id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "delivery metadata invalid")?
+            .flatten();
+        let refusal: Option<(String, String)> = tx.query_row("SELECT message,created_at FROM events WHERE task_id=?1 AND kind='delivery_refused' ORDER BY id DESC LIMIT 1", [t.task_id.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(|_| "delivery refusal invalid")?;
+        let refusal = refusal.map(|(message, time)| {
+            let code = message.split(':').next().unwrap_or("");
+            let code = if !code.is_empty()
+                && code.len() <= 64
+                && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            {
+                code
+            } else {
+                "unavailable"
+            };
+            json!({"code":code,"created_at":safe_text(&time)})
+        });
+        let recoverable: bool = t.status == bridge_domain::TaskStatus::Failed && t.close_requested_at.is_none() && tx.query_row(
+                    "SELECT status='failed' AND error_code='assistant_error' AND attempted=1 AND session_id IS NOT NULL AND outbound_message_id IS NOT NULL FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 1",
+                    params![t.task_id.to_string(), project.id().as_str()], |r| r.get::<_, Option<bool>>(0),
+                ).optional().map_err(|_| "round data invalid")?.flatten().unwrap_or(false);
+        let page = round_page(&tx, &t.task_id.to_string(), project.id().as_str(), None)?;
+        let revision = task_revision(&tx, &t.task_id.to_string())?;
+        let mut all = tx.prepare("SELECT CASE WHEN json_valid(result_json) THEN CAST(json_extract(result_json, '$.usage') AS TEXT) END FROM rounds WHERE task_id=?1 AND project_id=?2 AND result_json IS NOT NULL").map_err(|_| "usage data invalid")?;
+        let results = all
+            .query_map(params![t.task_id.to_string(), project.id().as_str()], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .map_err(|_| "usage data invalid")?;
+        let mut usage = bridge_storage::usage::normalize_usage(&Value::Null);
+        for result in results {
+            let result = result.map_err(|_| "usage data invalid")?;
+            usage = bridge_storage::usage::add_usage(
+                &usage,
+                &bridge_storage::usage::normalize_usage(
+                    &result
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .unwrap_or(Value::Null),
+                ),
+            );
+        }
+        let budget = match budget {
+            None => Value::Null,
+            Some(b) => match bridge_storage::normalize_persisted_budget(Some(&b)) {
+                Ok(Some(b)) => bridge_storage::usage::budget_state(&b, &usage),
+                Ok(None) => Value::Null,
+                Err(_) => json!({"gate":"corrupt"}),
+            },
+        };
+        Ok(
+            json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"recoverable":recoverable,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"delivery_refusal":refusal,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":page["rounds"],"next_before":page["next_before"],"revision":revision,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}),
+        )
+    }
+
+    pub fn task_rounds(
+        &self,
+        project: &str,
+        task: &str,
+        before: u32,
+        expected_revision: &str,
+    ) -> Result<Value, &'static str> {
+        if before == 0 {
+            return Err("invalid round cursor");
+        }
+        let (project, layout) = self.project(project)?;
+        let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
+        let tx = storage
+            .connection()
+            .unchecked_transaction()
+            .map_err(|_| "snapshot unavailable")?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND project_id=?2)",
+                params![task, project.id().as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|_| "task data invalid")?;
+        if !exists {
+            return Err("task not found");
+        }
+        let revision = task_revision(&tx, task)?;
+        if revision != expected_revision {
+            return Err("История задачи изменилась; обновите карточку");
+        }
+        round_page(&tx, task, project.id().as_str(), Some(before))
+    }
+}
+
+// Hash only metadata: refreshing the list never materializes round JSON.
+fn task_revision(tx: &rusqlite::Transaction<'_>, task: &str) -> Result<String, &'static str> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let meta: (String, String, u32, Option<String>) = tx.query_row(
+        "SELECT updated_at,status,revision_count,close_requested_at FROM tasks WHERE task_id=?1", [task],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    ).map_err(|_| "task data invalid")?;
+    meta.hash(&mut hash);
+    let mut stmt = tx.prepare("SELECT round_number,status,updated_at FROM rounds WHERE task_id=?1 ORDER BY round_number")
+        .map_err(|_| "round metadata invalid")?;
+    let rows = stmt
+        .query_map([task], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|_| "round metadata invalid")?;
+    for row in rows {
+        row.map_err(|_| "round metadata invalid")?.hash(&mut hash);
+    }
+    let events: (i64, i64) = tx
+        .query_row(
+            "SELECT COUNT(*),COALESCE(MAX(id),0) FROM events WHERE task_id=?1",
+            [task],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "event metadata invalid")?;
+    events.hash(&mut hash);
+    let delivery: Option<Option<String>> = tx
+        .query_row(
+            "SELECT delivery_state FROM worktrees WHERE task_id=?1",
+            [task],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| "delivery metadata invalid")?;
+    delivery.hash(&mut hash);
+    Ok(format!("{:016x}", hash.finish()))
+}
+
+fn round_page(
+    tx: &rusqlite::Transaction<'_>,
+    task: &str,
+    project: &str,
+    before: Option<u32>,
+) -> Result<Value, &'static str> {
+    let mut stmt = tx.prepare("SELECT round_number,status,structured_findings,checkpoint_json,verifier_json FROM rounds WHERE task_id=?1 AND project_id=?2 AND (?3 IS NULL OR round_number<?3) ORDER BY round_number DESC LIMIT 11")
+        .map_err(|_| "round data invalid")?;
+    let rows = stmt
+        .query_map(params![task, project, before], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|_| "round data invalid")?;
+    let mut rounds = Vec::new();
+    let mut has_more = false;
+    for row in rows {
+        if rounds.len() == 10 {
+            has_more = true;
+            break;
+        }
+        let (number, status, findings, checkpoint, verification) =
+            row.map_err(|_| "round data invalid")?;
+        rounds.push(json!({"number":number,"status":status,"findings":parsed(findings),"checkpoint":parsed(checkpoint),"verification":parsed(verification)}));
+    }
+    let next_before = has_more.then(|| rounds.last().unwrap()["number"].as_u64().unwrap());
+    Ok(json!({"rounds":rounds,"next_before":next_before}))
 }

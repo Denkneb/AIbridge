@@ -95,16 +95,19 @@ added automatically.
 
 The terminal opens fixed Shell, OpenCode or Codex profiles. OpenCode uses the
 existing Rust controller; task attachment uses the proven task checkout/session
-router. Codex uses `agent-bridge launch-codex` with process-local primary/linked MCP
-wiring, durable delegation rules, read-only sandbox and bounded status hooks.
+router. “Codex без моста” starts `codex` directly in the project workspace,
+using the user's ordinary Codex configuration. AIbridge adds no MCP wiring,
+controller prompt, hooks or sandbox override in this mode. “Codex через мост”
+uses `agent-bridge launch-codex` with process-local primary/linked MCP wiring,
+durable delegation rules, read-only sandbox and bounded status hooks.
 Codex launch variables accept `NAME=value` or `export NAME=value`, one per line,
 with literal values (no shell expansion). The Save variables button and both
-Codex launch buttons persist them per project at
+Codex launch buttons in either mode persist them per project at
 `<state-root>/<project>/desktop-codex.env` with mode 0600. Opening the app restores
 them; switching projects keeps drafts separate. Clear and save to remove overrides.
 Invalid text is refused without echoing values; symlink and non-private files are
 refused. Existing terminal sessions retain the environment from their launch.
-Codex and OpenCode hold a shared config-edit fence and separate exclusive
+The bridge Codex and OpenCode controllers hold a shared config-edit fence and separate exclusive
 profile locks until their children exit, so the two controllers can coexist.
 Each terminal tab owns a PTY and xterm buffer; hidden tabs keep draining output.
 Open reuses a running Codex/OpenCode tab for the selected project and opens a new

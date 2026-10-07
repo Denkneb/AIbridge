@@ -235,7 +235,7 @@ fn terminal_command(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agent-bridge")
         });
     let variables = launch_env::parse(launch_env.as_deref().unwrap_or(""))?;
-    if !variables.is_empty() && profile != "codex" {
+    if !variables.is_empty() && !matches!(profile, "codex" | "codex-standalone") {
         return Err("Переменные запуска доступны для Codex".into());
     }
     let mut cmd = match profile {
@@ -246,6 +246,12 @@ fn terminal_command(
             let mut c = portable_pty::CommandBuilder::new("/bin/bash");
             c.args(["--noprofile", "--norc"]);
             c
+        }
+        "codex-standalone" => {
+            if task.is_some() {
+                return Err("Обычный Codex не привязан к задаче моста".into());
+            }
+            portable_pty::CommandBuilder::new("codex")
         }
         "opencode" | "codex" | "attach" => {
             if !executable.is_absolute() || !executable.is_file() {

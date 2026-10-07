@@ -37,6 +37,28 @@ async fn codex_env_save(
         .map_err(|_| "Не удалось сохранить переменные Codex".to_owned())?
 }
 #[tauri::command]
+async fn opencode_keys_read(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.opencode_keys(&project))
+        .await
+        .map_err(|_| "Не удалось загрузить список ключей".to_owned())?
+}
+#[tauri::command]
+async fn opencode_key_save(
+    state: State<'_, AppState>,
+    project: String,
+    name: String,
+    value: Option<String>,
+    expected_file: Option<String>,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.save_opencode_key(&project, &name, value.as_deref(), expected_file.as_deref())
+    })
+    .await
+    .map_err(|_| "Не удалось сохранить ключ".to_owned())?
+}
+#[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.dashboard(query).map_err(str::to_owned))
@@ -416,6 +438,8 @@ fn main() {
             projects,
             codex_env_read,
             codex_env_save,
+            opencode_keys_read,
+            opencode_key_save,
             dashboard,
             dashboard_revision,
             project_preview,

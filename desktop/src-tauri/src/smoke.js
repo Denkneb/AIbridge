@@ -10,7 +10,8 @@
   const session=await invoke('terminal_open',{project:'proof',profile:'shell',task:null,rows:24,cols:80});await invoke('terminal_resize',{session,rows:37,cols:101});await invoke('terminal_write',{session,bytes:Array.from(new TextEncoder().encode("printf 'DESKTOP_PTY_PROOF\\n'; stty size\n"))});
   let output='';const decoder=new TextDecoder();for(let i=0;i<100;i++){for(const event of await invoke('terminal_read',{session})){if(event.type==='data')output+=decoder.decode(new Uint8Array(event.bytes),{stream:true});}if(output.includes('DESKTOP_PTY_PROOF')&&output.includes('37 101'))break;await new Promise(r=>setTimeout(r,30));}if(!output.includes('37 101'))throw Error('pty_io_resize');await invoke('terminal_close',{session});checks.real_webview_ipc_pty=true;
   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
-  const binding=()=>document.querySelector('.terminal-pane .muted')?.textContent;
+  const binding=()=>document.querySelector('.terminal-tabs [role="tab"][aria-selected="true"]')?.textContent.replace(/ · (запуск|завершена|ошибка)$/, '')??'Нет сессии';
+  const closeActive=()=>document.querySelector('.terminal-tabs [role="tab"][aria-selected="true"]')?.parentElement.querySelector('button[aria-label^="Закрыть"]').click();
   for(let i=0;i<100&&binding()!=='proof · shell';i++)await new Promise(r=>setTimeout(r,30));
   if(binding()!=='proof · shell')throw Error('xterm_session_missing');checks.xterm_connected=true;
   let terminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
@@ -40,7 +41,16 @@
   await write('\x1b[?2004l');checks.bracketed_paste=true;
   for(let i=0;i<5100;i++)terminal.writeln('scrollback');await write('');
   if(terminal.buffer.active.length>terminal.rows+5000)throw Error('scrollback_limit');checks.bounded_scrollback=true;
-  terminal.clear();terminal.focus();checks.large_paste_queued=!document.querySelector('.terminal-pane .error');
+  terminal.clear();
+  const terminalMenu=document.querySelector('.toolbar-menu');terminalMenu.querySelector('summary').click();
+  const fontSelect=terminalMenu.querySelector('select');fontSelect.value='16';fontSelect.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,100));
+  if(terminal.options.fontSize!==16)throw Error('menu_font_size');
+  fontSelect.value='14';fontSelect.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,100));
+  await write('TOOLBAR_CLEAR_PROOF');
+  [...terminalMenu.querySelectorAll('button')].find(b=>b.textContent==='Очистить').click();await new Promise(r=>setTimeout(r,100));
+  if(terminalMenu.open||terminal.buffer.active.baseY!==0)throw Error('menu_clear');
+  checks.terminal_toolbar_menu=true;
+  terminal.focus();checks.large_paste_queued=!document.querySelector('.terminal-pane .error');
   if(!checks.large_paste_queued)throw Error('large_paste_failed');
   const keyboard=[];const keyboardListener=terminal.onData(data=>keyboard.push(data));
   terminal.textarea.dispatchEvent(new KeyboardEvent('keydown',{key:'c',code:'KeyC',keyCode:67,ctrlKey:true,bubbles:true}));
@@ -87,6 +97,22 @@
   [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
   await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'retry_not_saved');
   if(document.querySelector('.settings .error'))throw Error('successful_save_retained_old_error');checks.successful_save_clears_error=true;
+
+  await waitUI(()=>document.querySelector('.opencode-keys form'),'provider_keys_missing');
+  setInput('Имя переменной провайдера','PROVIDER_API_KEY');setInput('Значение ключа провайдера','fixture-provider-secret');await new Promise(r=>setTimeout(r,50));
+  if(document.querySelector('[aria-label="Значение ключа провайдера"]').type!=='password')throw Error('provider_key_not_masked');
+  document.querySelector('.opencode-keys form').requestSubmit();
+  await waitUI(()=>document.querySelector('[aria-label="Удалить ключ PROVIDER_API_KEY"]'),'provider_key_not_saved');
+  const keyView=await invoke('opencode_keys_read',{project:'proof'});
+  if(keyView.names.join(',')!=='PROVIDER_API_KEY'||JSON.stringify(keyView).includes('fixture-provider-secret')||document.querySelector('[aria-label="Значение ключа провайдера"]').value)throw Error('provider_key_leak');
+  await waitUI(()=>document.querySelector('[aria-label="Env-файл исполнителя OpenCode"]').value===keyView.file,'provider_env_not_bound_in_form');
+  [...document.querySelectorAll('.opencode-keys button')].find(b=>b.textContent==='Заменить').click();
+  setInput('Значение ключа провайдера','fixture-provider-replaced');await new Promise(r=>setTimeout(r,50));
+  document.querySelector('.opencode-keys form').requestSubmit();await waitUI(()=>!document.querySelector('[aria-label="Значение ключа провайдера"]').value,'provider_key_not_replaced');
+  document.querySelector('[aria-label="Удалить ключ PROVIDER_API_KEY"]').click();
+  await waitUI(()=>!document.querySelector('[aria-label="Удалить ключ PROVIDER_API_KEY"]'),'provider_key_not_deleted');
+  if((await invoke('opencode_keys_read',{project:'proof'})).names.length)throw Error('provider_key_still_present');
+  checks.provider_keys_ui=true;checks.provider_keys_redacted=true;
 
   [...document.querySelectorAll('.opencode-editor button')].find(b=>b.textContent==='Загрузить').click();
   await waitUI(()=>document.querySelector('[aria-label="Содержимое конфигурации OpenCode"]'),'config_editor_missing');
@@ -156,15 +182,15 @@
   await waitFor(()=>bufferText(proofTerminal).split('\n').includes('PROJECT_BACKGROUND_OUTPUT'),'hidden_project_output_lost');
   proofTerminal.paste("printf 'PROJECT_SURVIVED:%s\\n' $TAB_MARKER");proofTerminal.input('\r');
   await waitFor(()=>bufferText(proofTerminal).split('\n').includes('PROJECT_SURVIVED:first'),'switching_project_killed_pty');
-  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();
+  closeActive();
   selectProject('other');await waitFor(()=>binding()==='other · shell','closing_proof_killed_other');
   if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==otherTerminal||document.querySelector('[aria-label="Программа терминала"]').value!=='codex')throw Error('other_project_state_lost');
   otherTerminal.paste("printf 'OTHER_SURVIVED:%s\\n' $TAB_MARKER");otherTerminal.input('\r');
   await waitFor(()=>bufferText(otherTerminal).split('\n').includes('OTHER_SURVIVED:other'),'other_project_process_stopped');
-  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();
+  closeActive();
   selectProject('proof');await waitFor(()=>document.querySelector('.dashboard')?.getAttribute('aria-label')==='Задачи проекта proof','proof_dashboard_not_restored');
   checks.project_workspace_isolation=true;checks.project_switch_preserves_pty=true;checks.project_dashboard_scope=true;
-  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();
+  closeActive();
   const program=document.querySelector('[aria-label="Программа терминала"]');program.value='codex';program.dispatchEvent(new Event('change',{bubbles:true}));
   await waitUI(()=>document.querySelector('[aria-label="Переменные окружения Codex"]')&&!document.querySelector('[aria-label="Переменные окружения Codex"]').disabled,'codex_env_not_loaded');
   document.querySelector('.terminal-launch-env').open=true;
@@ -198,10 +224,10 @@
     checks[profile+'_actual_tui_render_input_resize']=true;
     if(profile==='opencode'){
      if(document.querySelectorAll('.terminal-session').length!==2)throw Error('controller_tabs_missing');
-     [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();await new Promise(r=>setTimeout(r,800));
+     closeActive();await new Promise(r=>setTimeout(r,800));
      if(binding()!=='proof · codex')throw Error('codex_stopped_by_opencode');
      checks.codex_opencode_coexist=true;
-     [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить').click();await new Promise(r=>setTimeout(r,800));
+     closeActive();await new Promise(r=>setTimeout(r,800));
     }
    }
   }

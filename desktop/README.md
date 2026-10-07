@@ -55,7 +55,7 @@ files. Independent projects
 can keep running while another project is edited or added. Both current and
 proposed links are checked, including newly registered trusted workspaces. The
 shared config-file lock and stale-preview check still serialize file writes.
-Config-edit errors name the affected project and distinguish unfinished tasks,
+Config-edit errors name the affected project and distinguish running task executors,
 worker/controller locks, live services, state ownership and filesystem failures.
 Exited service records are checked by PID start time and boot ID and do not block
 saves; records and processes are not deleted or stopped by saving settings.
@@ -170,3 +170,30 @@ python3 tools/desktop_smoke.py --desktop /absolute/aibridge-desktop \
 `--live-tui` uses private empty Codex/OpenCode homes to verify interactive startup,
 input, resize and cleanup, including initial login/trust screens. It does not
 perform a provider task. The separate live automation proof uses copied auth.
+
+The compact terminal toolbar keeps program selection and Open visible. Font size,
+Clear, and external terminal launch are in the “⋯” menu. Use the tab’s “×” to close
+its session; it replaces the duplicate toolbar close button.
+
+“Запустить” first prepares the selected project’s state and missing credentials,
+then starts its services. Project configuration is edited through “Настройки”;
+there is no separate setup button in the toolbar.
+
+The app header combines project selection, service actions, navigation, and theme
+in one row. The workspace path is shown on hover over the project selector.
+Narrow windows can scroll the header horizontally to reach every action.
+
+Settings includes “Ключи провайдеров OpenCode”: enter a variable name and a masked
+value, save or replace it, or delete a saved name. Existing values are never
+returned to the frontend. AIbridge creates a private 0600 per-project env file
+under the config directory’s secrets folder and binds it automatically. Existing
+external env variables are copied on first save; the original file is preserved.
+Saving uses the project’s activity guard. Stop its executors, services and controllers
+before saving, then start the services and reopen OpenCode. In opencode.json use
+`{env:PROVIDER_API_KEY}` (or the corresponding variable name). Create and save a
+new project first to enable its provider key editor.
+
+Unfinished task statuses do not block per-project settings, OpenCode JSON, or
+provider-key edits when execution is stopped. Saves hold admission, project and
+per-task worker fences, plus controller and service-management fences. Task rows
+and statuses are preserved. Whole-config CLI migration keeps its stricter check.

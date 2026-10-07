@@ -461,6 +461,11 @@ pub struct ProjectEnv {
 }
 
 impl ProjectEnv {
+    /// Parses literal NAME=value pairs with the same rules as project env files.
+    pub fn parse(text: &str) -> Result<Self> {
+        parse_project_env(text)
+    }
+
     /// Wraps an already validated variable mapping.
     fn new(variables: BTreeMap<String, String>) -> Self {
         Self { variables }

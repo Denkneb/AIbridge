@@ -350,10 +350,10 @@ fn empty_dashboard_never_initializes_runtime() {
     assert!(!l.marker().exists());
 }
 #[test]
-fn project_config_edit_still_refuses_its_active_tasks() {
+fn project_settings_and_keys_can_be_saved_with_unfinished_tasks_when_stopped() {
     let f = Fixture::new();
-    let id = f.task("primary", "done", "2026-01-01T00:00:00.000+00:00");
-    f.task("second", "done", "2026-01-01T00:00:00.000+00:00");
+    let id = f.task("primary", "unfinished", "2026-01-01T00:00:00.000+00:00");
+    let (_, layout) = f.service.project("primary").unwrap();
     let mut draft = f
         .service
         .projects()
@@ -361,36 +361,77 @@ fn project_config_edit_still_refuses_its_active_tasks() {
         .into_iter()
         .find(|p| p.id == "primary")
         .unwrap();
-    draft.max_rounds = 9;
-    let review = f.service.preview(draft.clone(), None, None).unwrap();
-    f.service
-        .apply(review["review_id"].as_str().unwrap())
-        .unwrap();
-    let (_, l) = f.service.project("primary").unwrap();
-    l.open()
-        .unwrap()
-        .connection()
-        .execute(
-            "UPDATE tasks SET status='implementing' WHERE task_id=?1",
-            [id],
-        )
-        .unwrap();
-    draft.max_rounds = 10;
-    let review = f.service.preview(draft, None, None).unwrap();
-    assert!(
+    for (index, status) in [
+        "implementing",
+        "revising",
+        "awaiting_review",
+        "needs_user",
+        "failed",
+        "waiting_dependencies",
+        "delivery_unknown",
+    ]
+    .iter()
+    .enumerate()
+    {
+        layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                rusqlite::params![status, id],
+            )
+            .unwrap();
+        draft.max_rounds = 10 + index as u64;
+        let review = f.service.preview(draft.clone(), None, None).unwrap();
         f.service
             .apply(review["review_id"].as_str().unwrap())
-            .is_err()
-    );
-    assert_eq!(
+            .unwrap();
+        let original = f
+            .service
+            .read_opencode_config("primary", "opencode.json")
+            .unwrap();
+        let review = f
+            .service
+            .preview_opencode_config(
+                "primary",
+                "opencode.json",
+                "{}",
+                if original["exists"] == true {
+                    original["content"].as_str()
+                } else {
+                    None
+                },
+            )
+            .unwrap();
         f.service
-            .projects()
+            .apply_opencode_config(review["review_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            layout
+                .open()
+                .unwrap()
+                .get_task(id.parse().unwrap())
+                .unwrap()
+                .unwrap()
+                .status
+                .to_string(),
+            *status
+        );
+    }
+    f.service
+        .save_opencode_key("primary", "PROVIDER_API_KEY", Some("secret"), None)
+        .unwrap();
+    assert_eq!(
+        layout
+            .open()
             .unwrap()
-            .iter()
-            .find(|p| p.id == "primary")
+            .get_task(id.parse().unwrap())
             .unwrap()
-            .max_rounds,
-        9
+            .unwrap()
+            .status
+            .to_string(),
+        "delivery_unknown"
     );
 }
 #[test]
@@ -804,5 +845,269 @@ fn config_edit_reports_invalid_state_instead_of_claiming_services_are_running() 
     assert_eq!(
         fs::read_to_string(layout.marker()).unwrap(),
         "foreign fixture marker"
+    );
+}
+
+#[test]
+fn provider_keys_are_private_persisted_and_never_returned_to_ui() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    assert_eq!(
+        f.service.opencode_keys("primary").unwrap()["names"],
+        serde_json::json!([])
+    );
+    let saved = f
+        .service
+        .save_opencode_key("primary", "PROVIDER_API_KEY", Some("fixture-secret"), None)
+        .unwrap();
+    assert!(!saved.to_string().contains("fixture-secret"));
+    let file = saved["file"].as_str().unwrap();
+    assert_eq!(
+        fs::metadata(file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let reopened = ProjectService::new(f.service.config.clone(), f.service.state.clone()).unwrap();
+    let (project, _) = reopened.project("primary").unwrap();
+    assert_eq!(
+        project
+            .read_opencode_env()
+            .unwrap()
+            .unwrap()
+            .get("PROVIDER_API_KEY"),
+        Some("fixture-secret")
+    );
+    assert!(
+        !fs::read_to_string(&f.service.config)
+            .unwrap()
+            .contains("fixture-secret")
+    );
+    assert!(
+        !reopened
+            .opencode_keys("primary")
+            .unwrap()
+            .to_string()
+            .contains("fixture-secret")
+    );
+    reopened
+        .save_opencode_key(
+            "primary",
+            "SECOND_API_KEY",
+            Some("second-secret"),
+            Some(file),
+        )
+        .unwrap();
+    reopened
+        .save_opencode_key(
+            "primary",
+            "PROVIDER_API_KEY",
+            Some("replaced-secret"),
+            Some(file),
+        )
+        .unwrap();
+    reopened
+        .save_opencode_key("primary", "PROVIDER_API_KEY", None, Some(file))
+        .unwrap();
+    let (project, _) = reopened.project("primary").unwrap();
+    let env = project.read_opencode_env().unwrap().unwrap();
+    assert!(!env.contains_key("PROVIDER_API_KEY"));
+    assert_eq!(env.get("SECOND_API_KEY"), Some("second-secret"));
+    assert!(
+        reopened.opencode_keys("second").unwrap()["names"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn provider_keys_copy_external_env_without_changing_shared_file_or_other_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let external = f.root.join("shared.env");
+    fs::write(&external, "SHARED_KEY=external-secret\n").unwrap();
+    fs::set_permissions(&external, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut doc = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    for id in ["primary", "second"] {
+        doc["projects"][id]["opencode_env_file"] = toml_edit::value(external.to_str().unwrap());
+    }
+    fs::write(&f.service.config, doc.to_string()).unwrap();
+    f.service
+        .save_opencode_key(
+            "primary",
+            "PROVIDER_API_KEY",
+            Some("primary-secret"),
+            external.to_str(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&external).unwrap(),
+        "SHARED_KEY=external-secret\n"
+    );
+    let (primary, _) = f.service.project("primary").unwrap();
+    let env = primary.read_opencode_env().unwrap().unwrap();
+    assert_eq!(env.get("SHARED_KEY"), Some("external-secret"));
+    assert_eq!(env.get("PROVIDER_API_KEY"), Some("primary-secret"));
+    assert_eq!(
+        f.service.opencode_keys("second").unwrap()["names"],
+        serde_json::json!(["SHARED_KEY"])
+    );
+    assert!(
+        f.service
+            .save_opencode_key("primary", "SHARED_KEY", Some("new"), external.to_str())
+            .is_err()
+    );
+}
+
+#[test]
+fn provider_keys_reject_injection_reserved_names_unsafe_files_and_active_project() {
+    use std::os::unix::{fs::PermissionsExt, fs::symlink};
+    let f = Fixture::new();
+    let original = fs::read(&f.service.config).unwrap();
+    for (name, value) in [
+        ("OPENCODE_SERVER_PASSWORD", "secret"),
+        ("A=\nB", "secret"),
+        ("KEY", "secret\nOTHER=injected"),
+        ("KEY", "secret\u{2028}OTHER=injected"),
+        ("1KEY", "secret"),
+    ] {
+        let error = f
+            .service
+            .save_opencode_key("primary", name, Some(value), None)
+            .unwrap_err();
+        assert!(!error.contains("secret"));
+        assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    }
+    f.service
+        .save_opencode_key("primary", "KEY", Some("secret"), None)
+        .unwrap();
+    let view = f.service.opencode_keys("primary").unwrap();
+    let file = view["file"].as_str().unwrap();
+    fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        f.service
+            .save_opencode_key("primary", "KEY", Some("new"), Some(file))
+            .is_err()
+    );
+    fs::remove_file(file).unwrap();
+    let foreign = f.root.join("foreign.env");
+    fs::write(&foreign, "KEY=foreign\n").unwrap();
+    symlink(&foreign, file).unwrap();
+    assert!(
+        f.service
+            .save_opencode_key("primary", "KEY", Some("new"), Some(file))
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(&foreign).unwrap(), "KEY=foreign\n");
+    fs::remove_file(file).unwrap();
+    fs::write(file, "KEY=secret\n").unwrap();
+    fs::set_permissions(file, fs::Permissions::from_mode(0o600)).unwrap();
+    let id = f.task("primary", "active", "now");
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='needs_user' WHERE task_id=?1",
+            [&id],
+        )
+        .unwrap();
+    let bridge_worker::WorkerLockOutcome::Acquired(worker) =
+        bridge_worker::WorkerLock::try_acquire_task(&layout, id.parse().unwrap()).unwrap()
+    else {
+        panic!("worker fence unavailable")
+    };
+    assert!(
+        f.service
+            .save_opencode_key("primary", "KEY", Some("new"), Some(file))
+            .unwrap_err()
+            .contains("исполнитель")
+    );
+    assert_eq!(fs::read_to_string(file).unwrap(), "KEY=secret\n");
+    drop(worker);
+    f.service
+        .save_opencode_key("primary", "KEY", Some("new"), Some(file))
+        .unwrap();
+}
+
+#[test]
+fn stopped_tasks_allow_edits_but_each_executor_fence_still_blocks_them() {
+    use std::os::fd::AsRawFd;
+    let f = Fixture::new();
+    let id = f.task("primary", "unfinished", "now");
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout
+        .open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='implementing' WHERE task_id=?1",
+            [&id],
+        )
+        .unwrap();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    draft.max_rounds = 8;
+    for (name, kind) in [
+        ("worker.lock", nix::fcntl::FlockArg::LockExclusiveNonblock),
+        (
+            "admission.lock",
+            nix::fcntl::FlockArg::LockExclusiveNonblock,
+        ),
+        ("controller.lock", nix::fcntl::FlockArg::LockSharedNonblock),
+    ] {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(layout.project_dir().join(name))
+            .unwrap();
+        nix::fcntl::flock(file.as_raw_fd(), kind).unwrap();
+        let review = f.service.preview(draft.clone(), None, None).unwrap();
+        assert!(
+            f.service
+                .apply(review["review_id"].as_str().unwrap())
+                .is_err()
+        );
+        drop(file);
+    }
+    let config =
+        bridge_config::load_config_with_state_root(&f.service.config, &f.service.state).unwrap();
+    assert!(bridge_runtime::project::config_edit_guard(&config, &f.service.state).is_err());
+    let guard = bridge_runtime::project::project_config_edit_guard(
+        &config,
+        &config,
+        "primary",
+        &f.service.state,
+    )
+    .unwrap();
+    assert!(matches!(
+        bridge_worker::WorkerLock::try_acquire_task(&layout, id.parse().unwrap()).unwrap(),
+        bridge_worker::WorkerLockOutcome::Busy
+    ));
+    drop(guard);
+    let review = f.service.preview(draft, None, None).unwrap();
+    f.service
+        .apply(review["review_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        layout
+            .open()
+            .unwrap()
+            .get_task(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .status
+            .to_string(),
+        "implementing"
     );
 }

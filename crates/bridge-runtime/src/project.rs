@@ -367,7 +367,7 @@ pub fn stop(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runti
 }
 
 /// Holds every manager/admission/controller/worker fence during shared config edits.
-/// Existing owned namespaces must have no unfinished tasks or service records.
+/// Existing owned namespaces must have no running services or executors.
 pub struct ConfigEditGuard {
     _manager: Option<ManagerLock>,
     _files: Vec<fs::File>,
@@ -432,12 +432,12 @@ impl std::fmt::Display for ConfigEditError {
 impl std::error::Error for ConfigEditError {}
 
 /// # Errors
-/// Refuses foreign state, active tasks, retained service records or busy locks.
+/// Refuses foreign state, unfinished tasks, live services or busy locks.
 pub fn config_edit_guard(
     config: &bridge_config::Config,
     state: &Path,
 ) -> Result<ConfigEditGuard, RuntimeError> {
-    config_entries_edit_guard(&config.projects().values().collect::<Vec<_>>(), state)
+    config_entries_edit_guard(&config.projects().values().collect::<Vec<_>>(), state, true)
         .map_err(|e| e.kind)
 }
 
@@ -446,7 +446,8 @@ pub fn config_edit_guard(
 /// Projects sharing credential files also participate in the fence.
 /// # Errors
 /// Refuses activity or unsafe state in affected projects; independent projects
-/// can keep running. The caller must separately serialize writes to the file.
+/// can keep running. Unfinished task rows alone do not block a project edit.
+/// The caller must separately serialize writes to the file.
 pub fn project_config_edit_guard(
     existing: &bridge_config::Config,
     proposed: &bridge_config::Config,
@@ -487,12 +488,13 @@ pub fn project_config_edit_guard(
         .into_iter()
         .filter_map(|id| existing.project(id).or_else(|| proposed.project(id)))
         .collect::<Vec<_>>();
-    config_entries_edit_guard(&projects, state)
+    config_entries_edit_guard(&projects, state, false)
 }
 
 fn config_entries_edit_guard(
     projects: &[&ProjectEntry],
     state: &Path,
+    require_finished_tasks: bool,
 ) -> Result<ConfigEditGuard, ConfigEditError> {
     use std::os::fd::AsRawFd;
     let mut layouts = vec![];
@@ -571,13 +573,64 @@ fn config_entries_edit_guard(
         let count = storage
             .count_tasks(layout.project_id(), true)
             .map_err(|_| runtime_error(RuntimeError::Ownership))?;
-        if count > 0 {
+        if require_finished_tasks && count > 0 {
             return Err(ConfigEditError::busy(
                 id,
                 format!(
                     "Незавершённых задач: {count}. Завершите или закройте их перед сохранением."
                 ),
             ));
+        }
+        // Parallel workers hold a per-task fence instead of worker.lock.
+        // admission.lock remains held while collecting and fencing these tasks.
+        let mut query = storage
+            .connection()
+            .prepare("SELECT task_id FROM tasks WHERE project_id=?1")
+            .map_err(|_| runtime_error(RuntimeError::Ownership))?;
+        let task_ids = query
+            .query_map([id], |row| row.get::<_, String>(0))
+            .map_err(|_| runtime_error(RuntimeError::Ownership))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| runtime_error(RuntimeError::Ownership))?;
+        if !task_ids.is_empty() {
+            let directory = layout.project_dir().join("workers");
+            check_path(&directory, true).map_err(runtime_error)?;
+            match fs::create_dir(&directory) {
+                Ok(()) => fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                    .map_err(|_| runtime_error(RuntimeError::Io))?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(runtime_error(RuntimeError::Io)),
+            }
+            for task in task_ids {
+                let task = task
+                    .parse::<bridge_domain::TaskId>()
+                    .map_err(|_| runtime_error(RuntimeError::Ownership))?;
+                let path = directory.join(format!("{task}.lock"));
+                check_path(&path, false).map_err(runtime_error)?;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .mode(0o600)
+                    .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+                    .open(path)
+                    .map_err(|_| runtime_error(RuntimeError::Io))?;
+                nix::fcntl::flock(
+                    file.as_raw_fd(),
+                    nix::fcntl::FlockArg::LockExclusiveNonblock,
+                )
+                .map_err(|e| {
+                    if e == nix::errno::Errno::EWOULDBLOCK {
+                        ConfigEditError::busy(
+                            id,
+                            "Работает исполнитель задачи. Остановите исполнителя этого проекта.",
+                        )
+                    } else {
+                        runtime_error(RuntimeError::Io)
+                    }
+                })?;
+                files.push(file);
+            }
         }
         let project = projects
             .iter()

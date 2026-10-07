@@ -142,6 +142,7 @@
   checks.project_git_branches=true;checks.project_git_switch=true;
   await waitUI(()=>document.querySelector('.project-indicator')&&!document.querySelector('.project-indicator-checking'),'project_status_not_loaded');
   if(document.querySelector('.project-indicator-running')||!document.querySelector('.project-indicator').getAttribute('aria-label').includes('proof'))throw Error('project_status_binding');checks.project_status_indicator=true;
+  await waitUI(()=>document.querySelector('.project-select option[value="proof"]').textContent.includes('остановлен'),'project_list_stopped_status');checks.project_list_service_status=true;
   const setInput=(label,value)=>{const input=document.querySelector(`[aria-label="${label}"]`);if(!input)throw Error('missing_'+label);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
   setInput('Модель исполнителя OpenCode','fixture/executor');setInput('Модель контроллера OpenCode','fixture/controller');await new Promise(r=>setTimeout(r,50));
   document.querySelector('.settings form').requestSubmit();
@@ -260,6 +261,7 @@
   await waitFor(()=>bufferText(otherTerminal).split('\n').includes('OTHER_SURVIVED:other'),'other_project_process_stopped');
   closeActive();
   selectProject('proof');await waitFor(()=>document.querySelector('.dashboard')?.getAttribute('aria-label')==='Задачи проекта proof','proof_dashboard_not_restored');
+  await waitUI(()=>['proof','other'].every(id=>{const text=document.querySelector(`.project-select option[value="${id}"]`)?.textContent;return text&&text.includes('остановлен');}),'all_project_list_statuses');
   checks.project_workspace_isolation=true;checks.project_switch_preserves_pty=true;checks.project_dashboard_scope=true;
   closeActive();
   const program=document.querySelector('[aria-label="Программа терминала"]');program.value='codex';program.dispatchEvent(new Event('change',{bubbles:true}));
@@ -275,6 +277,25 @@
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(envField,'');envField.dispatchEvent(new Event('input',{bubbles:true}));
   await waitUI(()=>!document.querySelector('.terminal-launch-env button').disabled,'codex_env_clear_not_dirty');document.querySelector('.terminal-launch-env button').click();
   await waitUI(async()=>await invoke('codex_env_read',{project:'proof'})==='','codex_env_not_cleared');checks.codex_environment_persistence=true;
+  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Автоматизация').click();
+  await waitUI(()=>document.querySelector('[aria-label="JSON-план автоматизации"]'),'automation_tab_missing');
+  const plan={version:1,goal:'Smoke approved goal',steps:[{id:'one',task:'Create file',allowed_paths:['file.txt'],test_commands:['true'],acceptance_criteria:['File exists']}],final_test_commands:['true'],delivery:'manual'};
+  const planField=document.querySelector('[aria-label="JSON-план автоматизации"]');
+  const setPlan=text=>{Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(planField,text);planField.dispatchEvent(new Event('input',{bubbles:true}));};
+  const checkButton=()=>[...document.querySelectorAll('.automation button')].find(b=>b.textContent==='Проверить план');
+  setPlan(JSON.stringify(plan));await waitUI(()=>checkButton()&&!checkButton().disabled,'automation_preview_not_ready');checkButton().click();
+  await waitUI(()=>document.querySelector('[aria-label="Согласование плана"]'),'automation_preview_missing');
+  if(!document.querySelector('[aria-label="Согласование плана"]').textContent.includes('Smoke approved goal')||![...document.querySelectorAll('.automation button')].some(b=>b.textContent==='Утвердить и запустить'&&!b.disabled))throw Error('automation_approval_missing');
+  setPlan(JSON.stringify({...plan,goal:'Changed goal'}));
+  await waitUI(()=>!document.querySelector('[aria-label="Согласование плана"]'),'automation_stale_approval');
+  checkButton().click();await waitUI(()=>document.querySelector('[aria-label="Согласование плана"]'),'automation_repreview_missing');
+  [...document.querySelectorAll('.automation .review button')].find(b=>b.textContent==='Отменить').click();
+  await waitUI(()=>!document.querySelector('[aria-label="Согласование плана"]'),'automation_cancel_failed');
+  setPlan('{}');await waitUI(()=>checkButton()&&!checkButton().disabled,'automation_invalid_preview_busy');checkButton().click();
+  await waitUI(()=>document.querySelector('.automation [role="alert"]'),'automation_invalid_plan_no_error');
+  if(document.querySelector('[aria-label="Согласование плана"]'))throw Error('automation_invalid_plan_approved');
+  checks.automation_plan_preview_and_invalidation=true;checks.automation_invalid_plan_refused=true;
+  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Dashboard').click();
   const options=await invoke('smoke_options');
   if(options.live_tui){
    for(const profile of ['codex','opencode']){

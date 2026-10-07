@@ -1,30 +1,39 @@
 import {useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
+import type {Project} from './types';
 
 interface Health {ready:boolean;servers:Record<string,{ready:boolean;managed:boolean;process_record:string;idle?:boolean;message?:string}>}
 type Status='checking'|'running'|'idle'|'partial'|'stopped'|'unknown';
+interface State {value:Status;message?:string}
 const labels:Record<Status,string>={checking:'Проверка состояния',running:'Запущен: OpenCode и MCP доступны',idle:'Запущен: основной OpenCode запускается по требованию; MCP доступен',partial:'Частично запущен: часть сервисов недоступна',stopped:'Не запущен',unknown:'Состояние недоступно'};
+const listLabels:Record<Status,string>={checking:'… проверка',running:'● активен',idle:'● активен',partial:'◐ частично запущен',stopped:'○ остановлен',unknown:'? статус недоступен'};
 
-export function ProjectStatus({project,revision}:{project:string;revision:number}){
- const [status,setStatus]=useState<{project:string;value:Status;message?:string}>({project:'',value:'checking'});
+export function ProjectSelector({projects,selected,revision,onSelect}:{projects:Project[];selected:string;revision:number;onSelect:(project:string)=>void}){
+ const [states,setStates]=useState<Record<string,State>>({});
+ const projectIds=projects.map(p=>p.id).join(',');
  useEffect(()=>{
-  if(!project)return;
+  const ids=projectIds?projectIds.split(','):[];
+  if(!ids.length){setStates({});return;}
   let stopped=false,timer:ReturnType<typeof setTimeout>;
-  setStatus({project,value:'checking'});
-  const refresh=async()=>{
+  setStates(previous=>Object.fromEntries(ids.map(id=>[id,previous[id]??{value:'checking'}])));
+  const check=async(project:string)=>{
+   let next:State;
    try{
     const health=await invoke<Health>('lifecycle',{project,action:'doctor'});
     const servers=Object.values(health.servers);
     const value:Status=health.ready?(health.servers.opencode?.idle?'idle':'running'):servers.some(s=>s.ready||s.managed)?'partial':servers.some(s=>s.process_record==='invalid')?'unknown':'stopped';
-    if(!stopped)setStatus({project,value,message:health.servers.opencode?.message});
-   }catch{if(!stopped)setStatus({project,value:'unknown'});}
-   finally{if(!stopped)timer=setTimeout(refresh,5000);}
+    next={value,message:health.servers.opencode?.message};
+   }catch{next={value:'unknown'};}
+   if(!stopped)setStates(previous=>({...previous,[project]:next}));
+  };
+  const refresh=async()=>{
+   // Bound simultaneous diagnostics and wait for the sweep before polling again.
+   for(let i=0;i<ids.length&&!stopped;i+=4)await Promise.all(ids.slice(i,i+4).map(check));
+   if(!stopped)timer=setTimeout(refresh,5000);
   };
   void refresh();return()=>{stopped=true;clearTimeout(timer);};
- },[project,revision]);
- if(!project)return null;
- const value=status.project===project?status.value:'checking';
- const detail=status.project===project?status.message:undefined;
- const description=`Проект ${project}: ${labels[value]}${detail?' — '+detail:''}`;
- return <span className={`project-indicator project-indicator-${value}`} role="status" aria-label={description} title={description}><span className="project-status-dot" aria-hidden="true"/></span>;
+ },[projectIds,revision]);
+ const status=states[selected]??{value:'checking'};
+ const description=`Проект ${selected}: ${labels[status.value]}${status.message?' — '+status.message:''}`;
+ return <label className="project-select" title={projects.find(p=>p.id===selected)?.workspace}>Проект<select aria-label="Проект" value={selected} onChange={e=>onSelect(e.target.value)}><option value="" disabled>Выберите проект</option>{projects.map(p=>{const state=states[p.id]??{value:'checking'};return <option key={p.id} value={p.id} title={labels[state.value]}>{p.id} · {listLabels[state.value]}</option>;})}</select>{selected&&<span className={`project-indicator project-indicator-${status.value}`} role="status" aria-label={description} title={description}><span className="project-status-dot" aria-hidden="true"/></span>}</label>;
 }

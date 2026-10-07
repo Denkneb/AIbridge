@@ -94,6 +94,7 @@ pub struct ProjectService {
     pub config: PathBuf,
     pub state: PathBuf,
     pending: Mutex<HashMap<String, Pending>>,
+    pub(crate) pending_automation: Mutex<HashMap<String, crate::automation::PendingPlan>>,
     pub(crate) pending_opencode: Mutex<HashMap<String, crate::opencode_config::PendingConfig>>,
 }
 impl ProjectService {
@@ -111,6 +112,7 @@ impl ProjectService {
             config,
             state,
             pending: Mutex::new(HashMap::new()),
+            pending_automation: Mutex::new(HashMap::new()),
             pending_opencode: Mutex::new(HashMap::new()),
         })
     }
@@ -320,7 +322,7 @@ impl ProjectService {
             &self.config,
             Some(&self.state),
         )
-        .map_err(|_| "project configuration invalid or conflicts with another project")?;
+        .map_err(|error| error.message())?;
         let p = checked.project(&draft.id).ok_or("project missing")?;
         let l = RustStateLayout::new(self.state.clone(), p.id().clone())
             .map_err(|_| "state invalid")?;

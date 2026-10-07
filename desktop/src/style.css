@@ -35,7 +35,7 @@
 
 header button,header select,.pane-bar button,.pane-bar select,.filters input,.filters select{padding:5px 8px;font-size:12px}
 .project-select{min-width:0;gap:6px;font-size:12px}
-.project-select select{width:180px;max-width:240px}
+.project-select select{width:240px;max-width:320px}
 .dashboard>.pane-bar{gap:6px}
 .dashboard .pill{font-size:11px;padding:2px 6px}
 .toolbar-menu{position:relative;flex-shrink:0;border:0;padding:0;margin:0}
@@ -71,3 +71,5 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 .task-status-editor form{display:grid;gap:8px;padding:12px 0}.task-status-editor label{display:grid;gap:4px}.task-status-editor textarea{min-height:70px}.task-status-editor p{color:var(--muted)}
 
 .detail .pane-bar>.task-status-editor{display:contents}.detail .pane-bar>.task-status-editor form{flex-basis:100%;min-width:0;order:1}
+
+.automation{padding:16px}.automation>p{line-height:1.6}.automation textarea{width:100%;min-height:260px;font-family:monospace;margin:12px 0;resize:vertical}.automation-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}.automation-run{border:1px solid var(--line);border-radius:8px;padding:12px;margin:18px 0}.automation-run progress{width:160px;max-width:100%;accent-color:var(--accent)}.automation li{overflow-wrap:anywhere}.automation li[aria-current=step]>details{border-color:var(--accent)}.automation dd{white-space:pre-wrap}.plan-file{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.plan-file input{max-width:240px}.automation .review h4{margin-bottom:8px}

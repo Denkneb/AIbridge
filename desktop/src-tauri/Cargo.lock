@@ -182,6 +182,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-automation"
+version = "0.1.0"
+dependencies = [
+ "bridge-artifact",
+ "bridge-command-policy",
+ "bridge-config",
+ "bridge-delivery",
+ "bridge-domain",
+ "bridge-git",
+ "bridge-mcp",
+ "bridge-path-policy",
+ "bridge-storage",
+ "bridge-worker",
+ "nix 0.27.1",
+ "process-wrap",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "bridge-command-policy"
 version = "0.1.0"
 
@@ -200,9 +224,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-delivery"
+version = "0.1.0"
+dependencies = [
+ "bridge-artifact",
+ "bridge-config",
+ "bridge-domain",
+ "bridge-git",
+ "bridge-storage",
+ "bridge-worker",
+ "nix 0.27.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "bridge-desktop"
 version = "0.1.0"
 dependencies = [
+ "bridge-automation",
  "bridge-config",
  "bridge-domain",
  "bridge-git",
@@ -235,6 +277,28 @@ dependencies = [
  "bridge-domain",
  "bridge-path-policy",
  "serde_json",
+]
+
+[[package]]
+name = "bridge-mcp"
+version = "0.1.0"
+dependencies = [
+ "bridge-command-policy",
+ "bridge-config",
+ "bridge-delivery",
+ "bridge-domain",
+ "bridge-git",
+ "bridge-opencode",
+ "bridge-path-policy",
+ "bridge-runtime",
+ "bridge-storage",
+ "bridge-submission",
+ "bridge-worker",
+ "nix 0.27.1",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -273,6 +337,17 @@ version = "0.1.0"
 dependencies = [
  "bridge-domain",
  "rusqlite",
+ "serde_json",
+]
+
+[[package]]
+name = "bridge-submission"
+version = "0.1.0"
+dependencies = [
+ "bridge-config",
+ "bridge-domain",
+ "bridge-git",
+ "bridge-storage",
  "serde_json",
 ]
 

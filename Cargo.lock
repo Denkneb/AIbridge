@@ -143,6 +143,7 @@ dependencies = [
 name = "bridge-desktop"
 version = "0.1.0"
 dependencies = [
+ "bridge-automation",
  "bridge-config",
  "bridge-domain",
  "bridge-git",

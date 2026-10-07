@@ -209,6 +209,34 @@ fn opencode_config_cancel(state: State<'_, AppState>, review_id: String) {
     state.projects.cancel_opencode_config(&review_id);
 }
 #[tauri::command]
+async fn automation_preview(state: State<'_, AppState>, project: String, content: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.automation_preview(&project, &content))
+        .await.map_err(|_| "Не удалось проверить план".to_owned())?
+}
+#[tauri::command]
+fn automation_cancel(state: State<'_, AppState>, review_id: String) {
+    state.projects.automation_cancel(&review_id);
+}
+#[tauri::command]
+async fn automation_start(state: State<'_, AppState>, project: String, review_id: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.automation_start(&project, &review_id))
+        .await.map_err(|_| "Не удалось запустить план".to_owned())?
+}
+#[tauri::command]
+async fn automation_status(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.automation_status(&project))
+        .await.map_err(|_| "Не удалось загрузить запуск".to_owned())?
+}
+#[tauri::command]
+async fn automation_control(state: State<'_, AppState>, project: String, run: String, action: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.automation_control(&project, &run, &action))
+        .await.map_err(|_| "Не удалось изменить состояние запуска".to_owned())?
+}
+#[tauri::command]
 async fn lifecycle(
     state: State<'_, AppState>,
     project: String,
@@ -542,6 +570,11 @@ fn main() {
             opencode_config_preview,
             opencode_config_apply,
             opencode_config_cancel,
+            automation_preview,
+            automation_cancel,
+            automation_start,
+            automation_status,
+            automation_control,
             lifecycle,
             terminal_open,
             terminal_external,

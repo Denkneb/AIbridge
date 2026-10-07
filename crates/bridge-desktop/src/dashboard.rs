@@ -26,7 +26,7 @@ fn safe_text(raw: &str) -> String {
         "[скрыто: возможные секреты]".into()
     }
 }
-fn sanitize(value: &Value) -> Value {
+pub(crate) fn sanitize(value: &Value) -> Value {
     match value {
         Value::String(s) => json!(safe_text(s)),
         Value::Array(a) => Value::Array(a.iter().take(128).map(sanitize).collect()),

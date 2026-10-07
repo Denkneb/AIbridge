@@ -33,6 +33,31 @@ For development, start `npm run dev` in `desktop` and run the Tauri target with
 `desktop/dist` and prohibit remote content through CSP. The window has no
 arbitrary shell, filesystem or SQL IPC. Native directory/file pickers use the only enabled dialog permission.
 
+## Automatic approved plans
+
+Open **Автоматизация**, upload a JSON plan or paste the plan prepared during your
+Codex discussion. **Проверить план** validates it using the same policy as
+`launch-codex --auto --plan`, displays tasks, scopes, acceptance criteria,
+dependencies, checks, delivery and effective limits. **Утвердить и запустить**
+starts the exact reviewed document through the CLI's detached supervisor.
+Editing the plan, replacing/cancelling its review, or changing project configuration
+invalidates approval. The review is consumed before launch to prevent a repeated
+IPC request from submitting it twice. After a launch error, refresh status before
+preparing another review; a durable run may already exist and can be resumed.
+
+The latest run refreshes every three seconds, with per-step progress, review
+findings, revision counts and blocker codes. Pause, resume and stop always target
+the displayed run UUID. Pause is cooperative and waits for the current operation;
+stop uses the existing cleanup lifecycle. Closing the window leaves the detached
+supervisor running. Saved per-project Codex launch variables apply to start and
+resume. Invalid variables cannot prevent pause or stop.
+
+A clean supported main Git repository and no unfinished tasks are required.
+The plan's `delivery` controls final behavior: `apply` applies the cumulative
+result automatically; `manual` leaves it ready for separate `deliver-task --apply`
+using the final task UUID shown in the run. This UI uses the existing worktree
+workflow and does not create intermediate Git commits.
+
 ## Per-project OpenCode settings
 
 Settings exposes optional `opencode_model` (executor), Rust-specific
@@ -68,6 +93,13 @@ project configuration must also be present in the task checkout. Restart service
 and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
+
+The project dropdown shows a service status beside every project: active, partially
+started, stopped, checking or unavailable. Read-only diagnostics refresh all
+projects every five seconds after each sweep, with at most four simultaneous
+queries, and immediately after lifecycle actions. A project whose MCP is ready
+and whose main OpenCode is idle is active. The selected project uses the same
+status snapshot for its adjacent dot; changing selection does not start services.
 
 A status dot beside the selected project turns green when MCP is ready and
 OpenCode is ready or idle, amber when required services are unavailable, and grey

@@ -1452,3 +1452,63 @@ fn manual_status_supports_all_unfinished_labels_and_preserves_evidence() {
         );
     }
 }
+
+#[test]
+fn settings_preview_preserves_specific_safe_configuration_errors() {
+    let f = Fixture::new();
+    let projects = f.service.projects().unwrap();
+    let primary = projects.iter().find(|p| p.id == "primary").unwrap().clone();
+    let second = projects.iter().find(|p| p.id == "second").unwrap();
+    let mut draft = primary.clone();
+    draft.workspace = second.workspace.clone();
+    assert_eq!(
+        f.service.preview(draft, None, None).unwrap_err(),
+        "project workspace is already used by another project"
+    );
+    let mut draft = primary.clone();
+    draft.opencode_url = second.opencode_url.clone();
+    assert_eq!(
+        f.service.preview(draft, None, None).unwrap_err(),
+        "project endpoint is already used by another project"
+    );
+    let mut draft = primary.clone();
+    draft.allow_parallel_writers = true;
+    assert_eq!(
+        f.service.preview(draft, None, None).unwrap_err(),
+        "project allow_parallel_writers=true requires execution_mode=worktree"
+    );
+    let mut draft = primary;
+    draft.opencode_url = "http://user:private-password@127.0.0.1:4109".into();
+    let error = f.service.preview(draft, None, None).unwrap_err();
+    assert!(error.contains("opencode_url"));
+    assert!(!error.contains("private-password"));
+    assert!(!error.contains("127.0.0.1"));
+}
+
+#[test]
+fn new_project_preview_reports_reused_workspace_and_accepts_distinct_bindings() {
+    let f = Fixture::new();
+    let original = fs::read(&f.service.config).unwrap();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    draft.id = "new_project".into();
+    draft.opencode_url = "http://127.0.0.1:4103".into();
+    draft.mcp_url = Some("http://127.0.0.1:4203/mcp".into());
+    assert_eq!(
+        f.service.preview(draft.clone(), None, None).unwrap_err(),
+        "project workspace is already used by another project"
+    );
+    let workspace = f.root.join("new-workspace");
+    fs::create_dir(&workspace).unwrap();
+    draft.workspace = workspace.to_string_lossy().into();
+    let preview = f.service.preview(draft, None, None).unwrap();
+    assert_eq!(preview["before"], serde_json::Value::Null);
+    assert_eq!(preview["after"]["id"], "new_project");
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    assert!(!f.service.state.exists());
+}

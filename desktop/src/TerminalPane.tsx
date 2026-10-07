@@ -4,6 +4,7 @@ import {Terminal} from '@xterm/xterm';
 import {FitAddon} from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type {TerminalEvent} from './types';
+import {installTerminalInput} from './terminalInput';
 declare const __DESKTOP_SMOKE__:boolean;
 
 type TabStatus='starting'|'running'|'exited'|'error';
@@ -37,6 +38,7 @@ function TerminalSession({tab,visible,fontSize,clearCount,onStatus}:{tab:Termina
     }
    }).catch(e=>{if(!stopped&&session.current===id)setError(String(e));}).finally(()=>{pending-=bytes.length;});
   });
+  const keyboardInput=installTerminalInput(t,host.current!);
   // Preserve Ctrl+C for SIGINT. Copy uses the conventional terminal shortcut.
   t.attachCustomKeyEventHandler(e=>{
    if(e.type==='keydown'&&e.ctrlKey&&e.shiftKey&&e.code==='KeyC'){
@@ -45,7 +47,7 @@ function TerminalSession({tab,visible,fontSize,clearCount,onStatus}:{tab:Termina
    if(e.type==='keydown'&&e.ctrlKey&&e.shiftKey&&e.code==='KeyV'){
     e.preventDefault();const id=session.current;invoke<string>('clipboard_read').then(text=>{if(id&&session.current===id)t.paste(text);}).catch(()=>setError('Буфер обмена недоступен'));return false;
    }
-   return true;
+   return keyboardInput.key(e);
   });
   const resize=new ResizeObserver(()=>{if(host.current?.clientWidth&&host.current?.clientHeight){f.fit();const id=session.current;if(id)invoke('terminal_resize',{session:id,rows:t.rows,cols:t.cols}).catch(e=>{if(session.current===id)setError(String(e));});}});resize.observe(host.current!);
   const poll=async()=>{
@@ -61,7 +63,7 @@ function TerminalSession({tab,visible,fontSize,clearCount,onStatus}:{tab:Termina
    }catch(e){if(!stopped)setError(String(e));}
    if(!stopped)setTimeout(poll,32);
   };void poll();
-  return()=>{stopped=true;openGeneration.current++;const id=session.current;session.current=null;if(id)invoke('terminal_close',{session:id}).catch(()=>{});resize.disconnect();data.dispose();t.dispose();term.current=null;};
+  return()=>{stopped=true;openGeneration.current++;const id=session.current;session.current=null;if(id)invoke('terminal_close',{session:id}).catch(()=>{});resize.disconnect();keyboardInput.dispose();data.dispose();t.dispose();term.current=null;};
  },[]);
  useEffect(()=>{if(term.current){term.current.options.fontSize=fontSize;if(visible){fit.current?.fit();term.current.focus();}}},[fontSize,visible]);
  useEffect(()=>{if(clearCount&&visible){term.current?.clear();term.current?.focus();}},[clearCount]);

@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--display-backend', choices=['x11', 'wayland'], default='x11')
     parser.add_argument('--weston', type=Path, help='headless Weston executable for Wayland')
     parser.add_argument('--live-tui', action='store_true', help='launch installed Codex/OpenCode in the actual pane with isolated homes')
+    parser.add_argument('--ibus', action='store_true', help='use a private IBus input method for native keyboard checks')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='aibridge-desktop-smoke-') as tmp:
         root = Path(tmp)
@@ -37,6 +38,7 @@ def main():
         env = dict(os.environ)
         if args.live_tui:
             env['AIBRIDGE_DESKTOP_LIVE_TUI'] = '1'
+        if args.live_tui or args.ibus:
             for key in ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']:
                 directory = root / key.lower()
                 directory.mkdir(mode=0o700)
@@ -46,6 +48,8 @@ def main():
                     env.pop(key)
             env['AIBRIDGE_CLI'] = str(Path('target/debug/agent-bridge').resolve())
         env['AIBRIDGE_DESKTOP_SMOKE_RESULT'] = str(root / 'result.json')
+        if args.display_backend == 'x11':
+            env['AIBRIDGE_DESKTOP_NATIVE_KEYS'] = str(Path(__file__).with_name('desktop_keyboard.py').resolve())
         # WebKit bubblewrap cannot create a nested sandbox inside this build
         # container. This override is scoped solely to this disposable smoke.
         env['WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS'] = '1'
@@ -74,7 +78,7 @@ def main():
             server_argv = [xvfb, env['DISPLAY'], '-screen', '0', '1280x900x24', '-nolisten', 'tcp']
             ready_path = Path('/tmp/.X11-unix/X193')
         with (root / 'xvfb.log').open('w') as xlog, (root / 'desktop.log').open('w') as log:
-            display_server = server = desktop = None
+            display_server = server = desktop = input_method = None
             try:
                 if args.display_backend == 'wayland':
                     display_server = subprocess.Popen([xvfb, env['DISPLAY'], '-screen', '0', '1280x900x24', '-nolisten', 'tcp'], env=env, stdout=xlog, stderr=xlog)
@@ -89,6 +93,16 @@ def main():
                     if server.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError('virtual_display_unavailable')
                     time.sleep(.05)
+                if args.ibus:
+                    env['IBUS_ADDRESS'] = 'unix:path=' + str(root / 'ibus.socket')
+                    env['GTK_IM_MODULE'] = 'ibus'
+                    env['AIBRIDGE_DESKTOP_IBUS_KEYS'] = '1'
+                    input_method = subprocess.Popen(['ibus-daemon', '--single', '--xim', '--address', env['IBUS_ADDRESS']], env=env, stdout=log, stderr=log)
+                    deadline = time.monotonic() + 10
+                    while not (root / 'ibus.socket').exists():
+                        if input_method.poll() is not None or time.monotonic() > deadline:
+                            raise RuntimeError('private_ibus_unavailable')
+                        time.sleep(.05)
                 desktop = subprocess.Popen([str(args.desktop.resolve()), '--config', str(config), '--state-root', str(root / 'state')], env=env, stdout=log, stderr=log)
                 deadline = time.monotonic() + (110 if args.live_tui else 50)
                 while not (root / 'result.json').exists():
@@ -113,7 +127,7 @@ def main():
                 print(json.dumps(report))
                 return 1
             finally:
-                for process in (desktop, server, display_server):
+                for process in (desktop, input_method, server, display_server):
                     if process and process.poll() is None:
                         process.terminate()
                         try:

@@ -153,6 +153,12 @@ by `tools/live_automation_smoke.py`.
 Terminal input is serialized in 4 KiB chunks with a 1 MiB pending cap and bounded
 retry when the Rust queue is full. Ctrl+C remains SIGINT; Ctrl+Shift+C/V use native GTK clipboard IPC, with 1 MiB bounds, a two-second deadline and
 explicit errors if clipboard access or the display input seat is unavailable.
+GTK/WebKit IBus commits that emit `compositionend` without `compositionstart`
+forward only the committed character, preserving ordinary IME composition and
+preventing accumulated textarea text from being resent. The X11 smoke runner
+injects physical Russian-layout keys on its disposable display; `--ibus` adds a
+private IBus daemon, and `--ibus --live-tui` also checks input in the Codex tab.
+These checks require `setxkbmap`, `libXtst`, and (for `--ibus`) `ibus-daemon`/`ibus`.
 Project switches preserve all terminal tabs; Open/Attach selects or creates a tab.
 The smoke frontend build exposes its xterm instance only for compatibility checks;
 ordinary Vite builds remove this test hook. The actual WebView proof covers ANSI,

@@ -426,6 +426,26 @@ fn smoke_options() -> Result<Value, String> {
     Ok(serde_json::json!({"live_tui":std::env::var_os("AIBRIDGE_DESKTOP_LIVE_TUI").is_some()}))
 }
 #[tauri::command]
+async fn smoke_native_keyboard() -> Result<bool, String> {
+    if !cfg!(feature = "desktop-smoke") {
+        return Err("smoke build required".into());
+    }
+    let Some(script) = std::env::var_os("AIBRIDGE_DESKTOP_NATIVE_KEYS") else {
+        return Ok(false);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new("python3")
+            .arg(script)
+            .status()
+            .map_err(|_| "native keyboard unavailable".to_owned())?
+            .success()
+            .then_some(true)
+            .ok_or_else(|| "native keyboard failed".to_owned())
+    })
+    .await
+    .map_err(|_| "native keyboard failed".to_owned())?
+}
+#[tauri::command]
 async fn smoke_complete(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -504,6 +524,7 @@ fn main() {
             clipboard_read,
             clipboard_write,
             smoke_options,
+            smoke_native_keyboard,
             smoke_complete
         ])
         .on_page_load(|window, payload| {

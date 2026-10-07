@@ -52,6 +52,70 @@
   checks.terminal_toolbar_menu=true;
   terminal.focus();checks.large_paste_queued=!document.querySelector('.terminal-pane .error');
   if(!checks.large_paste_queued)throw Error('large_paste_failed');
+  const native=[],nativeListener=terminal.onData(data=>native.push(data));
+  const trace=[];
+  const traceKey=e=>trace.push({type:e.type,key:e.key,keyCode:e.keyCode,data:e.data,inputType:e.inputType,isComposing:e.isComposing,value:terminal.textarea.value});
+  const traceTypes=['keydown','keypress','keyup','beforeinput','input','compositionstart','compositionupdate','compositionend'];
+  const nativeHost=document.querySelector('.terminal-session:not([hidden]) .terminal-host');
+  for(const type of traceTypes)nativeHost.addEventListener(type,traceKey,true);
+  terminal.focus();
+  const nativeAvailable=await invoke('smoke_native_keyboard');
+  await new Promise(r=>setTimeout(r,100));
+  nativeListener.dispose();
+  for(const type of traceTypes)nativeHost.removeEventListener(type,traceKey,true);
+  if(nativeAvailable){
+   if(native.join('')!=='отправь задачу'){
+    checks.native_keyboard_trace=trace;
+    checks.native_keyboard_output=native.join('');
+    throw Error('native_russian_keyboard_duplicate');
+   }
+   checks.native_russian_keyboard=true;
+  }
+  terminal.input('\x15');
+  // Exercise GTK/WebKit's non-composing 229 path with retained textarea text,
+  // including overlapping keys before xterm's deferred diff would settle.
+  const typed=[],typedListener=terminal.onData(data=>typed.push(data));
+  const phrase='отправь задачу Ёж界😀';
+  const textarea=terminal.textarea;textarea.value='previously sent text';
+  for(const char of phrase){
+   textarea.dispatchEvent(new KeyboardEvent('keydown',{key:'Process',keyCode:229,bubbles:true,cancelable:true}));
+   textarea.value+=char;
+   textarea.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:char,bubbles:true,composed:true}));
+   textarea.dispatchEvent(new KeyboardEvent('keyup',{key:'Process',keyCode:229,bubbles:true}));
+  }
+  await new Promise(r=>setTimeout(r,30));
+  typedListener.dispose();
+  if(typed.join('')!==phrase)throw Error('unicode_keyboard_duplicate');
+  checks.unicode_keyboard_commits_once=true;
+  terminal.input('\x15');
+  const ibus=[],ibusListener=terminal.onData(data=>ibus.push(data));
+  textarea.value='previously sent text';
+  for(const char of phrase){
+   textarea.dispatchEvent(new KeyboardEvent('keydown',{key:'Unidentified',keyCode:229,bubbles:true,cancelable:true}));
+   textarea.value+=char;
+   textarea.dispatchEvent(new InputEvent('input',{inputType:'insertFromComposition',data:char,isComposing:true,bubbles:true}));
+   textarea.dispatchEvent(new CompositionEvent('compositionend',{data:char,bubbles:true}));
+   textarea.dispatchEvent(new KeyboardEvent('keyup',{key:char,keyCode:0,bubbles:true}));
+  }
+  await new Promise(r=>setTimeout(r,30));
+  ibusListener.dispose();
+  if(ibus.join('')!==phrase)throw Error('ibus_orphan_composition_duplicate');
+  checks.ibus_single_character_commits_once=true;
+  terminal.input('\x15');
+  const composed=[],composedListener=terminal.onData(data=>composed.push(data));
+  textarea.value='';
+  textarea.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:''}));
+  textarea.dispatchEvent(new KeyboardEvent('keydown',{key:'Process',keyCode:229,isComposing:true,bubbles:true}));
+  textarea.dispatchEvent(new CompositionEvent('compositionupdate',{bubbles:true,data:'漢'}));
+  textarea.value='漢';
+  textarea.dispatchEvent(new InputEvent('input',{inputType:'insertCompositionText',data:'漢',isComposing:true,bubbles:true}));
+  await new Promise(r=>setTimeout(r,10));
+  textarea.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'漢'}));
+  await new Promise(r=>setTimeout(r,30));
+  composedListener.dispose();
+  if(composed.join('')!=='漢')throw Error('ime_composition_commit');
+  checks.ime_composition_preserved=true;
+  terminal.input('\x15');
   const keyboard=[];const keyboardListener=terminal.onData(data=>keyboard.push(data));
   terminal.textarea.dispatchEvent(new KeyboardEvent('keydown',{key:'c',code:'KeyC',keyCode:67,ctrlKey:true,bubbles:true}));
   keyboardListener.dispose();if(!keyboard.includes('\x03'))throw Error('ctrl_c');checks.keyboard_sigint=true;
@@ -225,6 +289,15 @@
      await new Promise(r=>setTimeout(r,50));
     }
     if(!ready)throw Error(profile+'_tui_missing');
+    if(profile==='codex'){
+     const keys=[],keyListener=terminal.onData(data=>keys.push(data));
+     terminal.focus();
+     const available=await invoke('smoke_native_keyboard');
+     await new Promise(r=>setTimeout(r,100));keyListener.dispose();
+     if(available&&keys.join('')!=='отправь задачу')throw Error('codex_native_keyboard_duplicate');
+     if(available)checks.codex_native_russian_keyboard=true;
+     terminal.input('\x15');
+    }
     terminal.input('\x1b[B');terminal.input('\t');
     const size=document.querySelector('[aria-label="Размер шрифта терминала"]');size.value='16';size.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,100));
     if(!document.querySelector('.xterm')||binding()!==`proof · ${profile}`)throw Error(profile+'_tui_resize');

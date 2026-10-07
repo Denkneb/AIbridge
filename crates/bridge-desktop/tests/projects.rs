@@ -55,6 +55,58 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn endpoint_suggestions_skip_configured_ports_and_other_listeners_without_writing() {
+    use std::net::TcpListener;
+    let f = Fixture::new();
+    let mut doc = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    // Both endpoint types reserve ports in either range, even when stopped.
+    doc["projects"]["primary"]["mcp_url"] = toml_edit::value("http://127.0.0.1:4103/mcp");
+    doc["projects"]["second"]["mcp_url"] = toml_edit::value("http://127.0.0.1:4201/mcp");
+    fs::write(&f.service.config, doc.to_string()).unwrap();
+    let original = fs::read(&f.service.config).unwrap();
+    let first = f.service.suggest_endpoints().unwrap();
+    let opencode_port: u16 = first
+        .opencode_url
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mcp_port: u16 = first
+        .mcp_url
+        .trim_end_matches("/mcp")
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(![4101, 4102, 4103, 4201].contains(&opencode_port));
+    assert!(![4101, 4102, 4103, 4201].contains(&mcp_port));
+    let _opencode = TcpListener::bind(("127.0.0.1", opencode_port)).unwrap();
+    let _mcp = TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
+    let next = f.service.suggest_endpoints().unwrap();
+    assert_ne!(next.opencode_url, first.opencode_url);
+    assert_ne!(next.mcp_url, first.mcp_url);
+    assert!(next.mcp_url.ends_with("/mcp"));
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    assert!(!f.service.state.exists());
+}
+
+#[test]
+fn endpoint_suggestions_support_an_unsaved_first_project() {
+    let root = std::env::temp_dir().join(format!("bridge-endpoints-{}", uuid::Uuid::new_v4()));
+    let service = ProjectService::new(root.join("projects.toml"), root.join("state")).unwrap();
+    let endpoints = service.suggest_endpoints().unwrap();
+    assert!(endpoints.opencode_url.starts_with("http://127.0.0.1:"));
+    assert!(endpoints.mcp_url.starts_with("http://127.0.0.1:"));
+    assert!(endpoints.mcp_url.ends_with("/mcp"));
+    assert!(!root.exists());
+}
+
+#[test]
 fn setup_after_saving_codex_environment_preserves_preferences_and_is_idempotent() {
     let f = Fixture::new();
     let text = "KEY=fixture-private-value\n";

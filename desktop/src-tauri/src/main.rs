@@ -1,7 +1,7 @@
 mod launch_env;
 use bridge_desktop::{
     dashboard::Query,
-    projects::{ProjectDraft, ProjectService},
+    projects::{ProjectDraft, ProjectEndpoints, ProjectService},
     terminal::{Event, Terminals},
 };
 use serde_json::Value;
@@ -17,6 +17,13 @@ async fn projects(state: State<'_, AppState>) -> Result<Vec<ProjectDraft>, Strin
     tauri::async_runtime::spawn_blocking(move || p.projects().map_err(str::to_owned))
         .await
         .map_err(|_| "project query failed".to_owned())?
+}
+#[tauri::command]
+async fn project_suggest_endpoints(state: State<'_, AppState>) -> Result<ProjectEndpoints, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.suggest_endpoints().map_err(str::to_owned))
+        .await
+        .map_err(|_| "Не удалось подобрать свободные порты".to_owned())?
 }
 #[tauri::command]
 async fn codex_env_read(state: State<'_, AppState>, project: String) -> Result<String, String> {
@@ -497,6 +504,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             projects,
+            project_suggest_endpoints,
             project_branches,
             project_branch_switch,
             codex_env_read,

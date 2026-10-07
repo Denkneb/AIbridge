@@ -7,8 +7,9 @@ use bridge_storage::RustStateLayout;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
+    net::TcpListener,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     sync::Mutex,
@@ -35,6 +36,11 @@ pub struct ProjectDraft {
     pub auto_approve_state_directory: bool,
     pub auto_approve_permissions: Vec<String>,
     pub auto_approve_external_directories: Vec<String>,
+}
+#[derive(Serialize)]
+pub struct ProjectEndpoints {
+    pub opencode_url: String,
+    pub mcp_url: String,
 }
 impl ProjectDraft {
     fn from_project(p: &bridge_config::ProjectEntry) -> Self {
@@ -130,6 +136,32 @@ impl ProjectService {
             .values()
             .map(ProjectDraft::from_project)
             .collect())
+    }
+    /// Suggests currently free ports without changing or reserving configuration.
+    pub fn suggest_endpoints(&self) -> Result<ProjectEndpoints, &'static str> {
+        let config = self.config_view()?;
+        let mut used = BTreeSet::new();
+        for project in config.projects().values() {
+            used.insert(project.opencode_endpoint().port());
+            if let Some(endpoint) = project.mcp_endpoint() {
+                used.insert(endpoint.port());
+            }
+        }
+        // Match the ranges used by CLI add-project, including ports belonging
+        // to stopped projects and listeners outside AIbridge.
+        let free_port = |start, end| {
+            (start..=end)
+                .find(|port| {
+                    !used.contains(port) && TcpListener::bind(("127.0.0.1", *port)).is_ok()
+                })
+                .ok_or("Нет свободных портов для нового проекта")
+        };
+        let opencode = free_port(4101, 4199)?;
+        let mcp = free_port(4201, 4299)?;
+        Ok(ProjectEndpoints {
+            opencode_url: format!("http://127.0.0.1:{opencode}"),
+            mcp_url: format!("http://127.0.0.1:{mcp}/mcp"),
+        })
     }
     pub fn project(
         &self,

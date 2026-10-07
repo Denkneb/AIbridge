@@ -4,16 +4,114 @@ use crate::{
     process::{boot_id, identity, read_record},
 };
 use bridge_config::ProjectEntry;
-use bridge_opencode::{HttpRequest, HttpTransport, OpenCodeClient};
+use bridge_opencode::{
+    DocError, HealthError, HttpRequest, HttpTransport, IdentityError, OpenCodeClient,
+    TransportError,
+};
 use bridge_storage::RustStateLayout;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, time::Duration};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenCodeIssue {
+    Timeout,
+    Unresponsive,
+    Unavailable,
+    Authentication,
+    Unhealthy,
+    InvalidHealth,
+    WorkspaceMismatch,
+    InvalidWorkspace,
+    IncompatibleApi,
+    InvalidApi,
+    Http(u16),
+    Exited,
+}
+impl OpenCodeIssue {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Timeout => "opencode_request_timeout",
+            Self::Unresponsive => "opencode_server_unresponsive",
+            Self::Unavailable => "opencode_endpoint_unavailable",
+            Self::Authentication => "opencode_authentication_failed",
+            Self::Unhealthy => "opencode_server_unhealthy",
+            Self::InvalidHealth => "opencode_health_invalid",
+            Self::WorkspaceMismatch => "opencode_workspace_mismatch",
+            Self::InvalidWorkspace => "opencode_workspace_unverified",
+            Self::IncompatibleApi => "opencode_api_incompatible",
+            Self::InvalidApi => "opencode_api_invalid",
+            Self::Http(_) => "opencode_http_error",
+            Self::Exited => "opencode_process_exited",
+        }
+    }
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Timeout => "OpenCode не ответил за время проверки готовности.",
+            Self::Unresponsive => {
+                "Процесс OpenCode запущен, но не отвечает на HTTP-проверку готовности; возможно, сервер завис. Проверьте его логи перед явным перезапуском."
+            }
+            Self::Unavailable => "Не удалось подключиться к HTTP-серверу OpenCode.",
+            Self::Authentication => "OpenCode отклонил учётные данные или файл пароля недоступен.",
+            Self::Unhealthy => "OpenCode отвечает, но сообщает, что сервер не готов.",
+            Self::InvalidHealth => "OpenCode вернул некорректный ответ проверки здоровья.",
+            Self::WorkspaceMismatch => "Сервер OpenCode обслуживает другой workspace.",
+            Self::InvalidWorkspace => {
+                "OpenCode не вернул корректный workspace; привязка сервера не подтверждена."
+            }
+            Self::IncompatibleApi => {
+                "API запущенного OpenCode несовместим с требованиями AIbridge."
+            }
+            Self::InvalidApi => "OpenCode вернул некорректное описание API.",
+            Self::Http(_) => "OpenCode ответил на проверку готовности ошибкой HTTP.",
+            Self::Exited => {
+                "Процесс OpenCode завершился до успешной проверки готовности. Проверьте серверный лог."
+            }
+        }
+    }
+    /// A timeout alone does not prove a live process, or the cause of a hang.
+    pub fn with_live_process(self, live: bool) -> Self {
+        if live && self == Self::Timeout {
+            Self::Unresponsive
+        } else {
+            self
+        }
+    }
+}
+fn transport_issue(error: TransportError, invalid: OpenCodeIssue) -> OpenCodeIssue {
+    match error {
+        TransportError::Timeout => OpenCodeIssue::Timeout,
+        TransportError::Unavailable => OpenCodeIssue::Unavailable,
+        TransportError::InvalidAuth | TransportError::Unauthorized => OpenCodeIssue::Authentication,
+        TransportError::HttpStatus(status) => OpenCodeIssue::Http(status),
+        TransportError::NotFound => OpenCodeIssue::Http(404),
+        _ => invalid,
+    }
+}
+pub fn opencode_probe(project: &ProjectEntry, timeout: Duration) -> Result<(), OpenCodeIssue> {
+    let client = OpenCodeClient::from_project(project, timeout)
+        .map_err(|_| OpenCodeIssue::Authentication)?;
+    let health = client.health().map_err(|e| match e {
+        HealthError::Transport(error) => transport_issue(error, OpenCodeIssue::InvalidHealth),
+        _ => OpenCodeIssue::InvalidHealth,
+    })?;
+    if !health.healthy() {
+        return Err(OpenCodeIssue::Unhealthy);
+    }
+    client.verify_workspace().map_err(|e| match e {
+        IdentityError::Transport(error) => transport_issue(error, OpenCodeIssue::InvalidWorkspace),
+        IdentityError::Mismatch => OpenCodeIssue::WorkspaceMismatch,
+        _ => OpenCodeIssue::InvalidWorkspace,
+    })?;
+    let doc = client.check_compatibility().map_err(|e| match e {
+        DocError::Transport(error) => transport_issue(error, OpenCodeIssue::InvalidApi),
+        _ => OpenCodeIssue::InvalidApi,
+    })?;
+    if !doc.is_compatible() {
+        return Err(OpenCodeIssue::IncompatibleApi);
+    }
+    Ok(())
+}
 pub fn opencode(project: &ProjectEntry, timeout: Duration) -> bool {
-    OpenCodeClient::from_project(project, timeout).is_ok_and(|c| {
-        c.health().is_ok_and(|h| h.healthy())
-            && c.verify_workspace().is_ok()
-            && c.check_compatibility().is_ok_and(|d| d.is_compatible())
-    })
+    opencode_probe(project, timeout).is_ok()
 }
 pub fn mcp(project: &ProjectEntry, timeout: Duration) -> bool {
     let Some(endpoint) = project.mcp_endpoint() else {

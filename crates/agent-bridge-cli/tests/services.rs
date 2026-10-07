@@ -104,6 +104,48 @@ impl Drop for Fixture {
     }
 }
 #[test]
+fn readiness_reports_live_timeout_auth_workspace_and_api_without_replacing_server() {
+    let f = Fixture::new(false);
+    f.ok("setup", false, &[]);
+    assert_eq!(f.cli("console", false, &[]).status.code(), Some(7));
+    let original = fs::read(f.record("opencode")).unwrap();
+    for (mode, code) in [
+        ("timeout", "opencode_server_unresponsive"),
+        ("auth", "opencode_authentication_failed"),
+        ("workspace", "opencode_workspace_mismatch"),
+        ("api", "opencode_api_incompatible"),
+        ("unhealthy", "opencode_server_unhealthy"),
+        ("http", "opencode_http_error"),
+    ] {
+        fs::write(f.root.join("runtime/proof-readiness-mode"), mode).unwrap();
+        let result = f.cli("console", false, &[]);
+        assert_eq!(result.status.code(), Some(1), "{mode}");
+        let error = String::from_utf8(result.stderr).unwrap();
+        assert!(error.contains(code), "{mode}: {error}");
+        assert!(!error.contains("fixture-response-secret"));
+        let doctor = f.cli("doctor", false, &["--json"]);
+        let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+        let server = &report["projects"][0]["servers"]["opencode"];
+        assert_eq!(server["ready"], false);
+        assert_eq!(server["managed"], true);
+        assert_eq!(server["error"], code);
+        assert!(server["message"].as_str().is_some_and(|m| !m.is_empty()));
+        if mode == "http" {
+            assert_eq!(server["http_status"], 500);
+        }
+        assert_eq!(fs::read(f.record("opencode")).unwrap(), original);
+    }
+    fs::remove_file(f.root.join("runtime/proof-readiness-mode")).unwrap();
+    assert_eq!(f.cli("console", false, &[]).status.code(), Some(7));
+    assert_eq!(fs::read(f.record("opencode")).unwrap(), original);
+    let report: Value =
+        serde_json::from_slice(&f.cli("doctor", false, &["--json"]).stdout).unwrap();
+    let server = &report["projects"][0]["servers"]["opencode"];
+    assert_eq!(server["ready"], true);
+    assert!(server.get("error").is_none());
+}
+
+#[test]
 fn setup_start_readonly_status_doctor_attach_stop_and_foreign_record_guards() {
     let f = Fixture::new(false);
     assert_eq!(f.cli("doctor", false, &["--json"]).status.code(), Some(1));

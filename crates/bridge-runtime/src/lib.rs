@@ -44,11 +44,20 @@ pub enum RuntimeError {
     Spawn,
     Readiness,
     ProjectReadiness,
+    OpenCode(readiness::OpenCodeIssue),
+    ProjectPortBusy,
     Io,
     Unsupported,
 }
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::OpenCode(issue) = self {
+            write!(f, "{}: {}", issue.code(), issue.message())?;
+            if let readiness::OpenCodeIssue::Http(status) = issue {
+                write!(f, " HTTP {status}")?;
+            }
+            return Ok(());
+        }
         f.write_str(match self {
             Self::Ownership => "runtime_state_unowned",
             Self::Binding => "runtime_binding_mismatch",
@@ -61,6 +70,8 @@ impl fmt::Display for RuntimeError {
             Self::Spawn => "runtime_spawn_failed",
             Self::Readiness => "worktree_server_unavailable",
             Self::ProjectReadiness => "project_server_unavailable",
+            Self::OpenCode(issue) => issue.code(),
+            Self::ProjectPortBusy => "project_server_port_busy",
             Self::Io => "runtime_io_error",
             Self::Unsupported => "pidfd_unsupported",
         })

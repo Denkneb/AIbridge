@@ -12,10 +12,13 @@ class Handler(BaseHTTPRequestHandler):
  def handle_request(self):
   path=self.path.split('?')[0]; data=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))) or '{}')
   with (runtime/'proof-requests.jsonl').open('a') as f: f.write(json.dumps({'method':self.command,'path':path})+'\n')
+  mode_file=runtime/'proof-readiness-mode'
+  mode=mode_file.read_text().strip() if mode_file.exists() else ''
+  if mode=='timeout' and path=='/global/health': time.sleep(1);return
   status=200
-  if path=='/global/health': value={'healthy':True,'version':'proof'}
-  elif path=='/path': value={'directory':str(root)}
-  elif path=='/doc': value=doc
+  if path=='/global/health': value={'healthy':mode!='unhealthy','version':'proof'}
+  elif path=='/path': value={'directory':str(root.parent if mode=='workspace' else root)}
+  elif path=='/doc': value={} if mode=='api' else doc
   elif path=='/permission' or path=='/question': value=[]
   elif path=='/session/status': value={}
   elif path=='/session' and self.command=='GET': value=list(sessions.values())
@@ -40,5 +43,6 @@ class Handler(BaseHTTPRequestHandler):
   elif path.endswith('/message'): value=messages.get(path.split('/')[2],[])
   elif path.startswith('/session/'): value=sessions.get(path.split('/')[2],{})
   else: value={}
+  if mode in ('auth','http') and path=='/global/health': status=401 if mode=='auth' else 500;value={'private':'fixture-response-secret'}
   raw=b'' if status==204 else json.dumps(value).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
 ThreadingHTTPServer(('127.0.0.1',a.port),Handler).serve_forever()

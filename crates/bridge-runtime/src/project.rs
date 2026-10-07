@@ -139,11 +139,28 @@ pub fn setup(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runt
     }
     Ok(json!({"status":"ready","projects":projects.iter().map(|(p,_)|p.id()).collect::<Vec<_>>()}))
 }
-fn ready(project: &ProjectEntry, kind: &str) -> bool {
+fn probe(project: &ProjectEntry, kind: &str) -> Result<(), RuntimeError> {
     if kind == "opencode" {
-        readiness::opencode(project, Duration::from_millis(300))
+        readiness::opencode_probe(project, Duration::from_millis(300))
+            .map_err(RuntimeError::OpenCode)
+    } else if readiness::mcp(project, Duration::from_millis(300)) {
+        Ok(())
     } else {
-        readiness::mcp(project, Duration::from_millis(300))
+        Err(RuntimeError::ProjectReadiness)
+    }
+}
+fn live_failure(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::OpenCode(issue) => RuntimeError::OpenCode(issue.with_live_process(true)),
+        other => other,
+    }
+}
+fn occupied_port_failure(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::OpenCode(readiness::OpenCodeIssue::Unavailable) => {
+            RuntimeError::ProjectPortBusy
+        }
+        other => other,
     }
 }
 fn port(project: &ProjectEntry, kind: &str) -> Result<u16, RuntimeError> {
@@ -255,16 +272,25 @@ fn spawn_one(
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(RuntimeError::ProjectReadiness)?;
-    while !ready(project, kind) {
-        if identity(pid).as_deref() != Some(record.start.as_str()) || Instant::now() >= deadline {
+    while let Err(failure) = probe(project, kind) {
+        let exited = identity(pid).as_deref() != Some(record.start.as_str());
+        if exited || Instant::now() >= deadline {
             let _ = fs::remove_file(&record_path);
-            return Err(RuntimeError::ProjectReadiness);
+            return Err(if kind == "opencode" && exited {
+                RuntimeError::OpenCode(readiness::OpenCodeIssue::Exited)
+            } else {
+                live_failure(failure)
+            });
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     if identity(pid).as_deref() != Some(record.start.as_str()) {
         let _ = fs::remove_file(record_path);
-        return Err(RuntimeError::ProjectReadiness);
+        return Err(if kind == "opencode" {
+            RuntimeError::OpenCode(readiness::OpenCodeIssue::Exited)
+        } else {
+            RuntimeError::ProjectReadiness
+        });
     }
     let mut child = guard.child.take().ok_or(RuntimeError::Spawn)?;
     std::thread::spawn(move || {
@@ -319,11 +345,14 @@ pub fn ensure_opencode(
     validate(project, layout)?;
     let _lock = ManagerLock::acquire(&[layout], Duration::from_secs(2))?;
     let state = readiness::record_state(layout, project, "opencode")?;
-    if ready(project, "opencode") {
+    let Err(failure) = probe(project, "opencode") else {
         return Ok(());
+    };
+    if state == "live" {
+        return Err(live_failure(failure));
     }
-    if state == "live" || TcpListener::bind(("127.0.0.1", port(project, "opencode")?)).is_err() {
-        return Err(RuntimeError::ProjectReadiness);
+    if TcpListener::bind(("127.0.0.1", port(project, "opencode")?)).is_err() {
+        return Err(occupied_port_failure(failure));
     }
     spawn_one(
         project,
@@ -441,11 +470,14 @@ pub fn start(
                     continue;
                 }
                 let state = readiness::record_state(l, p, kind)?;
-                if ready(p, kind) {
+                let Err(failure) = probe(p, kind) else {
                     continue;
+                };
+                if state == "live" {
+                    return Err(live_failure(failure));
                 }
-                if state == "live" || TcpListener::bind(("127.0.0.1", port(p, kind)?)).is_err() {
-                    return Err(RuntimeError::ProjectReadiness);
+                if TcpListener::bind(("127.0.0.1", port(p, kind)?)).is_err() {
+                    return Err(occupied_port_failure(failure));
                 }
                 let record = spawn_one(p, l, kind, opencode, bridge_exe, timeout)?;
                 started.push((index, kind, record));

@@ -84,6 +84,14 @@ responding to a tool request.
 An outlined dot means checking or unavailable status; hover reveals the state.
 Read-only Doctor checks refresh every five seconds and after lifecycle actions,
 independently of dashboard polling. Switching projects cancels stale results.
+Doctor also reports the specific OpenCode failure in the status-dot tooltip:
+HTTP timeout, authentication, health, workspace identity or API compatibility.
+A timeout with a proven live process reports that the process is running but
+not responding; it does not identify a cause or prove a deadlock. Main-server
+startup and console attachment retain these causes in their errors, and a process
+that exits before becoming ready is reported separately. Existing services and
+tasks are never stopped or replaced by these checks. No watcher-disable flag is
+added automatically.
 
 The terminal opens fixed Shell, OpenCode or Codex profiles. OpenCode uses the
 existing Rust controller; task attachment uses the proven task checkout/session

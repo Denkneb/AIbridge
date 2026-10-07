@@ -165,9 +165,16 @@ pub fn status(project: &ProjectEntry, layout: &RustStateLayout, timeout: Duratio
     let mut all = true;
     for kind in ["opencode", "mcp"] {
         let record = crate::readiness::record_state(layout, project, kind).unwrap_or("invalid");
+        let issue = if kind == "opencode" && record != "invalid" {
+            crate::readiness::opencode_probe(project, timeout)
+                .err()
+                .map(|issue| issue.with_live_process(record == "live"))
+        } else {
+            None
+        };
         let ready = record != "invalid"
             && if kind == "opencode" {
-                crate::readiness::opencode(project, timeout)
+                issue.is_none()
             } else {
                 crate::readiness::mcp(project, timeout)
             };
@@ -178,6 +185,13 @@ pub fn status(project: &ProjectEntry, layout: &RustStateLayout, timeout: Duratio
         all &= ready || idle;
         servers[kind] =
             json!({"ready":ready,"idle":idle,"managed":record=="live","process_record":record});
+        if let Some(issue) = issue.filter(|_| !idle) {
+            servers[kind]["error"] = json!(issue.code());
+            servers[kind]["message"] = json!(issue.message());
+            if let crate::readiness::OpenCodeIssue::Http(status) = issue {
+                servers[kind]["http_status"] = json!(status);
+            }
+        }
     }
     json!({"project_id":project.id(),"ready":all,"servers":servers,"snapshot":snapshot(layout).unwrap_or_else(|e|json!({"project_id":project.id(),"error":e}))})
 }

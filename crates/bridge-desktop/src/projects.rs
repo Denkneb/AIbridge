@@ -177,7 +177,12 @@ impl ProjectService {
                     &executable,
                     Duration::from_secs(20),
                 )
-                .map_err(|_| "start failed")
+                .map_err(|error| match error {
+                    bridge_runtime::RuntimeError::OpenCode(issue) => issue.message(),
+                    bridge_runtime::RuntimeError::ProjectPortBusy => "Порт сервера проекта занят; готовность OpenCode не подтверждена.",
+                    bridge_runtime::RuntimeError::Spawn => "Не удалось запустить сервер проекта; проверьте наличие OpenCode и agent-bridge.",
+                    _ => "start failed",
+                })
             }
             "stop" => bridge_runtime::project::stop(&[(p, l)]).map_err(|_| "stop failed"),
             _ => Err("unsupported lifecycle action"),

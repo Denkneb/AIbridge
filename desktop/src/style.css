@@ -69,3 +69,5 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 .project-indicator-idle .project-status-dot{background:#22c55e}
 
 .task-status-editor form{display:grid;gap:8px;padding:12px 0}.task-status-editor label{display:grid;gap:4px}.task-status-editor textarea{min-height:70px}.task-status-editor p{color:var(--muted)}
+
+.detail .pane-bar>.task-status-editor{display:contents}.detail .pane-bar>.task-status-editor form{flex-basis:100%;min-width:0;order:1}

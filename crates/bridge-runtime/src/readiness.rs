@@ -52,6 +52,7 @@ pub fn mcp(project: &ProjectEntry, timeout: Duration) -> bool {
             "project_info",
             "submit_task",
             "task_status",
+            "set_task_status",
             "request_changes",
             "accept_task",
             "close_task",

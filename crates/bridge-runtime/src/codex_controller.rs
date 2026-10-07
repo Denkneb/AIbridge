@@ -10,10 +10,11 @@ use std::{
     process::{Command, ExitStatus},
 };
 type Result<T> = std::result::Result<T, ControllerError>;
-const TOOLS: [&str; 6] = [
+const TOOLS: [&str; 7] = [
     "project_info",
     "submit_task",
     "task_status",
+    "set_task_status",
     "request_changes",
     "accept_task",
     "close_task",

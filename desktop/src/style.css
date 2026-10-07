@@ -67,3 +67,5 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 .branch-error p{margin:0;font-size:12px;line-height:1.5}
 
 .project-indicator-idle .project-status-dot{background:#22c55e}
+
+.task-status-editor form{display:grid;gap:8px;padding:12px 0}.task-status-editor label{display:grid;gap:4px}.task-status-editor textarea{min-height:70px}.task-status-editor p{color:var(--muted)}

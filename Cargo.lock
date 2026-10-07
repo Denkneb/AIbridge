@@ -9,6 +9,7 @@ dependencies = [
  "bridge-automation",
  "bridge-config",
  "bridge-delivery",
+ "bridge-desktop",
  "bridge-domain",
  "bridge-git",
  "bridge-mcp",

@@ -95,7 +95,7 @@ fn local_controller_argv_hooks_rules_and_exit_are_process_scoped() {
     assert_eq!(server["command"], env!("CARGO_BIN_EXE_agent-bridge"));
     assert_eq!(server["required"], true);
     assert_eq!(server["tool_timeout_sec"], 330);
-    assert_eq!(server["tools"].as_object().unwrap().len(), 6);
+    assert_eq!(server["tools"].as_object().unwrap().len(), 7);
     assert_eq!(server["args"][2], "proj");
     assert_eq!(server["args"][4], json!(f.root.join("projects.toml")));
     assert_eq!(server["args"][6], json!(f.root.join("state")));

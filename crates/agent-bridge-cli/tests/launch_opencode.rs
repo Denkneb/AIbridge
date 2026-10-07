@@ -305,7 +305,7 @@ try:
  assert 'result' in call('initialize',{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'controller-fixture','version':'1'}})
  p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'})+'\n');p.stdin.flush()
  names={t['name'] for t in call('tools/list')['result']['tools']}
- assert names=={'project_info','submit_task','task_status','request_changes','accept_task','close_task'},names
+ assert names=={'project_info','submit_task','task_status','request_changes','accept_task','close_task','set_task_status'},names
  info=call('tools/call',{'name':'project_info','arguments':{}})
  assert info['result']['structuredContent']['project_id']=='proj',info
  print('local-mcp-fixture-ok')

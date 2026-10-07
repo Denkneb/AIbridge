@@ -405,3 +405,143 @@ fn direct_submission_wakes_idle_server_executes_and_returns_to_idle_after_accept
         true
     );
 }
+
+#[test]
+fn desktop_recovers_manual_continuation_after_401_runs_verifier_without_resending() {
+    use std::io::{Read, Write};
+    let f = Fixture::new(false);
+    let workspace = f.root.join("main");
+    fs::write(
+        workspace.join("check.py"),
+        "from pathlib import Path\nassert Path('left.txt').read_text() == 'left\\n'\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "check.py"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    f.ok("setup", false, &[]);
+    f.ok("start", false, &[]);
+    let submitted = tool(
+        &f,
+        "submit_task",
+        json!({"request_id":"auth-task", "task":"PROOF:auth", "allowed_paths":["left.txt"], "test_commands":["python3 check.py"]}),
+    );
+    let id = submitted["task_id"].as_str().unwrap();
+    let (project, layout) = project_layout(&f);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .status
+            == bridge_domain::TaskStatus::Failed
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let storage = layout.open_readonly().unwrap();
+    let (session, outbound, no_result, no_verifier): (String, String, bool, bool) = storage.connection().query_row(
+        "SELECT session_id,outbound_message_id,(result_json IS NULL OR json_extract(result_json,'$.error') IS NOT NULL),verifier_json IS NULL FROM rounds WHERE task_id=?1", [id],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    ).unwrap();
+    assert!(no_result && no_verifier);
+    // User continues the original session manually through another provider.
+    let mut stream =
+        std::net::TcpStream::connect(("127.0.0.1", project.opencode_endpoint().port())).unwrap();
+    let body =
+        json!({"messageID":"msg_manual_continue","parts":[{"type":"text","text":"PROOF:left"}]})
+            .to_string();
+    write!(stream,"POST /session/{session}/prompt_async HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.0 204"));
+    let service =
+        bridge_desktop::projects::ProjectService::new(f.config.clone(), f.root.join("state"))
+            .unwrap();
+    let query = || bridge_desktop::dashboard::Query {
+        project: "proj".into(),
+        active_only: true,
+        linked: false,
+        offset: 0,
+        limit: 100,
+        search: String::new(),
+        status: None,
+    };
+    assert_eq!(
+        service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
+        true
+    );
+    loop {
+        match service.recover_failed_task("proj", id) {
+            Ok(v) => {
+                assert_eq!(v["status"], "observing");
+                break;
+            }
+            Err(e) => {
+                assert!(e.contains("занята"), "{e}");
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let task = storage.get_task(id.parse().unwrap()).unwrap().unwrap();
+        if task.status == bridge_domain::TaskStatus::AwaitingReview {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{:?}", task.status);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (saved_session,saved_outbound,result,verifier):(String,String,String,String)=storage.connection().query_row(
+        "SELECT session_id,outbound_message_id,result_json,verifier_json FROM rounds WHERE task_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    ).unwrap();
+    assert_eq!(saved_session, session);
+    assert_eq!(saved_outbound, outbound);
+    assert!(serde_json::from_str::<Value>(&result).unwrap().is_object());
+    assert_eq!(
+        serde_json::from_str::<Value>(&verifier).unwrap()["status"],
+        "passed"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("left.txt")).unwrap(),
+        "left\n"
+    );
+    let prompts = fs::read_to_string(f.root.join("runtime/proof-prompts.jsonl")).unwrap();
+    assert_eq!(
+        prompts.lines().count(),
+        2,
+        "recovery must not send another prompt"
+    );
+    assert_eq!(
+        tool(&f, "accept_task", json!({"task_id":id}))["status"],
+        "accepted"
+    );
+}

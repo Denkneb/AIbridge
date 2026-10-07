@@ -838,3 +838,5 @@ mod tests {
 }
 
 pub mod workflow;
+
+pub mod manual_status;

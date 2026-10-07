@@ -220,7 +220,7 @@ fn delegated_schema_and_notifications_are_strict_and_side_effect_free() {
             json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         )
         .unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 7);
     assert!(p.handle(&server,json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"submit_task","arguments":input()}})).is_none());
     assert_eq!(f.count(), 0);
     let mut args = input();
@@ -1841,5 +1841,69 @@ fn validation_error_envelopes_match_29_frozen_source_cases() {
     }
     assert_eq!(count, 29);
     assert_eq!(f.count(), 1);
+    assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn explicit_status_correction_preserves_round_and_never_spawns_or_sends() {
+    let f = Fixture::new("");
+    let server = f.server();
+    let id = task_id(&f.submit(&server));
+    park(&f, id);
+    let storage = f.layout.open().unwrap();
+    let before:String=storage.connection().query_row("SELECT json_object('status',status,'error',error_code,'session',session_id,'outbound',outbound_message_id,'result',result_json,'verifier',verifier_json) FROM rounds WHERE task_id=?1",[id.to_string()],|r|r.get(0)).unwrap();
+    f.calls.lock().unwrap().clear();
+    let mut expected = TaskStatus::NeedsUser;
+    for target in TaskStatus::ALL
+        .into_iter()
+        .filter(|v| v.is_active() && *v != TaskStatus::NeedsUser)
+        .chain([TaskStatus::NeedsUser])
+    {
+        let v = call(
+            &server,
+            "set_task_status",
+            json!({"task_id":id,"expected_status":expected,"status":target,"reason":"Manual correction after inspecting the task"}),
+        );
+        assert_eq!(v["status"], target.as_str(), "{v}");
+        let saved:String=storage.connection().query_row("SELECT json_object('status',status,'error',error_code,'session',session_id,'outbound',outbound_message_id,'result',result_json,'verifier',verifier_json) FROM rounds WHERE task_id=?1",[id.to_string()],|r|r.get(0)).unwrap();
+        assert_eq!(saved, before);
+        expected = target;
+    }
+    for target in ["accepted", "closed"] {
+        assert_eq!(
+            call(
+                &server,
+                "set_task_status",
+                json!({"task_id":id,"expected_status":expected,"status":target,"reason":"Manual correction"})
+            )["error"],
+            "terminal_status_forbidden"
+        );
+    }
+    assert_eq!(
+        call(
+            &server,
+            "set_task_status",
+            json!({"task_id":id,"expected_status":"failed","status":"implementing","reason":"Manual correction"})
+        )["error"],
+        "task_status_changed"
+    );
+    for terminal in ["accepted", "closed"] {
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                [terminal, &id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(
+            call(
+                &server,
+                "set_task_status",
+                json!({"task_id":id,"expected_status":terminal,"status":"failed","reason":"Manual correction"})
+            )["error"],
+            "terminal_task_immutable"
+        );
+    }
+    assert!(f.calls.lock().unwrap().is_empty());
     assert_eq!(f.spawns.load(Ordering::Relaxed), 1);
 }

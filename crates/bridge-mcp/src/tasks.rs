@@ -211,6 +211,7 @@ impl McpServer {
         let outcome = match name {
             "submit_task" => self.submit(args),
             "task_status" => self.status(args),
+            "set_task_status" => self.set_status(args),
             "request_changes" => self.revise(args),
             "accept_task" => self.accept(args),
             "close_task" => self.close(args),
@@ -696,6 +697,25 @@ impl McpServer {
             )
             .map_err(|_| "state_unavailable")?;
         serde_json::from_value(json!(raw)).map_err(|_| "execution_binding_invalid")
+    }
+    fn set_status(&self, args: &Value) -> Result<Value> {
+        let id = id(args)?;
+        let expected = text(args, "expected_status")?
+            .parse()
+            .map_err(|_| "invalid_task_status")?;
+        let target = text(args, "status")?
+            .parse()
+            .map_err(|_| "invalid_task_status")?;
+        let reason = text(args, "reason")?;
+        bridge_worker::manual_status::set_status(
+            &self.layout,
+            &self.project,
+            id,
+            expected,
+            target,
+            reason,
+        )?;
+        Ok(json!({"task_id":id.to_string(),"status":target,"manual_status_change":true}))
     }
     fn status(&self, args: &Value) -> Result<Value> {
         let wait = args

@@ -1111,3 +1111,188 @@ fn stopped_tasks_allow_edits_but_each_executor_fence_still_blocks_them() {
         "implementing"
     );
 }
+
+#[test]
+fn failed_task_recovery_is_explicit_and_available_only_for_bound_assistant_errors() {
+    let f = Fixture::new();
+    let id = f.task("primary", "fixture", "2026-01-01T00:00:00Z");
+    let (_, l) = f.service.project("primary").unwrap();
+    let s = l.open().unwrap();
+    let query = || Query {
+        project: "primary".into(),
+        active_only: false,
+        linked: false,
+        offset: 0,
+        limit: 100,
+        search: String::new(),
+        status: None,
+    };
+    assert_eq!(
+        f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
+        false
+    );
+    s.connection()
+        .execute("UPDATE tasks SET status='failed' WHERE task_id=?1", [&id])
+        .unwrap();
+    s.connection().execute("UPDATE rounds SET status='failed',error_code='assistant_error',attempted=1,session_id='ses_fixture',outbound_message_id='msg_fixture' WHERE task_id=?1",[&id]).unwrap();
+    assert_eq!(
+        f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
+        true
+    );
+    assert_eq!(
+        s.get_task(id.parse().unwrap()).unwrap().unwrap().status,
+        bridge_domain::TaskStatus::Failed
+    );
+    for code in ["worker_error", "workspace_mismatch", "session_not_found"] {
+        s.connection()
+            .execute(
+                "UPDATE rounds SET error_code=?1 WHERE task_id=?2",
+                [code, &id],
+            )
+            .unwrap();
+        assert_eq!(
+            f.service.dashboard(query()).unwrap()["tasks"][0]["recoverable"],
+            false
+        );
+        assert!(f.service.recover_failed_task("primary", &id).is_err());
+        assert_eq!(
+            s.get_task(id.parse().unwrap()).unwrap().unwrap().status,
+            bridge_domain::TaskStatus::Failed
+        );
+        let saved: String = s
+            .connection()
+            .query_row(
+                "SELECT error_code FROM rounds WHERE task_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, code);
+    }
+    assert!(f.service.recover_failed_task("second", &id).is_err());
+    assert!(f.service.recover_failed_task("primary", "invalid").is_err());
+}
+
+#[test]
+fn manual_status_supports_all_unfinished_labels_and_preserves_evidence() {
+    use bridge_domain::TaskStatus;
+    let f = Fixture::new();
+    let id = f.task("primary", "fixture", "2026-01-01T00:00:00Z");
+    let (p, l) = f.service.project("primary").unwrap();
+    let s = l.open().unwrap();
+    s.connection()
+        .execute("UPDATE tasks SET status='failed' WHERE task_id=?1", [&id])
+        .unwrap();
+    s.connection().execute("UPDATE rounds SET status='failed',error_code='assistant_error',attempted=1,session_id='ses_fixture',outbound_message_id='msg_fixture' WHERE task_id=?1",[&id]).unwrap();
+    let round:String=s.connection().query_row("SELECT json_object('status',status,'error',error_code,'session',session_id,'outbound',outbound_message_id,'result',result_json,'verifier',verifier_json) FROM rounds WHERE task_id=?1",[&id],|r|r.get(0)).unwrap();
+    let mut expected = TaskStatus::Failed;
+    for target in TaskStatus::ALL
+        .into_iter()
+        .filter(|v| v.is_active() && *v != TaskStatus::Failed)
+        .chain([TaskStatus::Failed])
+    {
+        let result = f
+            .service
+            .set_task_status(
+                "primary",
+                &id,
+                expected.as_str(),
+                target.as_str(),
+                "Исправление статуса после ручной работы",
+            )
+            .unwrap();
+        assert_eq!(result["status"], target.as_str());
+        let saved:String=s.connection().query_row("SELECT json_object('status',status,'error',error_code,'session',session_id,'outbound',outbound_message_id,'result',result_json,'verifier',verifier_json) FROM rounds WHERE task_id=?1",[&id],|r|r.get(0)).unwrap();
+        assert_eq!(saved, round);
+        assert_eq!(
+            s.get_task(id.parse().unwrap())
+                .unwrap()
+                .unwrap()
+                .revision_count,
+            0
+        );
+        expected = target;
+    }
+    let count: i64 = s
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE task_id=?1 AND kind='manual_status_change'",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 7);
+    assert!(
+        f.service
+            .set_task_status("primary", &id, "failed", "accepted", "Причина")
+            .is_err()
+    );
+    assert!(
+        f.service
+            .set_task_status("primary", &id, "failed", "closed", "Причина")
+            .is_err()
+    );
+    assert!(
+        f.service
+            .set_task_status("primary", &id, "needs_user", "implementing", "Причина")
+            .is_err()
+    );
+    assert!(
+        f.service
+            .set_task_status("primary", &id, "failed", "needs_user", "")
+            .is_err()
+    );
+    assert!(
+        f.service
+            .set_task_status("second", &id, "failed", "needs_user", "Причина")
+            .is_err()
+    );
+    let worker = match bridge_worker::WorkerLock::try_acquire_task(&l, id.parse().unwrap()).unwrap()
+    {
+        bridge_worker::WorkerLockOutcome::Acquired(g) => g,
+        _ => panic!("busy"),
+    };
+    assert!(
+        f.service
+            .set_task_status("primary", &id, "failed", "needs_user", "Причина")
+            .is_err()
+    );
+    drop(worker);
+    // A label is not sufficient evidence for acceptance of an incomplete round.
+    f.service
+        .set_task_status(
+            "primary",
+            &id,
+            "failed",
+            "awaiting_review",
+            "Проверка ручного статуса",
+        )
+        .unwrap();
+    assert!(
+        l.open()
+            .unwrap()
+            .accept_manual_task(id.parse().unwrap(), p.id())
+            .is_err()
+    );
+    for terminal in ["accepted", "closed"] {
+        s.connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                [terminal, &id],
+            )
+            .unwrap();
+        assert!(
+            f.service
+                .set_task_status("primary", &id, terminal, "needs_user", "Причина")
+                .is_err()
+        );
+        assert_eq!(
+            s.get_task(id.parse().unwrap())
+                .unwrap()
+                .unwrap()
+                .status
+                .as_str(),
+            terminal
+        );
+    }
+}

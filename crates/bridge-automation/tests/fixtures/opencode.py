@@ -22,7 +22,7 @@ class Handler(BaseHTTPRequestHandler):
   elif path=='/session' and self.command=='POST':
    sid='ses_proof_'+str(len(sessions)+1);value={'id':sid,'title':data.get('title'),'directory':str(root)};sessions[sid]=value
   elif path.endswith('/prompt_async'):
-   sid=path.split('/')[2]; text='\n'.join(part.get('text','') for part in data.get('parts',[])); match=re.search(r'PROOF:(fix|consumer|final|left|right)',text)
+   sid=path.split('/')[2]; text='\n'.join(part.get('text','') for part in data.get('parts',[])); match=re.search(r'PROOF:(auth|fix|consumer|final|left|right)',text)
    if not match: self.send_error(400);return
    step=match.group(1);trace={'message_id':data['messageID'],'step':step,'started':time.monotonic()}
    if a.rendezvous:
@@ -34,7 +34,8 @@ class Handler(BaseHTTPRequestHandler):
    elif step in ('left','right'): (root/(step+'.txt')).write_text(step+'\n')
    trace['finished']=time.monotonic()
    with (runtime/'proof-prompts.jsonl').open('a') as f: f.write(json.dumps(trace)+'\n')
-   mid=data['messageID'];messages[sid]=[{'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]},{'info':{'id':'answer_'+mid,'role':'assistant','parentID':mid,'sessionID':sid,'finish':'stop','time':{'completed':1}},'parts':[{'type':'text','text':'done'}]}]
+   mid=data['messageID'];messages.setdefault(sid,[]).extend([{'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]},{'info':{'id':'answer_'+mid,'role':'assistant','parentID':mid,'sessionID':sid,'finish':'stop','time':{'completed':1}},'parts':[{'type':'text','text':'done'}]}])
+   if step=='auth': messages[sid][-1]['info']['error']={'name':'AI_APICallError','data':{'statusCode':401}}
    status=204;value={}
   elif path.endswith('/message'): value=messages.get(path.split('/')[2],[])
   elif path.startswith('/session/'): value=sessions.get(path.split('/')[2],{})

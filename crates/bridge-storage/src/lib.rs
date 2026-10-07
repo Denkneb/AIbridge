@@ -199,6 +199,7 @@ pub use budgets::{
 pub mod active_set;
 pub mod automation;
 mod dependencies;
+mod manual_status;
 mod mcp_lifecycle;
 pub mod profiles;
 pub mod recovery;
@@ -4015,6 +4016,7 @@ mod tests {
     mod delivery_policy;
     mod dependencies;
     mod mcp_lifecycle;
+
     mod prune;
     mod recovery;
     mod schema16;

@@ -88,6 +88,18 @@ async fn project_branch_switch(
     .map_err(|_| "Не удалось переключить ветку проекта".to_owned())?
 }
 #[tauri::command]
+async fn task_set_status(state: State<'_, AppState>, project: String, task: String, expected: String, target: String, reason: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.set_task_status(&project, &task, &expected, &target, &reason))
+        .await.map_err(|_| "Смена статуса завершилась ошибкой".to_owned())?
+}
+#[tauri::command]
+async fn task_recover(state: State<'_, AppState>, project: String, task: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.recover_failed_task(&project, &task))
+        .await.map_err(|_| "Проверка продолжения сессии завершилась ошибкой".to_owned())?
+}
+#[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.dashboard(query).map_err(str::to_owned))
@@ -471,6 +483,8 @@ fn main() {
             codex_env_save,
             opencode_keys_read,
             opencode_key_save,
+            task_set_status,
+            task_recover,
             dashboard,
             dashboard_revision,
             project_preview,

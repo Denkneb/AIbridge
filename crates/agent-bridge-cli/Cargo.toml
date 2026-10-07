@@ -25,6 +25,7 @@ nix.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
+bridge-desktop = { path = "../bridge-desktop" }
 bridge-git.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 

@@ -5,4 +5,5 @@ pub mod dashboard;
 mod opencode_config;
 mod opencode_keys;
 pub mod projects;
+mod task_recovery;
 pub mod terminal;

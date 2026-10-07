@@ -249,6 +249,10 @@ impl ProjectService {
                     };
                     json!({"code":code,"created_at":safe_text(&time)})
                 });
+                let recoverable: bool = t.status == bridge_domain::TaskStatus::Failed && t.close_requested_at.is_none() && tx.query_row(
+                    "SELECT status='failed' AND error_code='assistant_error' AND attempted=1 AND session_id IS NOT NULL AND outbound_message_id IS NOT NULL FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 1",
+                    params![t.task_id.to_string(), project.id().as_str()], |r| r.get::<_, Option<bool>>(0),
+                ).optional().map_err(|_| "round data invalid")?.flatten().unwrap_or(false);
                 let mut rounds = vec![];
 
                 let mut stmt=tx.prepare("SELECT round_number,status,structured_findings,checkpoint_json,verifier_json,result_json FROM rounds WHERE task_id=?1 AND project_id=?2 ORDER BY round_number DESC LIMIT 100").map_err(|_|"round data invalid")?;
@@ -292,7 +296,7 @@ impl ProjectService {
                         Err(_) => json!({"gate":"corrupt"}),
                     },
                 };
-                tasks.push(json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"delivery_refusal":refusal,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":rounds,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}));
+                tasks.push(json!({"task_id":t.task_id.to_string(),"project_id":project.id().as_str(),"title":safe_text(&t.text),"status":t.status,"recoverable":recoverable,"revision_count":t.revision_count,"updated_at":t.updated_at,"execution_mode":mode,"delivery_mode":delivery,"delivery_state":delivery_state,"delivery_refusal":refusal,"workflow_id":workflow,"depends_on":parsed(dependencies),"usage":usage,"budget":budget,"rounds":rounds,"base_head":t.base_head,"allowed_paths":t.allowed_paths,"test_commands":t.test_commands,"repositories":t.snapshot.as_ref().map(sanitize)}));
             }
             drop(tx);
             let store = bridge_storage::automation::AutomationRunStore::new(layout);

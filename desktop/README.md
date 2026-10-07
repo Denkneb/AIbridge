@@ -223,3 +223,25 @@ are preserved. No stash, force checkout, commit, push or project Git hooks are
 run. Ignored files that would be overwritten and branches occupied by another
 worktree are refused by Git. The current HEAD/workspace is rechecked before
 switching; external branch changes require refreshing the selection.
+
+Failed assistant tasks expose **Проверить продолжение сессии** in the task card.
+After manually continuing the saved OpenCode session, this explicit action claims
+observation of the original attempted round without another prompt, session or
+revision. The worker checks session/workspace identity, runs the frozen verifier
+and collects changes against the original baseline before `awaiting_review`.
+Only `assistant_error` rounds with saved session/outbound identities qualify;
+infrastructure errors, closed tasks and corrupt budgets cannot be reopened this
+way. An unchanged failed session can fail again. Dashboard polling remains read-only,
+and acceptance is a separate controller action. Untracked-file checksum changes
+remain evidence of a changed baseline, not attribution of who changed those files.
+
+Task cards also expose **Изменить статус** for unfinished tasks, and controllers
+have `set_task_status(task_id, expected_status, status, reason)` for the same
+operation. Every nonterminal label is available, including transitions outside
+the ordinary state machine. Accepted/closed tasks cannot be changed and cannot
+be selected as targets. Admission and worker fences reject concurrent execution;
+a stale current status is rejected. Status, timestamp and an audit event with
+from/to/reason commit atomically. Round data, verifier, result, sessions, baseline,
+revision count and writer reservations are preserved. This explicit correction
+neither sends prompts nor invents completion evidence. An `awaiting_review` label
+alone cannot bypass the existing complete-round and review gates of acceptance.

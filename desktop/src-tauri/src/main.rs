@@ -154,6 +154,12 @@ async fn project_preview(
     .map_err(|_| "preview failed".to_owned())?
 }
 #[tauri::command]
+async fn project_remove_preview(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.preview_remove(&project))
+        .await.map_err(|_| "Не удалось подготовить удаление проекта".to_owned())?
+}
+#[tauri::command]
 async fn project_apply(state: State<'_, AppState>, review_id: String) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.apply(&review_id))
@@ -564,6 +570,7 @@ fn main() {
             task_rounds,
             dashboard_revision,
             project_preview,
+            project_remove_preview,
             project_apply,
             project_cancel,
             opencode_config_read,

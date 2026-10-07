@@ -89,6 +89,7 @@ struct Pending {
     project: String,
     password: Option<String>,
     token: Option<String>,
+    remove: bool,
 }
 pub struct ProjectService {
     pub config: PathBuf,
@@ -344,11 +345,69 @@ impl ProjectService {
                 project: draft.id.clone(),
                 password,
                 token,
+                remove: false,
             },
         );
         Ok(
             json!({"review_id":id,"before":before,"after":draft,"credentials_changed":pending[&id].password.is_some()||pending[&id].token.is_some()}),
         )
+    }
+    /// Preview removal of a registration; user files and runtime history are retained.
+    pub fn preview_remove(&self, project: &str) -> Result<Value, String> {
+        safe_path(&self.config)?;
+        let original = self.config_bytes()?;
+        let text = std::str::from_utf8(&original).map_err(|_| "config encoding invalid")?;
+        let current = validate_config_text(text, &self.config, Some(&self.state))
+            .map_err(|e| e.to_string())?;
+        let before =
+            ProjectDraft::from_project(current.project(project).ok_or("project not configured")?);
+        let mut doc = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|_| "config invalid")?;
+        let projects = doc["projects"]
+            .as_table_mut()
+            .ok_or("projects table missing")?;
+        projects.remove(project);
+        if projects.is_empty() {
+            projects.set_implicit(false);
+        }
+        // toml_edit attaches a file header to the first project table. Keep that
+        // header when removing the table, without retaining its project settings.
+        let header: String = text
+            .split_inclusive('\n')
+            .take_while(|line| {
+                let line = line.trim();
+                line.is_empty() || line.starts_with('#')
+            })
+            .collect();
+        let mut proposed = doc.to_string();
+        if !header.is_empty() && !proposed.starts_with(&header) {
+            proposed.insert_str(0, &header);
+        }
+        let proposed = proposed.into_bytes();
+        validate_config_text(
+            std::str::from_utf8(&proposed).map_err(|_| "config invalid")?,
+            &self.config,
+            Some(&self.state),
+        )
+        .map_err(|e| e.to_string())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut pending = self.pending.lock().map_err(|_| "preview unavailable")?;
+        if pending.len() >= 16 {
+            pending.clear();
+        }
+        pending.insert(
+            id.clone(),
+            Pending {
+                original,
+                proposed,
+                project: project.into(),
+                password: None,
+                token: None,
+                remove: true,
+            },
+        );
+        Ok(json!({"review_id":id,"before":before,"after":null}))
     }
     pub fn apply(&self, review_id: &str) -> Result<Value, String> {
         let mut pending = self.pending.lock().map_err(|_| "preview unavailable")?;
@@ -365,13 +424,58 @@ impl ProjectService {
             Some(&self.state),
         )
         .map_err(|_| "config invalid")?;
+        // A removal affects readers of the old registration, including linked
+        // controllers and shared credentials. No surviving project table changes.
+        let removal_layout = if change.remove {
+            Some(self.project(&change.project)?.1)
+        } else {
+            None
+        };
+        let _automation = match removal_layout
+            .as_ref()
+            .filter(|layout| layout.database().exists())
+        {
+            Some(layout) => Some(
+                bridge_automation::run::AutomationLock::acquire(layout)
+                    .map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
         let _runtime = bridge_runtime::project::project_config_edit_guard(
             &config,
-            &proposed,
+            if change.remove { &config } else { &proposed },
             &change.project,
             &self.state,
         )
         .map_err(|e| e.to_string())?;
+        if let Some(layout) = &removal_layout {
+            if proposed.project(&change.project).is_some() {
+                return Err("project removal preview invalid".into());
+            }
+            if layout.database().exists() {
+                let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
+                if storage
+                    .count_tasks(layout.project_id(), true)
+                    .map_err(|_| "task state unavailable")?
+                    > 0
+                {
+                    return Err(
+                        "Завершите или закройте незавершённые задачи проекта перед удалением."
+                            .into(),
+                    );
+                }
+                use bridge_storage::automation::{AutomationRunStore, AutomationStoreError};
+                match AutomationRunStore::new(layout.clone()).load(None) {
+                    Ok(run) if !run.status().is_terminal() => {
+                        return Err(
+                            "Остановите автоматический запуск проекта перед удалением.".into()
+                        );
+                    }
+                    Ok(_) | Err(AutomationStoreError::NotFound) => {}
+                    Err(_) => return Err("Состояние автоматизации недоступно".into()),
+                }
+            }
+        }
         let mode = fs::metadata(&self.config)
             .map(|m| m.permissions().mode() & 0o777)
             .unwrap_or(0o600);
@@ -382,6 +486,12 @@ impl ProjectService {
         ));
         if !change.original.is_empty() {
             atomic_write(&backup, &change.original, mode)?;
+        }
+        if change.remove {
+            atomic_write(&self.config, &change.proposed, mode)?;
+            let project = change.project.clone();
+            pending.remove(review_id);
+            return Ok(json!({"removed":true,"project":project}));
         }
         let p = proposed.project(&change.project).ok_or("project missing")?;
         p.read_opencode_env()

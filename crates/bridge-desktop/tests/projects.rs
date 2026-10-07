@@ -1512,3 +1512,194 @@ fn new_project_preview_reports_reused_workspace_and_accepts_distinct_bindings() 
     assert_eq!(fs::read(&f.service.config).unwrap(), original);
     assert!(!f.service.state.exists());
 }
+
+#[test]
+fn remove_registration_preserves_files_history_credentials_other_projects_and_backup() {
+    let f = Fixture::new();
+    let task = f.task(
+        "primary",
+        "History survives removal",
+        "2026-01-01T00:00:00Z",
+    );
+    let (_, layout) = f.service.project("primary").unwrap();
+    fs::write(f.root.join("main/keep.txt"), "workspace contents").unwrap();
+    fs::write(f.root.join("password"), "private-credential").unwrap();
+    let original = fs::read(&f.service.config).unwrap();
+    let preview = f.service.preview_remove("primary").unwrap();
+    assert_eq!(preview["before"]["id"], "primary");
+    assert!(preview["after"].is_null());
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    assert_eq!(
+        f.service
+            .apply(preview["review_id"].as_str().unwrap())
+            .unwrap()["removed"],
+        true
+    );
+    assert_eq!(
+        f.service
+            .projects()
+            .unwrap()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        ["second"]
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/keep.txt")).unwrap(),
+        "workspace contents"
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("password")).unwrap(),
+        "private-credential"
+    );
+    assert!(
+        layout
+            .open_readonly()
+            .unwrap()
+            .get_task(task.parse().unwrap())
+            .unwrap()
+            .is_some()
+    );
+    let backup = fs::read_dir(&f.root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "bak"))
+        .unwrap();
+    assert_eq!(fs::read(backup).unwrap(), original);
+    assert!(
+        fs::read_to_string(&f.service.config)
+            .unwrap()
+            .contains("# keep formatting")
+    );
+}
+
+#[test]
+fn remove_last_registration_cancellation_and_stale_preview_are_safe() {
+    let f = Fixture::new();
+    assert!(f.service.preview_remove("missing").is_err());
+    let preview = f.service.preview_remove("primary").unwrap();
+    let id = preview["review_id"].as_str().unwrap();
+    f.service.cancel(id);
+    assert!(f.service.apply(id).is_err());
+    let preview = f.service.preview_remove("primary").unwrap();
+    fs::write(
+        &f.service.config,
+        format!(
+            "{}\n# external edit\n",
+            fs::read_to_string(&f.service.config).unwrap()
+        ),
+    )
+    .unwrap();
+    assert!(
+        f.service
+            .apply(preview["review_id"].as_str().unwrap())
+            .unwrap_err()
+            .contains("config changed")
+    );
+    for project in ["primary", "second"] {
+        let preview = f.service.preview_remove(project).unwrap();
+        let id = preview["review_id"].as_str().unwrap();
+        f.service.apply(id).unwrap();
+        assert!(f.service.apply(id).is_err());
+    }
+    assert!(f.service.projects().unwrap().is_empty());
+    assert!(!f.service.state.exists());
+}
+
+#[test]
+fn removal_refuses_unfinished_tasks_and_busy_linked_controllers() {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let f = Fixture::new();
+    let task = f.task("primary", "Unfinished", "2026-01-01T00:00:00Z");
+    let (_, layout) = f.service.project("primary").unwrap();
+    let storage = layout.open().unwrap();
+    storage
+        .connection()
+        .execute("UPDATE tasks SET status='failed' WHERE task_id=?1", [&task])
+        .unwrap();
+    let original = fs::read(&f.service.config).unwrap();
+    let preview = f.service.preview_remove("primary").unwrap();
+    assert!(
+        f.service
+            .apply(preview["review_id"].as_str().unwrap())
+            .unwrap_err()
+            .contains("незавершённые задачи")
+    );
+    storage
+        .connection()
+        .execute("UPDATE tasks SET status='closed' WHERE task_id=?1", [&task])
+        .unwrap();
+    let controller = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(layout.project_dir().join("controller.lock"))
+        .unwrap();
+    nix::fcntl::flock(
+        controller.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .unwrap();
+    let preview = f.service.preview_remove("second").unwrap();
+    let id = preview["review_id"].as_str().unwrap();
+    let error = f.service.apply(id).unwrap_err();
+    assert!(error.contains("primary") && error.contains("контроллер"));
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    drop(controller);
+    f.service.apply(id).unwrap();
+}
+
+#[test]
+fn removal_refuses_paused_automation_until_stopped() {
+    use std::process::Command;
+    let f = Fixture::new();
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.name=Proof",
+            "-c",
+            "user.email=proof@example.test",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(f.root.join("main"))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let (entry, layout) = f.service.project("primary").unwrap();
+    let plan = serde_json::json!({"version":1,"goal":"Pause proof","steps":[{"id":"one","task":"Create file","allowed_paths":["file.txt"],"test_commands":["true"],"acceptance_criteria":["File exists"]}],"final_test_commands":["true"],"delivery":"manual"});
+    let run = bridge_automation::run::create_run(&entry, &layout, &plan).unwrap();
+    let store = bridge_storage::automation::AutomationRunStore::new(layout);
+    store
+        .save(
+            run.document(),
+            bridge_storage::automation::RunStatus::Paused,
+        )
+        .unwrap();
+    let preview = f.service.preview_remove("primary").unwrap();
+    let id = preview["review_id"].as_str().unwrap();
+    assert!(
+        f.service
+            .apply(id)
+            .unwrap_err()
+            .contains("автоматический запуск")
+    );
+    store
+        .save(
+            run.document(),
+            bridge_storage::automation::RunStatus::Stopped,
+        )
+        .unwrap();
+    f.service.apply(id).unwrap();
+}

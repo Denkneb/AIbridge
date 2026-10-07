@@ -33,6 +33,22 @@ For development, start `npm run dev` in `desktop` and run the Tauri target with
 `desktop/dist` and prohibit remote content through CSP. The window has no
 arbitrary shell, filesystem or SQL IPC. Native directory/file pickers use the only enabled dialog permission.
 
+## Remove a project
+
+Settings → **Удалить проект** previews removal of the selected saved registration.
+**Подтвердить удаление** removes only its table from `projects.toml` and writes a
+sibling backup. The workspace, credentials, runtime state and task history remain
+available; other project tables are preserved. Removing the last project leaves
+a valid empty `[projects]` table. Cancel and stale config previews cannot remove
+anything. Re-registering the same project ID/workspace uses the retained state.
+
+Removal refuses live services, controllers, executors, unfinished task rows and
+nonterminal automation (including paused or blocked runs). Stop automation and
+services, close controller tabs, and finish or close remaining tasks first.
+Readers linked to the removed registration and projects sharing credentials use
+the existing config-edit fences; unrelated active projects do not block removal.
+The backend checks these conditions again under locks when applying the review.
+
 ## Automatic approved plans
 
 Open **Автоматизация**, upload a JSON plan or paste the plan prepared during your

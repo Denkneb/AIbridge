@@ -332,6 +332,20 @@
     }
    }
   }
+  selectProject('other');
+  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки').click();
+  await waitUI(()=>document.querySelector('[aria-label="Удаление проекта"]'),'project_remove_button_missing');
+  const removeButton=()=>[...document.querySelectorAll('[aria-label="Удаление проекта"] button')].find(b=>b.textContent==='Удалить проект');
+  removeButton().click();await waitUI(()=>document.querySelector('[aria-label="Подтверждение удаления проекта"]'),'project_remove_preview_missing');
+  if(!document.querySelector('[aria-label="Подтверждение удаления проекта"]').textContent.includes('other'))throw Error('project_remove_wrong_binding');
+  [...document.querySelectorAll('[aria-label="Подтверждение удаления проекта"] button')].find(b=>b.textContent==='Отмена').click();
+  await waitUI(()=>!document.querySelector('[aria-label="Подтверждение удаления проекта"]'),'project_remove_cancel_failed');
+  if(!(await invoke('projects')).some(p=>p.id==='other'))throw Error('project_remove_cancel_mutated_config');
+  removeButton().click();await waitUI(()=>document.querySelector('[aria-label="Подтверждение удаления проекта"]'),'project_remove_second_preview_missing');
+  [...document.querySelectorAll('[aria-label="Подтверждение удаления проекта"] button')].find(b=>b.textContent==='Подтвердить удаление').click();
+  await waitUI(()=>!document.querySelector('.project-select option[value="other"]'),'project_remove_list_not_updated');
+  if(!(await invoke('projects')).some(p=>p.id==='proof'))throw Error('project_remove_deleted_other_project');
+  checks.project_removal_preview_cancel_apply=true;
   await invoke('smoke_complete',{passed:true,checks});
  }catch(error){checks.failure=error.message;await invoke('smoke_complete',{passed:false,checks});}
 })();

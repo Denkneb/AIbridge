@@ -104,11 +104,13 @@ fn local_controller_argv_hooks_rules_and_exit_are_process_scoped() {
     assert!(hook.to_string().contains("hook-status"));
     assert!(!f.root.join("workspace with 'quote/.codex").exists());
     assert!(!f.root.join("state/proj/controller-opencode.json").exists());
-    assert!(entries.iter().any(|o| {
-        o["developer_instructions"]
-            .as_str()
-            .is_some_and(|s| s.contains("submit_task"))
-    }));
+    let instructions = entries
+        .iter()
+        .find_map(|o| o["developer_instructions"].as_str())
+        .unwrap();
+    assert!(instructions.contains("submit_task"));
+    assert!(instructions.contains("Правила постоянны (включая /new)"));
+    assert!(instructions.contains(include_str!("../../../docs/delegated-task-brief.txt")));
 }
 #[test]
 fn remote_tokens_are_only_in_child_env_and_preflight_has_no_state_writes() {

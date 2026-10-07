@@ -22,7 +22,11 @@ use std::{
 pub const CONFIG_FILENAME: &str = "controller-opencode.json";
 pub const CONTROLLER_AGENT: &str = "bridge-controller";
 pub const MCP_TIMEOUT_MS: u32 = 330_000;
-pub const CONTROLLER_PROMPT: &str = include_str!("controller_prompt.txt");
+pub const CONTROLLER_PROMPT: &str = concat!(
+    include_str!("controller_prompt.txt"),
+    "\n\n",
+    include_str!("../../../docs/delegated-task-brief.txt")
+);
 const PRIMARY_TOKEN: &str = "AGENT_BRIDGE_MCP_TOKEN";
 
 /// Fixed labels deliberately exclude workspace contents, paths and credentials.

@@ -69,6 +69,13 @@
   const settings=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('terminal_recreated_on_rerender');checks.terminal_survives_rerender=true;
   const waitUI=async(check,label)=>{for(let i=0;i<150;i++){if(await check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
+  const branchSelect=document.querySelector('[aria-label="Ветка Git проекта"]');
+  await waitUI(()=>branchSelect.value==='refs/heads/main'&&branchSelect.querySelector('option[value="refs/heads/feature"]'),'project_branches_missing');
+  const chooseBranch=reference=>{branchSelect.value=reference;branchSelect.dispatchEvent(new Event('change',{bubbles:true}));};
+  const switchBranch=async(reference)=>{chooseBranch(reference);await waitUI(()=>[...document.querySelectorAll('.project-branches button')].some(b=>b.textContent==='Переключить'),'branch_switch_missing');[...document.querySelectorAll('.project-branches button')].find(b=>b.textContent==='Переключить').click();await waitUI(async()=>(await invoke('project_branches',{project:'proof'})).current===reference,'branch_switch_failed');await waitUI(()=>!document.querySelector('.project-branches button'),'branch_switch_busy');};
+  await switchBranch('refs/heads/feature');await switchBranch('refs/heads/main');
+  if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('branch_switch_recreated_pty');
+  checks.project_git_branches=true;checks.project_git_switch=true;
   await waitUI(()=>document.querySelector('.project-indicator')&&!document.querySelector('.project-indicator-checking'),'project_status_not_loaded');
   if(document.querySelector('.project-indicator-running')||!document.querySelector('.project-indicator').getAttribute('aria-label').includes('proof'))throw Error('project_status_binding');checks.project_status_indicator=true;
   const setInput=(label,value)=>{const input=document.querySelector(`[aria-label="${label}"]`);if(!input)throw Error('missing_'+label);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};

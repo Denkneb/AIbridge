@@ -564,16 +564,34 @@ impl McpServer {
                 snapshot[key] = value.clone();
             }
         }
-        if self.project.execution_mode() == ExecutionMode::Direct {
+        let _opencode_lease = if self.project.execution_mode() == ExecutionMode::Direct {
+            let lease =
+                bridge_runtime::project::OpenCodeLease::acquire(&self.project, &self.layout)
+                    .map_err(|_| "project_busy")?;
+            // Existing direct endpoints retain the original health/directory contract.
+            // Only an absent managed server is started; occupied or unhealthy servers
+            // are never replaced by a new process.
             let client = bridge_opencode::OpenCodeClient::from_project(&self.project, PROBE)
                 .map_err(|_| "server_unavailable")?;
+            if client.health().is_err() {
+                bridge_runtime::project::ensure_opencode(
+                    &self.project,
+                    &self.layout,
+                    &bridge_runtime::ServerCommand::opencode(),
+                    std::time::Duration::from_secs(20),
+                )
+                .map_err(|_| "server_unavailable")?;
+            }
             if !client.health().map_err(|_| "server_unavailable")?.healthy() {
                 return Err("server_unhealthy");
             }
             client
                 .verify_workspace()
                 .map_err(|_| "server_wrong_directory")?;
-        }
+            Some(lease)
+        } else {
+            None
+        };
         let _admission = match WorkerLock::try_acquire_admission(&self.layout)
             .map_err(|_| "state_unavailable")?
         {

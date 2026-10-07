@@ -16,7 +16,8 @@
 //! Worker/MCP result aggregation and verifier integration remain out of scope
 //! for later tasks.
 //!
-//! Snapshot commands are read-only; the explicit `checkout` module additionally
+//! Snapshot commands are read-only; `branches` adds explicit guarded branch switches.
+//! The explicit `checkout` module additionally
 //! creates/removes detached task worktrees. All use a bounded runner: a fixed
 //! `git` executable, closed standard input, discarded standard error, raw
 //! standard-output bytes, and a wall-clock timeout after which the child is
@@ -46,6 +47,7 @@
 //! [`GitError`] carries no payload, so `Display`/`Debug` can never leak the
 //! workspace, argv, stdout/stderr, Git configuration, OS error text or secrets.
 
+pub mod branches;
 pub mod checkout;
 pub mod checkpoint;
 mod comparison;

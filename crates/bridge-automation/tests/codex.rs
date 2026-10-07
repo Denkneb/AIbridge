@@ -22,6 +22,16 @@ assert args[args.index('--sandbox')+1]=='read-only'
 assert args[args.index('--disable')+1]=='multi_agent'
 assert json.load(open(schema))['additionalProperties'] is False
 context=json.load(sys.stdin)
+instructions=json.loads(next(a.split('=',1)[1] for a in args if a.startswith('developer_instructions=')))
+if context['operation']=='prepare':
+    assert '## Изученный контекст' in instructions
+    assert '## Критерии приёмки' in instructions
+    assert '## Проверки' in instructions
+    assert 'The approved step is authoritative' in instructions
+    assert 'do not add JSON fields, change allowed_paths/test_commands' in instructions
+else:
+    assert 'Map each approved acceptance criterion' in instructions
+    assert 'independently inspected code and verification evidence' in instructions
 if mode=='nonzero': sys.exit(5)
 if mode=='hang': time.sleep(30)
 if mode=='descendant':

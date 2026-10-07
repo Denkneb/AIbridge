@@ -27,6 +27,9 @@ def main():
         root = Path(tmp)
         main = root / 'main'
         main.mkdir()
+        subprocess.run(['git', '-C', str(main), 'init', '-b', 'main'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['git', '-C', str(main), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-m', 'fixture'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['git', '-C', str(main), 'branch', 'feature'], check=True)
         config = root / 'projects.toml'
         config.write_text('[projects.proof]\nworkspace=' + json.dumps(str(main)) +
                           '\nopencode_url="http://127.0.0.1:4199"\npassword_file=' +

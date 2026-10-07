@@ -58,3 +58,12 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 .provider-key-list code{overflow-wrap:anywhere;margin-right:auto;min-width:0}
 .provider-key-list button{font-size:12px;padding:5px 8px}
 @media(max-width:1000px){.provider-key-inputs{grid-template-columns:1fr}}
+
+.project-branches{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;font-size:12px}
+.project-branches>label{display:flex;align-items:center;gap:6px}
+.project-branches select{width:160px}
+.branch-error{color:#ffb0a2}
+.branch-error .toolbar-menu-content{position:fixed;left:16px;right:auto;top:58px;width:360px;white-space:normal}
+.branch-error p{margin:0;font-size:12px;line-height:1.5}
+
+.project-indicator-idle .project-status-dot{background:#22c55e}

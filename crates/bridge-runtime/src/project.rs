@@ -270,6 +270,134 @@ fn spawn_one(
     });
     Ok(record)
 }
+/// Holds the main server while a console or a direct submission uses it.
+/// This fence is independent of controllers: an idle Codex tab needs only MCP.
+pub struct OpenCodeLease {
+    _file: fs::File,
+}
+impl OpenCodeLease {
+    /// # Errors
+    /// Refuses invalid state and concurrent idle shutdown.
+    pub fn acquire(project: &ProjectEntry, layout: &RustStateLayout) -> Result<Self, RuntimeError> {
+        validate(project, layout)?;
+        layout
+            .open_readonly()
+            .map_err(|_| RuntimeError::Ownership)?;
+        let file = opencode_usage_file(layout)?;
+        use std::os::fd::AsRawFd;
+        nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockSharedNonblock)
+            .map_err(|_| RuntimeError::LockBusy)?;
+        Ok(Self { _file: file })
+    }
+}
+fn opencode_usage_file(layout: &RustStateLayout) -> Result<fs::File, RuntimeError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+        .open(layout.project_dir().join("opencode-usage.lock"))
+        .map_err(|_| RuntimeError::Io)?;
+    if !file.metadata().map_err(|_| RuntimeError::Io)?.is_file() {
+        return Err(RuntimeError::Io);
+    }
+    Ok(file)
+}
+/// Starts only the main OpenCode server, without starting MCP recursively.
+/// The caller keeps an OpenCodeLease until its task is persisted or console exits.
+/// # Errors
+/// Uses the same ownership, port and readiness checks as explicit project start.
+pub fn ensure_opencode(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+    command: &ServerCommand,
+    timeout: Duration,
+) -> Result<(), RuntimeError> {
+    validate(project, layout)?;
+    let _lock = ManagerLock::acquire(&[layout], Duration::from_secs(2))?;
+    let state = readiness::record_state(layout, project, "opencode")?;
+    if ready(project, "opencode") {
+        return Ok(());
+    }
+    if state == "live" || TcpListener::bind(("127.0.0.1", port(project, "opencode")?)).is_err() {
+        return Err(RuntimeError::ProjectReadiness);
+    }
+    spawn_one(
+        project,
+        layout,
+        "opencode",
+        command,
+        Path::new("/unused"),
+        timeout,
+    )?;
+    Ok(())
+}
+/// Stops only a proven main server when no unfinished tasks or console leases remain.
+/// MCP stays available and task statuses are never modified.
+/// # Errors
+/// Busy operations, corrupt state and foreign process records fail closed.
+pub fn stop_idle_opencode(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+) -> Result<bool, RuntimeError> {
+    use std::os::fd::AsRawFd;
+    validate(project, layout)?;
+    let _manager = ManagerLock::acquire(&[layout], Duration::ZERO)?;
+    let usage = opencode_usage_file(layout)?;
+    nix::fcntl::flock(
+        usage.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .map_err(|_| RuntimeError::LockBusy)?;
+    let admission = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+        .open(layout.project_dir().join("admission.lock"))
+        .map_err(|_| RuntimeError::Io)?;
+    if !admission
+        .metadata()
+        .map_err(|_| RuntimeError::Io)?
+        .is_file()
+    {
+        return Err(RuntimeError::Io);
+    }
+    nix::fcntl::flock(
+        admission.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .map_err(|_| RuntimeError::LockBusy)?;
+    let worker = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+        .open(layout.project_dir().join("worker.lock"))
+        .map_err(|_| RuntimeError::Io)?;
+    if !worker.metadata().map_err(|_| RuntimeError::Io)?.is_file() {
+        return Err(RuntimeError::Io);
+    }
+    nix::fcntl::flock(
+        worker.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .map_err(|_| RuntimeError::LockBusy)?;
+    let storage = layout
+        .open_readonly()
+        .map_err(|_| RuntimeError::Ownership)?;
+    if storage
+        .count_tasks(project.id(), true)
+        .map_err(|_| RuntimeError::Ownership)?
+        > 0
+    {
+        return Ok(false);
+    }
+    stop_one(project, layout, "opencode")
+}
 pub fn start(
     projects: &[(ProjectEntry, RustStateLayout)],
     opencode: &ServerCommand,
@@ -300,6 +428,16 @@ pub fn start(
     let result = (|| {
         for (index, (p, l)) in projects.iter().enumerate() {
             for kind in ["opencode", "mcp"] {
+                if kind == "opencode"
+                    && (p.execution_mode() == bridge_domain::ExecutionMode::Worktree
+                        || l.open_readonly()
+                            .map_err(|_| RuntimeError::Ownership)?
+                            .count_tasks(p.id(), true)
+                            .map_err(|_| RuntimeError::Ownership)?
+                            == 0)
+                {
+                    continue;
+                }
                 let state = readiness::record_state(l, p, kind)?;
                 if ready(p, kind) {
                     continue;
@@ -454,31 +592,49 @@ pub fn project_config_edit_guard(
     changed: &str,
     state: &Path,
 ) -> Result<ConfigEditGuard, ConfigEditError> {
+    projects_config_edit_guard(existing, proposed, &[changed], state)
+}
+
+/// Fences several related projects in one acquisition, without duplicate locks.
+/// # Errors
+/// Uses the same activity and ownership checks as a single-project edit.
+pub fn projects_config_edit_guard(
+    existing: &bridge_config::Config,
+    proposed: &bridge_config::Config,
+    changed_projects: &[&str],
+    state: &Path,
+) -> Result<ConfigEditGuard, ConfigEditError> {
     use std::collections::BTreeSet;
-    if proposed.project(changed).is_none() {
+    if changed_projects.is_empty()
+        || changed_projects
+            .iter()
+            .any(|id| proposed.project(id).is_none())
+    {
         return Err(RuntimeError::Binding.into());
     }
     let mut affected = BTreeSet::new();
     for config in [existing, proposed] {
         for project in config.projects().values() {
-            let shared_credentials = config.project(changed).is_some_and(|target| {
-                let target_paths = [target.password_file(), target.mcp_token_file()];
-                [project.password_file(), project.mcp_token_file()]
-                    .into_iter()
-                    .flatten()
-                    .any(|path| {
-                        target_paths
-                            .into_iter()
-                            .flatten()
-                            .any(|other| path == other)
-                    })
+            let shared_credentials = changed_projects.iter().any(|changed| {
+                config.project(changed).is_some_and(|target| {
+                    let target_paths = [target.password_file(), target.mcp_token_file()];
+                    [project.password_file(), project.mcp_token_file()]
+                        .into_iter()
+                        .flatten()
+                        .any(|path| {
+                            target_paths
+                                .into_iter()
+                                .flatten()
+                                .any(|other| path == other)
+                        })
+                })
             });
-            if project.id().as_str() == changed
+            if changed_projects.contains(&project.id().as_str())
                 || shared_credentials
                 || config
                     .linked_projects(project.id().as_str())
                     .iter()
-                    .any(|linked| linked.id().as_str() == changed)
+                    .any(|linked| changed_projects.contains(&linked.id().as_str()))
             {
                 affected.insert(project.id().as_str());
             }

@@ -128,6 +128,12 @@ fn generated_config_matches_controller_contract_and_contains_only_token_placehol
         value["agent"]["bridge-controller"]["prompt"],
         CONTROLLER_PROMPT
     );
+    assert!(
+        value["agent"]["bridge-controller"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains(include_str!("../../../docs/delegated-task-brief.txt"))
+    );
     assert_eq!(
         value["agent"]["bridge-controller"]["permission"],
         json!({"edit":"deny","task":"deny","bash":"ask","external_directory":{"*":"ask",layout.state_root().join("*").to_str().unwrap():"allow"}})

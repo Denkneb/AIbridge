@@ -245,7 +245,13 @@ impl CodexClient {
             .arg("-o")
             .arg(&result)
             .arg("-c")
-            .arg(format!("developer_instructions={}", json!(INSTRUCTIONS)));
+            .arg(format!(
+                "developer_instructions={}",
+                json!(match kind {
+                    Operation::Prepare => format!("{INSTRUCTIONS}\n\n{}\nThe approved step is authoritative. Use the brief inside the task string; do not add JSON fields, change allowed_paths/test_commands, or introduce extra steps outside the approved plan.", include_str!("../../../docs/delegated-task-brief.txt")),
+                    Operation::Review => format!("{INSTRUCTIONS}\nMap each approved acceptance criterion to independently inspected code and verification evidence. Passing commands alone do not prove the required behavior. Identify missing coverage and preserved behavior regressions."),
+                })
+            ));
         if let Some(model) = &self.model {
             command.arg("--model").arg(model);
         }

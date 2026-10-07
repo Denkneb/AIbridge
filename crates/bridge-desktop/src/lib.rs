@@ -1,4 +1,5 @@
 //! UI-independent project settings, read-only dashboard and bounded PTY services.
+mod branches;
 pub mod codex_env;
 pub mod dashboard;
 mod opencode_config;

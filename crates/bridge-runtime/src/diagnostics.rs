@@ -156,6 +156,11 @@ pub fn status(project: &ProjectEntry, layout: &RustStateLayout, timeout: Duratio
     if crate::project::validate(project, layout).is_err() {
         return json!({"project_id":project.id(),"ready":false,"servers":{"opencode":{"ready":false,"managed":false,"process_record":"invalid"},"mcp":{"ready":false,"managed":false,"process_record":"invalid"}},"snapshot":{"project_id":project.id(),"error":"state_unavailable"}});
     }
+    let no_tasks = layout
+        .open_readonly()
+        .ok()
+        .and_then(|s| s.count_tasks(project.id(), true).ok())
+        == Some(0);
     let mut servers = json!({});
     let mut all = true;
     for kind in ["opencode", "mcp"] {
@@ -166,8 +171,13 @@ pub fn status(project: &ProjectEntry, layout: &RustStateLayout, timeout: Duratio
             } else {
                 crate::readiness::mcp(project, timeout)
             };
-        all &= ready;
-        servers[kind] = json!({"ready":ready,"managed":record=="live","process_record":record});
+        let idle = kind == "opencode"
+            && (no_tasks || project.execution_mode() == bridge_domain::ExecutionMode::Worktree)
+            && !ready
+            && matches!(record, "missing" | "stale");
+        all &= ready || idle;
+        servers[kind] =
+            json!({"ready":ready,"idle":idle,"managed":record=="live","process_record":record});
     }
     json!({"project_id":project.id(),"ready":all,"servers":servers,"snapshot":snapshot(layout).unwrap_or_else(|e|json!({"project_id":project.id(),"error":e}))})
 }

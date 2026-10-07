@@ -77,9 +77,21 @@ impl HttpServer {
     fn serve_until(&self, stop: &AtomicBool) -> Result<()> {
         let port = self.address()?.port();
         let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+        let mut maintenance = Instant::now();
         let result = (|| {
             while !stop.load(Ordering::Acquire) {
                 handles.retain(|handle| !handle.is_finished());
+                if maintenance.elapsed() >= Duration::from_secs(5) {
+                    if self.server.spawner.is_some() {
+                        // Fenced against task admission and attached consoles. A busy or
+                        // unverifiable project is left intact for the next pass.
+                        let _ = bridge_runtime::project::stop_idle_opencode(
+                            &self.server.project,
+                            &self.server.layout,
+                        );
+                    }
+                    maintenance = Instant::now();
+                }
                 match self.listener.accept() {
                     Ok((mut stream, _)) => {
                         if handles.len() >= MAX_CONNECTIONS {

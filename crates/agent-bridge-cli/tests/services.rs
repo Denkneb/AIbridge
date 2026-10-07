@@ -35,7 +35,7 @@ impl Fixture {
         let blocked = if second {
             let l = TcpListener::bind("127.0.0.1:0").unwrap();
             fs::create_dir(root.join("second")).unwrap();
-            text.push_str(&format!("[projects.second]\nworkspace={}\nopencode_url=\"http://127.0.0.1:{}\"\nmcp_url=\"http://127.0.0.1:{}/mcp\"\npassword_file={}\nmcp_token_file={}\nmax_rounds=3\n",json!(root.join("second")),l.local_addr().unwrap().port(),port(),json!(root.join("second-password")),json!(root.join("second-token"))));
+            text.push_str(&format!("[projects.second]\nworkspace={}\nopencode_url=\"http://127.0.0.1:{}\"\nmcp_url=\"http://127.0.0.1:{}/mcp\"\npassword_file={}\nmcp_token_file={}\nmax_rounds=3\n",json!(root.join("second")),port(),l.local_addr().unwrap().port(),json!(root.join("second-password")),json!(root.join("second-token"))));
             Some(l)
         } else {
             None
@@ -121,15 +121,19 @@ fn setup_start_readonly_status_doctor_attach_stop_and_foreign_record_guards() {
     f.ok("setup", false, &[]);
     assert_eq!(fs::read(f.root.join("password")).unwrap(), pwd);
     f.ok("start", false, &[]);
-    let old = fs::read(f.record("opencode")).unwrap();
+    assert!(!f.record("opencode").exists());
+    let mcp = fs::read(f.record("mcp")).unwrap();
     f.ok("start", false, &[]);
-    assert_eq!(fs::read(f.record("opencode")).unwrap(), old);
+    assert_eq!(fs::read(f.record("mcp")).unwrap(), mcp);
     let report = f.ok("status", false, &["--json"]);
     assert_eq!(report["schema_version"], 1);
-    for kind in ["opencode", "mcp"] {
-        assert_eq!(report["projects"][0]["servers"][kind]["ready"], true);
-        assert_eq!(report["projects"][0]["servers"][kind]["managed"], true);
-    }
+    assert_eq!(report["projects"][0]["servers"]["opencode"]["idle"], true);
+    assert_eq!(
+        report["projects"][0]["servers"]["opencode"]["managed"],
+        false
+    );
+    assert_eq!(report["projects"][0]["servers"]["mcp"]["ready"], true);
+    assert_eq!(report["projects"][0]["servers"]["mcp"]["managed"], true);
     f.ok("doctor", false, &["--json"]);
     assert_eq!(f.cli("console", false, &[]).status.code(), Some(7));
     let capture: Value =
@@ -137,9 +141,18 @@ fn setup_start_readonly_status_doctor_attach_stop_and_foreign_record_guards() {
     assert_eq!(capture["cwd"], json!(f.root.join("main")));
     assert_eq!(capture["auth"], true);
     assert_eq!(capture["argv"][0], "attach");
+    let (project, layout) = project_layout(&f);
+    let _lease = bridge_runtime::project::OpenCodeLease::acquire(&project, &layout).unwrap();
+    let old = fs::read(f.record("opencode")).unwrap();
     let mut record: Value = serde_json::from_slice(&old).unwrap();
     record["project_id"] = json!("foreign");
     fs::write(f.record("opencode"), record.to_string()).unwrap();
+    drop(_lease);
+    assert!(bridge_runtime::project::stop_idle_opencode(&project, &layout).is_err());
+    assert_eq!(
+        fs::read_to_string(f.record("opencode")).unwrap(),
+        record.to_string()
+    );
     assert!(!f.cli("stop", false, &[]).status.success());
     assert!(f.record("opencode").exists());
     assert_eq!(f.cli("status", false, &["--json"]).status.code(), Some(1));
@@ -158,9 +171,10 @@ fn multi_project_failure_rolls_back_new_services_and_preserves_existing_ones() {
     assert!(!f.record("opencode").exists());
     assert!(!f.record("mcp").exists());
     f.ok("start", false, &[]);
-    let before = fs::read(f.record("opencode")).unwrap();
+    let before = fs::read(f.record("mcp")).unwrap();
     assert!(!f.cli("start", true, &[]).status.success());
-    assert_eq!(fs::read(f.record("opencode")).unwrap(), before);
+    assert_eq!(fs::read(f.record("mcp")).unwrap(), before);
+    assert!(!f.record("opencode").exists());
     f.ok("status", false, &["--json"]);
     let all = f.cli("status", true, &["--json"]);
     assert_eq!(all.status.code(), Some(1));
@@ -193,4 +207,201 @@ fn setup_refuses_symlink_credentials_and_foreign_state_without_writes() {
         "unchanged"
     );
     assert!(fs::read_dir(f.root.join("main")).unwrap().next().is_none());
+}
+
+fn project_layout(f: &Fixture) -> (bridge_config::ProjectEntry, bridge_storage::RustStateLayout) {
+    let project = bridge_config::load_config(&f.config)
+        .unwrap()
+        .project("proj")
+        .unwrap()
+        .clone();
+    let layout =
+        bridge_storage::RustStateLayout::new(f.root.join("state"), project.id().clone()).unwrap();
+    (project, layout)
+}
+#[test]
+fn idle_shutdown_preserves_tasks_and_mcp_and_fences_consoles_and_submission() {
+    use bridge_domain::{TaskId, TaskStatus};
+    use bridge_runtime::project::{OpenCodeLease, stop_idle_opencode};
+    let f = Fixture::new(false);
+    f.ok("setup", false, &[]);
+    f.ok("start", false, &[]);
+    let (project, layout) = project_layout(&f);
+    // A console wakes the main server. Keep a lease just like a running console.
+    let lease = OpenCodeLease::acquire(&project, &layout).unwrap();
+    assert_eq!(f.cli("console", false, &[]).status.code(), Some(7));
+    let old = fs::read(f.record("opencode")).unwrap();
+    assert!(stop_idle_opencode(&project, &layout).is_err());
+    let task: TaskId = "11111111-1111-4111-8111-111111111111".parse().unwrap();
+    let mut storage = layout.open().unwrap();
+    storage
+        .create_task(bridge_storage::CreateTaskInput {
+            task_id: task,
+            project_id: project.id().clone(),
+            workspace: project.workspace().to_str().unwrap().into(),
+            task: "fixture".into(),
+            request_id: "idle-test".into(),
+            payload_hash: "hash".into(),
+            base_head: None,
+            allowed_paths: vec!["**".into()],
+            test_commands: vec![],
+            snapshot: None,
+        })
+        .unwrap();
+    drop(lease);
+    for status in TaskStatus::ALL.into_iter().filter(|s| s.is_active()) {
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                [status.as_str(), &task.to_string()],
+            )
+            .unwrap();
+        assert!(
+            !stop_idle_opencode(&project, &layout).unwrap(),
+            "{status:?}"
+        );
+        assert_eq!(fs::read(f.record("opencode")).unwrap(), old);
+    }
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='accepted' WHERE task_id=?1",
+            [task.to_string()],
+        )
+        .unwrap();
+    let admission = match bridge_worker::WorkerLock::try_acquire_admission(&layout).unwrap() {
+        bridge_worker::WorkerLockOutcome::Acquired(g) => g,
+        _ => panic!("admission busy"),
+    };
+    assert!(stop_idle_opencode(&project, &layout).is_err());
+    assert_eq!(fs::read(f.record("opencode")).unwrap(), old);
+    drop(admission);
+    let worker = match bridge_worker::WorkerLock::try_acquire(&layout).unwrap() {
+        bridge_worker::WorkerLockOutcome::Acquired(g) => g,
+        _ => panic!("worker busy"),
+    };
+    assert!(stop_idle_opencode(&project, &layout).is_err());
+    assert_eq!(fs::read(f.record("opencode")).unwrap(), old);
+    drop(worker);
+    // Production MCP loop performs the shutdown without another user action.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while f.record("opencode").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!f.record("opencode").exists());
+    assert_eq!(
+        storage.get_task(task).unwrap().unwrap().status,
+        TaskStatus::Accepted
+    );
+    let report = f.ok("doctor", false, &["--json"]);
+    assert_eq!(report["projects"][0]["servers"]["mcp"]["ready"], true);
+    assert_eq!(report["projects"][0]["servers"]["opencode"]["idle"], true);
+    assert_eq!(f.cli("console", false, &[]).status.code(), Some(7));
+    assert!(f.record("opencode").exists());
+}
+
+fn tool(f: &Fixture, name: &str, args: Value) -> Value {
+    use std::io::{Read, Write};
+    let (project, _) = project_layout(f);
+    let mut stream =
+        std::net::TcpStream::connect(("127.0.0.1", project.mcp_endpoint().unwrap().port()))
+            .unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(25)))
+        .unwrap();
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}).to_string();
+    let token = fs::read_to_string(f.root.join("token")).unwrap();
+    write!(stream, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", project.mcp_endpoint().unwrap().port(), token.trim(), body.len(), body).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let value: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert!(value.get("error").is_none(), "{value}");
+    assert_ne!(value["result"]["isError"], true, "{value}");
+    value["result"]["structuredContent"].clone()
+}
+
+#[test]
+fn direct_submission_wakes_idle_server_executes_and_returns_to_idle_after_acceptance() {
+    let f = Fixture::new(false);
+    let workspace = f.root.join("main");
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    f.ok("setup", false, &[]);
+    f.ok("start", false, &[]);
+    assert!(!f.record("opencode").exists());
+    let submitted = tool(
+        &f,
+        "submit_task",
+        json!({"request_id":"wake-task", "task":"PROOF:left", "allowed_paths":["left.txt"], "test_commands":[]}),
+    );
+    let id = submitted["task_id"].as_str().expect("submitted task");
+    assert!(f.record("opencode").exists());
+    let (_, layout) = project_layout(&f);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let saved = layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        if saved.status == bridge_domain::TaskStatus::AwaitingReview {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker: {:?}",
+            saved.status
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        fs::read_to_string(workspace.join("left.txt")).unwrap(),
+        "left\n"
+    );
+    let accepted = tool(&f, "accept_task", json!({"task_id":id}));
+    assert_eq!(accepted["status"], "accepted");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while f.record("opencode").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!f.record("opencode").exists());
+    assert_eq!(
+        layout
+            .open_readonly()
+            .unwrap()
+            .get_task(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .status,
+        bridge_domain::TaskStatus::Accepted
+    );
+    assert_eq!(
+        f.ok("doctor", false, &["--json"])["projects"][0]["ready"],
+        true
+    );
 }

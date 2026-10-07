@@ -29,6 +29,10 @@ fn run_session(server: &McpServer, input: impl BufRead, mut output: impl Write) 
                 .write_all(b"\n")
                 .and_then(|()| output.flush())
                 .map_err(|_| McpError::Io)?;
+            if server.spawner.is_some() {
+                let _ =
+                    bridge_runtime::project::stop_idle_opencode(&server.project, &server.layout);
+            }
         }
     }
 }

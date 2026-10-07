@@ -1,4 +1,4 @@
-//! Bounded read-only Git command runner.
+//! Bounded Git command runner.
 //!
 //! Every Git invocation goes through [`run_bounded`]: the executable is fixed
 //! by the caller, standard input is closed, standard error is discarded (never
@@ -6,8 +6,8 @@
 //! read as raw bytes, and the whole child lifecycle is bounded by a wall-clock
 //! timeout. A child that outlives its deadline is killed and reaped, and the
 //! stdout reader thread is joined, so no process or thread is left behind. The
-//! runner only ever executes the read-only subcommands the callers ask for; it
-//! has no shell, no string interpolation and no Git write commands.
+//! snapshot callers use read-only commands; explicit branch/worktree APIs may
+//! perform their documented mutations. There is no shell or string interpolation.
 
 use std::ffi::OsStr;
 use std::io::Read;

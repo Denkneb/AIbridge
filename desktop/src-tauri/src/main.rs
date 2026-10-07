@@ -59,6 +59,35 @@ async fn opencode_key_save(
     .map_err(|_| "Не удалось сохранить ключ".to_owned())?
 }
 #[tauri::command]
+async fn project_branches(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.project_branches(&project))
+        .await
+        .map_err(|_| "Не удалось загрузить ветки проекта".to_owned())?
+}
+#[tauri::command]
+async fn project_branch_switch(
+    state: State<'_, AppState>,
+    project: String,
+    reference: String,
+    expected_current: Option<String>,
+    expected_head: Option<String>,
+    expected_workspace: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.switch_project_branch(
+            &project,
+            &reference,
+            expected_current.as_deref(),
+            expected_head.as_deref(),
+            &expected_workspace,
+        )
+    })
+    .await
+    .map_err(|_| "Не удалось переключить ветку проекта".to_owned())?
+}
+#[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.dashboard(query).map_err(str::to_owned))
@@ -436,6 +465,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             projects,
+            project_branches,
+            project_branch_switch,
             codex_env_read,
             codex_env_save,
             opencode_keys_read,

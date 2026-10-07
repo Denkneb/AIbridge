@@ -69,8 +69,18 @@ and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
-A status dot beside the selected project turns green when OpenCode and MCP are
-ready, amber when only some services are available, and grey when stopped.
+A status dot beside the selected project turns green when MCP is ready and
+OpenCode is ready or idle, amber when required services are unavailable, and grey
+when stopped. Starting an empty project or a project in worktree mode starts only MCP. Every five seconds MCP
+stops the managed main OpenCode server if no unfinished tasks remain. Accepted
+and closed tasks retain their history; review, failed, waiting and other unfinished
+tasks keep the server available. Direct submissions and `console`/direct task
+attachment start OpenCode on demand. Console leases prevent idle shutdown until
+attachment exits, including external terminals. Codex controllers need only MCP
+and do not keep an idle main server running. Worktree executors continue to use
+their separate per-task servers and existing cleanup rules. Hovering the green
+dot explains when OpenCode is idle. Stdio MCP also checks for idle shutdown after
+responding to a tool request.
 An outlined dot means checking or unavailable status; hover reveals the state.
 Read-only Doctor checks refresh every five seconds and after lifecycle actions,
 independently of dashboard polling. Switching projects cancels stale results.
@@ -197,3 +207,19 @@ Unfinished task statuses do not block per-project settings, OpenCode JSON, or
 provider-key edits when execution is stopped. Saves hold admission, project and
 per-task worker fences, plus controller and service-management fences. Task rows
 and statuses are preserved. Whole-config CLI migration keeps its stricter check.
+
+Controller sessions use the shared [task brief](../docs/delegation.md): inspect
+relevant code before delegation, state requirements and scope, define observable
+acceptance criteria, and supply verified test commands. Restart the controller
+tab to load revised instructions; automated Codex prepare uses the same brief.
+
+The project header shows its current Git branch (or detached HEAD) and polls
+local and cached remote branches every five seconds. Select a branch and press
+“Переключить”; choosing a remote branch creates a local tracking branch without
+fetching. Switching requires stopped project/related controllers, services and
+workers, a clean tracked/untracked state, and no unfinished Git operation.
+Projects sharing the same worktree are fenced together. Unfinished task rows
+are preserved. No stash, force checkout, commit, push or project Git hooks are
+run. Ignored files that would be overwritten and branches occupied by another
+worktree are refused by Git. The current HEAD/workspace is rechecked before
+switching; external branch changes require refreshing the selection.

@@ -136,7 +136,8 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
                         || p.read_mcp_token().is_ok_and(|v| v.is_some()));
                 let ok = credentials
                     && report["snapshot"].get("error").is_none()
-                    && report["servers"]["opencode"]["ready"] == true
+                    && (report["servers"]["opencode"]["ready"] == true
+                        || report["servers"]["opencode"]["idle"] == true)
                     && (p.mcp_endpoint().is_none() || report["servers"]["mcp"]["ready"] == true);
                 report["ready"] = json!(ok);
                 report["credentials_ok"] = json!(credentials);
@@ -185,6 +186,21 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
             .ok_or("project not configured")?;
         let layout = RustStateLayout::new(args.state_root, project.id().clone())
             .map_err(|_| "state invalid")?;
+        let _opencode_lease =
+            if task.is_none() || project.execution_mode() == bridge_domain::ExecutionMode::Direct {
+                let lease = bridge_runtime::project::OpenCodeLease::acquire(project, &layout)
+                    .map_err(|e| e.to_string())?;
+                bridge_runtime::project::ensure_opencode(
+                    project,
+                    &layout,
+                    &bridge_runtime::ServerCommand::opencode(),
+                    Duration::from_secs(20),
+                )
+                .map_err(|e| e.to_string())?;
+                Some(lease)
+            } else {
+                None
+            };
         let target = bridge_runtime::attachment::resolve(
             project,
             &layout,

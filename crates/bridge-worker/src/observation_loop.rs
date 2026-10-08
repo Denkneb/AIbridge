@@ -130,6 +130,7 @@ impl RoundObserver<'_> {
         if settings.poll_interval.is_zero() || settings.verification_timeout.is_zero() {
             return Err(ExecutionError::Round);
         }
+        let mut events = None;
         loop {
             match self.poll_verified(project, || start.elapsed(), settings.stale_blocker_grace)? {
                 Observation::Final(candidate) => {
@@ -142,15 +143,34 @@ impl RoundObserver<'_> {
                 Observation::Finished(outcome) => return Ok(*outcome),
                 Observation::Pending => {}
             }
+            if events.is_none() && self.workspace_verified && self.identity_verified {
+                events = self.execution.client.subscribe_session(&self.session).ok();
+            }
             let pause = Instant::now();
+            let minimum = settings.poll_interval.min(Duration::from_millis(100));
+            let mut notified = false;
             while pause.elapsed() < settings.poll_interval {
                 self.guard()?;
-                thread::sleep(
-                    settings
-                        .poll_interval
-                        .saturating_sub(pause.elapsed())
-                        .min(Duration::from_millis(100)),
-                );
+                if notified && pause.elapsed() >= minimum {
+                    break;
+                }
+                let deadline = if notified {
+                    minimum
+                } else {
+                    settings.poll_interval
+                };
+                let budget = deadline
+                    .saturating_sub(pause.elapsed())
+                    .min(Duration::from_millis(100));
+                if let Some(events) = &events {
+                    if notified {
+                        thread::sleep(budget);
+                    } else {
+                        notified = events.wait(budget);
+                    }
+                } else {
+                    thread::sleep(budget);
+                }
             }
         }
     }

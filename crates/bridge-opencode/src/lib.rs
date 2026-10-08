@@ -234,6 +234,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
+pub mod events;
+
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -689,6 +691,15 @@ impl HttpTransport {
 
     /// Serializes the request head and body into the bytes sent on the wire.
     fn encode(&self, request: &HttpRequest, target: &str) -> Vec<u8> {
+        let accept = if matches!(&self.auth, TransportAuth::Bearer(_)) {
+            "application/json, text/event-stream"
+        } else {
+            ACCEPT_HEADER
+        };
+        self.encode_with_accept(request, target, accept)
+    }
+
+    fn encode_with_accept(&self, request: &HttpRequest, target: &str, accept: &str) -> Vec<u8> {
         let mut head = String::new();
         head.push_str(request.method.as_str());
         head.push(' ');
@@ -703,11 +714,7 @@ impl HttpTransport {
         head.push_str(&self.auth.header_value());
         head.push_str("\r\n");
         head.push_str("accept: ");
-        head.push_str(if matches!(&self.auth, TransportAuth::Bearer(_)) {
-            "application/json, text/event-stream"
-        } else {
-            ACCEPT_HEADER
-        });
+        head.push_str(accept);
         head.push_str("\r\n");
         head.push_str("connection: close\r\n");
         if let Some(body) = &request.body {

@@ -41,6 +41,8 @@ struct Fixture {
     requests: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     server: Option<thread::JoinHandle<()>>,
+    events_enabled: Arc<AtomicBool>,
+    event_sender: Arc<Mutex<Option<std::sync::mpsc::Sender<String>>>>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -113,7 +115,11 @@ impl Fixture {
             identity_hook.clone(),
             session_hook.clone(),
         );
+        let events_enabled = Arc::new(AtomicBool::new(false));
+        let event_sender = Arc::new(Mutex::new(None));
+        let (enabled, event_output) = (events_enabled.clone(), event_sender.clone());
         let server = thread::spawn(move || {
+            let mut streams = Vec::new();
             while !s.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -144,6 +150,44 @@ impl Fixture {
                             .lock()
                             .unwrap()
                             .push(format!("{first}|{}", String::from_utf8(payload).unwrap()));
+                        if path == "/event" && enabled.load(Ordering::Acquire) {
+                            assert!(target.contains("directory="));
+                            assert!(
+                                request
+                                    .to_ascii_lowercase()
+                                    .contains("accept: text/event-stream")
+                            );
+                            assert!(
+                                request
+                                    .to_ascii_lowercase()
+                                    .contains("authorization: basic ")
+                            );
+                            let (tx, rx) = std::sync::mpsc::channel::<String>();
+                            *event_output.lock().unwrap() = Some(tx);
+                            let stop = s.clone();
+                            streams.push(thread::spawn(move || {
+                                if write!(
+                                    stream,
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                                )
+                                .is_err()
+                                {
+                                    return;
+                                }
+                                while !stop.load(Ordering::Acquire) {
+                                    match rx.recv_timeout(Duration::from_millis(50)) {
+                                        Ok(event) => {
+                                            if write!(stream, "data: {event}\n\n").is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                        Err(_) => break,
+                                    }
+                                }
+                            }));
+                            continue;
+                        }
                         let (status, value) = match (first.split_whitespace().next().unwrap(), path)
                         {
                             ("GET", "/session/session/message") => {
@@ -179,6 +223,7 @@ impl Fixture {
                             {
                                 (*rs.lock().unwrap(), json!({}))
                             }
+                            ("GET", "/event") => (404, json!({})),
                             _ => panic!("unexpected method/path"),
                         };
                         let payload = value.to_string();
@@ -189,6 +234,9 @@ impl Fixture {
                     }
                     Err(e) => panic!("mock accept: {e}"),
                 }
+            }
+            for stream in streams {
+                stream.join().unwrap();
             }
         });
         let password = root.join("password");
@@ -258,6 +306,8 @@ impl Fixture {
             requests,
             stop,
             server: Some(server),
+            events_enabled,
+            event_sender,
         }
     }
     fn history(&self, value: Value) {
@@ -1614,6 +1664,7 @@ fn observation_loop_detects_close_during_long_poll_sleep_and_rejects_zero_cadenc
     use bridge_worker::observation_loop::ObservationSettings;
     use std::time::Instant;
     let f = Fixture::new();
+    f.events_enabled.store(true, Ordering::Release);
     f.history(running_history());
     let project = project(&f, false);
     let mut o = f.observer();
@@ -1666,4 +1717,106 @@ fn observation_loop_detects_close_during_long_poll_sleep_and_rejects_zero_cadenc
     assert!(start.elapsed() < seconds(2));
     assert_eq!(f.requests.load(Ordering::Relaxed), 1);
     assert_eq!(f.task_status(), TaskStatus::Implementing);
+}
+
+#[test]
+fn session_events_wake_observer_but_idle_alone_and_foreign_events_cannot_finish_round() {
+    use bridge_worker::observation_loop::ObservationSettings;
+    let f = Fixture::new();
+    f.history(running_history());
+    f.events_enabled.store(true, Ordering::Release);
+    let (sender, body, requests) = (f.event_sender.clone(), f.body.clone(), f.requests.clone());
+    let producer = thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let tx = loop {
+            if let Some(tx) = sender.lock().unwrap().clone() {
+                break tx;
+            }
+            assert!(start.elapsed() < seconds(3));
+            thread::sleep(Duration::from_millis(5));
+        };
+        tx.send(json!({"type":"session.idle","properties":{"sessionID":"other"}}).to_string())
+            .unwrap();
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            requests.load(Ordering::Relaxed),
+            1,
+            "foreign session woke observer"
+        );
+        tx.send(json!({"type":"session.idle","properties":{"sessionID":"session"}}).to_string())
+            .unwrap();
+        while requests.load(Ordering::Relaxed) < 2 {
+            assert!(start.elapsed() < seconds(3));
+            thread::sleep(Duration::from_millis(5));
+        }
+        *body.lock().unwrap() = (200, final_history());
+        for _ in 0..2 {
+            tx.send(
+                json!({"type":"session.idle","properties":{"sessionID":"session"}}).to_string(),
+            )
+            .unwrap();
+        }
+    });
+    let project = project(&f, false);
+    let start = std::time::Instant::now();
+    f.observer()
+        .observe_to_completion(
+            &project,
+            ObservationSettings {
+                poll_interval: seconds(5),
+                ..ObservationSettings::default()
+            },
+        )
+        .unwrap();
+    producer.join().unwrap();
+    assert!(
+        start.elapsed() < seconds(3),
+        "SSE should bypass the five-second polling wait"
+    );
+    assert_eq!(f.task_status(), TaskStatus::AwaitingReview);
+    assert!(f.result().get("verification").is_some());
+    assert!(
+        !f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("POST"))
+    );
+}
+
+#[test]
+fn disconnected_event_stream_keeps_polling_and_cannot_lose_completion() {
+    use bridge_worker::observation_loop::ObservationSettings;
+    let f = Fixture::new();
+    f.history(running_history());
+    f.events_enabled.store(true, Ordering::Release);
+    let (sender, body) = (f.event_sender.clone(), f.body.clone());
+    let producer = thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let tx = loop {
+            if let Some(tx) = sender.lock().unwrap().take() {
+                break tx;
+            }
+            assert!(start.elapsed() < seconds(3));
+            thread::sleep(Duration::from_millis(5));
+        };
+        *body.lock().unwrap() = (200, final_history());
+        // Lose the stream before the completion notification can be delivered.
+        drop(tx);
+    });
+    let project = project(&f, false);
+    let start = std::time::Instant::now();
+    f.observer()
+        .observe_to_completion(
+            &project,
+            ObservationSettings {
+                poll_interval: Duration::from_millis(50),
+                ..ObservationSettings::default()
+            },
+        )
+        .unwrap();
+    producer.join().unwrap();
+    assert!(start.elapsed() < seconds(2));
+    assert_eq!(f.task_status(), TaskStatus::AwaitingReview);
+    assert!(f.requests.load(Ordering::Relaxed) >= 2);
 }

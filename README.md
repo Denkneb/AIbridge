@@ -83,6 +83,17 @@ Rust-owned state и AB_* settings; stdout свободен от служебно
 Combined blocker grace **7.9b** готов: permissions/questions текущей session, Once cache, stale
 window и change collection для terminal outcomes без verifier.
 
+Worker подписывается на OpenCode `GET /event` (SSE) после проверки workspace и
+сессии. События своей сессии будят обычную проверку результата и существующий
+цикл ревью; сами события не меняют статус задачи. Повторы объединяются, а частота
+дополнительных проверок ограничена. При обрыве поток переподключается; резервный
+опрос с прежним интервалом 1,5 секунды продолжает работать, в том числе на серверах
+без SSE. Подписка закрывается вместе с observer, включая остановку задачи.
+Это работает и на удалённом исполнителе после обновления agent-bridge на втором ПК.
+Доставка события в ожидающую интерактивную сессию Codex через App Server — отдельный
+этап; текущий `UserPromptSubmit` hook по-прежнему обновляет контекст при сообщении
+пользователя. [OpenCode SSE API](https://opencode.ai/docs/server/).
+
 Message observer service **7.9a** завершён: delivery/assistant error/deadline
 и final candidate с guards до/после HTTP, без resend. Publication service
 **7.11a–c** готов: saved verifier, change collection, checkpoint и awaiting_review,

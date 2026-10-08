@@ -48,6 +48,32 @@ def main():
                     env.pop(key)
             env['AIBRIDGE_CLI'] = str(Path('target/debug/agent-bridge').resolve())
         env['AIBRIDGE_DESKTOP_SMOKE_RESULT'] = str(root / 'result.json')
+        if not args.live_tui:
+            # Reproduce a failed console that leaves an owned, unresponsive
+            # OpenCode daemon alive. Other CLI commands use the real bridge.
+            fixture_cli = root / 'fixture-cli'
+            fixture_cli.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, signal, subprocess, sys, tomllib
+real_cli = ''' + repr(str(Path('target/debug/agent-bridge').resolve())) + '''
+if sys.argv[1] != 'launch-opencode':
+    os.execv(real_cli, [real_cli, *sys.argv[1:]])
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+project = argument('--project')
+settings = tomllib.loads(pathlib.Path(argument('--config')).read_text())['projects'][project]
+state = pathlib.Path(argument('--state-root')) / project
+subprocess.run([real_cli, 'setup', *sys.argv[2:]], check=True, stdout=subprocess.DEVNULL)
+child = subprocess.Popen([sys.executable, '-c', "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(90)"], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+raw = pathlib.Path(f'/proc/{child.pid}/stat').read_text().rsplit(') ', 1)[1].split()
+endpoint = settings['opencode_url']
+record = dict(pid=child.pid, start=raw[19], boot_id=pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), project_id=project, task_id='00000000-0000-0000-0000-000000000000', checkout=settings['workspace'], kind='opencode', port=int(endpoint.rsplit(':', 1)[1]), endpoint=endpoint)
+path = state / 'opencode.process.json'
+path.write_text(json.dumps(record)); path.chmod(0o600)
+print(f'FAILED_CONSOLE_SERVER_PID:{child.pid}', flush=True)
+sys.exit(1)
+''')
+            fixture_cli.chmod(0o700)
+            env['AIBRIDGE_CLI'] = str(fixture_cli)
         if args.display_backend == 'x11':
             env['AIBRIDGE_DESKTOP_NATIVE_KEYS'] = str(Path(__file__).with_name('desktop_keyboard.py').resolve())
         # WebKit bubblewrap cannot create a nested sandbox inside this build

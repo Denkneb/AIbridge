@@ -186,6 +186,38 @@ impl ProjectService {
         bridge_runtime::project::validate(&p, &l).map_err(|_| "state binding invalid")?;
         Ok((p, l))
     }
+    pub fn stop_opencode(&self, id: &str, task: Option<&str>) -> Result<Value, &'static str> {
+        let _activity = self.activity_guard()?;
+        let task = task
+            .map(str::parse::<bridge_domain::TaskId>)
+            .transpose()
+            .map_err(|_| "invalid task id")?;
+        let (p, l) = self.project(id)?;
+        if let Some(settings) = p.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"stop_opencode","task":task.map(|id|id.to_string())}))
+                .map_err(|_| "Не удалось остановить OpenCode на втором ПК; проверьте SSH и версию agent-bridge");
+        }
+        let stopped =
+            bridge_runtime::project::stop_opencode(&p, &l, task).map_err(|error| match error {
+                bridge_runtime::RuntimeError::LockBusy
+                | bridge_runtime::RuntimeError::LockTimeout => {
+                    "Остановка OpenCode занята другой операцией; повторите попытку"
+                }
+                bridge_runtime::RuntimeError::ForeignProcess
+                | bridge_runtime::RuntimeError::Binding => {
+                    "Принадлежность процесса OpenCode этому проекту или задаче не подтверждена"
+                }
+                bridge_runtime::RuntimeError::Record => "Повреждена запись процесса OpenCode",
+                bridge_runtime::RuntimeError::Ownership => {
+                    "Хранилище проекта недоступно или его принадлежность не подтверждена"
+                }
+                bridge_runtime::RuntimeError::Unsupported => {
+                    "Остановка процессов через pidfd недоступна"
+                }
+                _ => "Не удалось завершить процесс OpenCode или удалить его запись",
+            })?;
+        Ok(json!({"stopped":stopped}))
+    }
     pub fn lifecycle(&self, id: &str, command: &str) -> Result<Value, &'static str> {
         let _activity = self.activity_guard()?;
         let (p, l) = self.project(id)?;

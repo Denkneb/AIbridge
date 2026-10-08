@@ -529,6 +529,21 @@ async fn terminal_close(state: State<'_, AppState>, session: String) -> Result<(
         .map_err(|_| "terminal cleanup failed".to_owned())?
 }
 #[tauri::command]
+async fn opencode_stop(
+    state: State<'_, AppState>,
+    project: String,
+    task: Option<String>,
+) -> Result<Value, String> {
+    let projects = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        projects
+            .stop_opencode(&project, task.as_deref())
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "OpenCode termination failed".to_owned())?
+}
+#[tauri::command]
 async fn clipboard_read(app: tauri::AppHandle) -> Result<String, String> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     app.run_on_main_thread(move || {
@@ -624,9 +639,15 @@ async fn smoke_complete(app: tauri::AppHandle, passed: bool, checks: Value) -> R
         std::thread::sleep(std::time::Duration::from_secs(3));
         if passed {
             if let Some(window) = app.get_webview_window("main") {
-                if window.close().is_err() { app.exit(1); }
-            } else { app.exit(1); }
-        } else { app.exit(1); }
+                if window.close().is_err() {
+                    app.exit(1);
+                }
+            } else {
+                app.exit(1);
+            }
+        } else {
+            app.exit(1);
+        }
     });
     Ok(())
 }
@@ -689,6 +710,7 @@ fn main() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            opencode_stop,
             clipboard_read,
             clipboard_write,
             smoke_options,
@@ -715,7 +737,8 @@ fn main() {
         .expect("desktop launch failed")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event
-                && app.state::<AppState>().shutdown.load(Ordering::Acquire) != 2 {
+                && app.state::<AppState>().shutdown.load(Ordering::Acquire) != 2
+            {
                 api.prevent_exit();
                 request_shutdown(app, code.unwrap_or(0));
             }

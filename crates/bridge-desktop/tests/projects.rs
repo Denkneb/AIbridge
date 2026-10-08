@@ -1819,3 +1819,90 @@ fn shutdown_unused_project_with_saved_preferences_does_not_require_setup() {
         "EXAMPLE=value"
     );
 }
+
+#[test]
+fn explicit_opencode_stop_needs_no_http_and_preserves_mcp_and_other_projects() {
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+    let f = Fixture::new();
+    let mut config = fs::read_to_string(&f.service.config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    config["projects"]["primary"]["mcp_url"] = toml_edit::value("http://127.0.0.1:4201/mcp");
+    fs::write(&f.service.config, config.to_string()).unwrap();
+    let task = f.task("primary", "unfinished", "2026-01-01T00:00:00Z");
+    let (p, l) = f.service.project("primary").unwrap();
+    l.open()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='implementing' WHERE task_id=?1",
+            [&task],
+        )
+        .unwrap();
+    let mut children = vec![];
+    for (id, kind) in [
+        ("primary", "opencode"),
+        ("primary", "mcp"),
+        ("second", "opencode"),
+    ] {
+        let (entry, layout) = f.service.project(id).unwrap();
+        layout.initialize().unwrap();
+        let child = Command::new("sleep").arg("90").spawn().unwrap();
+        let raw = fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
+        let start = raw
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap();
+        let (port, endpoint) = if kind == "opencode" {
+            (
+                entry.opencode_endpoint().port(),
+                entry.opencode_endpoint().url(),
+            )
+        } else {
+            let endpoint = entry.mcp_endpoint().unwrap();
+            (endpoint.port(), endpoint.url())
+        };
+        let record = serde_json::json!({"pid":child.id(),"start":start,"boot_id":fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),"project_id":id,"task_id":"00000000-0000-0000-0000-000000000000","checkout":entry.workspace(),"kind":kind,"port":port,"endpoint":endpoint});
+        let path = layout.project_dir().join(format!("{kind}.process.json"));
+        fs::write(&path, record.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        children.push(child);
+    }
+    assert_eq!(
+        f.service.stop_opencode("primary", Some(&task)).unwrap()["stopped"],
+        true
+    );
+    assert!(children[0].try_wait().unwrap().is_some());
+    assert!(children[1].try_wait().unwrap().is_none());
+    assert!(children[2].try_wait().unwrap().is_none());
+    assert_eq!(
+        l.open_readonly()
+            .unwrap()
+            .get_task(task.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .status
+            .as_str(),
+        "implementing"
+    );
+    assert_eq!(
+        f.service.stop_opencode("primary", None).unwrap()["stopped"],
+        false
+    );
+    // A forged binding must never terminate the live process.
+    let (_, other) = f.service.project("second").unwrap();
+    let path = other.project_dir().join("opencode.process.json");
+    let mut forged: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    forged["project_id"] = serde_json::json!(p.id().as_str());
+    fs::write(&path, forged.to_string()).unwrap();
+    assert!(f.service.stop_opencode("second", None).is_err());
+    assert!(children[2].try_wait().unwrap().is_none());
+    for child in &mut children[1..] {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}

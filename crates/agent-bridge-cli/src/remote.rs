@@ -45,6 +45,16 @@ fn dispatch(args: LaunchArgs, req: Value) -> Result<Value, String> {
     }
     let op = req["op"].as_str().ok_or("remote_operation_missing")?;
     match op {
+        "stop_opencode" => {
+            let task = match &req["task"] {
+                Value::Null => None,
+                Value::String(task) => Some(task.as_str()),
+                _ => return Err("remote_task_invalid".into()),
+            };
+            return service
+                .stop_opencode(&args.project, task)
+                .map_err(Into::into);
+        }
         "shutdown" => return service.shutdown_project(&args.project),
         "lifecycle" => {
             return service

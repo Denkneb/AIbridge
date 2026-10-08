@@ -644,3 +644,34 @@ fn remote_shutdown_pauses_executor_and_preserves_intermediate_worktrees() {
         }
     }
 }
+
+#[test]
+fn remote_opencode_stop_rpc_is_project_bound_and_validates_task() {
+    let f = Fixture::new();
+    for (machine, request, success) in [
+        ("b", json!({"op":"stop_opencode","task":null}), true),
+        ("b", json!({"op":"stop_opencode","task":42}), false),
+        ("b", json!({"op":"stop_opencode","task":"invalid"}), false),
+        ("a", json!({"op":"stop_opencode","task":null}), false),
+    ] {
+        let mut command = f.cmd(machine, "remote-rpc");
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply.get("error").is_none(), success, "{reply}");
+        if success {
+            assert_eq!(reply["stopped"], false);
+        }
+    }
+}

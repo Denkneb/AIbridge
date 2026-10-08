@@ -193,6 +193,45 @@ fn stop_one(
     fs::remove_file(path).map_err(|_| RuntimeError::Io)?;
     Ok(true)
 }
+/// Explicitly interrupts only the owned OpenCode target, including a hung server.
+/// Unlike idle cleanup, this operation is allowed while tasks are unfinished.
+pub fn stop_opencode(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+    task: Option<bridge_domain::TaskId>,
+) -> Result<bool, RuntimeError> {
+    validate(project, layout)?;
+    if !layout.project_dir().exists() {
+        return Ok(false);
+    }
+    let storage = layout
+        .open_readonly()
+        .map_err(|_| RuntimeError::Ownership)?;
+    if let Some(id) = task {
+        let saved = storage
+            .get_task(id)
+            .map_err(|_| RuntimeError::Binding)?
+            .ok_or(RuntimeError::Binding)?;
+        if saved.project_id != *project.id() || Path::new(&saved.workspace) != project.workspace() {
+            return Err(RuntimeError::Binding);
+        }
+        let raw: String = storage
+            .connection()
+            .query_row(
+                "SELECT execution_mode FROM tasks WHERE task_id=?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(|_| RuntimeError::Binding)?;
+        let mode =
+            bridge_domain::ExecutionMode::try_from(raw).map_err(|_| RuntimeError::Binding)?;
+        if mode == bridge_domain::ExecutionMode::Worktree {
+            return crate::stop_worktree_server(layout, project, id, &[]);
+        }
+    }
+    let _manager = ManagerLock::acquire(&[layout], Duration::from_secs(2))?;
+    stop_one(project, layout, "opencode")
+}
 fn spawn_one(
     project: &ProjectEntry,
     layout: &RustStateLayout,

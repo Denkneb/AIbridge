@@ -224,12 +224,28 @@
   terminal.paste("printf 'BACKGROUND_TAB_ALIVE\\n'");terminal.input('\r');
   secondTerminal.paste("printf 'SECOND_TAB:%s\\n' ${TAB_MARKER:-independent}");secondTerminal.input('\r');
   await waitFor(()=>bufferText(terminal).split('\n').includes('BACKGROUND_TAB_ALIVE')&&bufferText(secondTerminal).split('\n').includes('SECOND_TAB:independent'),'tab_process_isolation');
+  secondTerminal.paste("trap '' TERM; echo STOP_CONSOLE_PID:$$; sleep 90 & echo STOP_CHILD_PID:$!; wait");secondTerminal.input('\r');
+  await waitFor(()=>/STOP_CONSOLE_PID:\d+/.test(bufferText(secondTerminal))&&/STOP_CHILD_PID:\d+/.test(bufferText(secondTerminal)),'stop_console_pids');
+  const stoppedPids=[...bufferText(secondTerminal).matchAll(/STOP_(?:CONSOLE|CHILD)_PID:(\d+)/g)].map(match=>Number(match[1]));
+  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить консоль').click();
+  await waitFor(()=>secondTab.textContent.includes(' · завершена'),'stop_console_status');
+  if(!bufferText(secondTerminal).includes('SECOND_TAB:independent')||!bufferText(secondTerminal).includes('[консоль завершена пользователем]'))throw Error('stop_console_lost_output');
+  if(document.querySelectorAll('.terminal-session').length!==2)throw Error('stop_console_removed_tab');
+  checks.console_stop_preserves_output=true;
   firstTab.click();await new Promise(r=>setTimeout(r,100));
   if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==terminal)throw Error('tab_buffer_replaced');
   secondTab.parentElement.querySelector('button[aria-label^="Закрыть"]').click();
   await waitFor(()=>document.querySelectorAll('.terminal-session').length===1,'tab_close_missing');
   terminal.paste("printf 'SURVIVING_TAB:%s\\n' $TAB_MARKER");terminal.input('\r');
   await waitFor(()=>bufferText(terminal).split('\n').includes('SURVIVING_TAB:first'),'closing_tab_killed_peer');
+  terminal.paste("if "+stoppedPids.map(pid=>"kill -0 "+pid+" 2>/dev/null").join(' || ')+"; then echo STOP_TREE_LEAK; else echo STOP_TREE_CLEAN; fi");terminal.input('\r');
+  await waitFor(()=>bufferText(terminal).split('\n').includes('STOP_TREE_CLEAN'),'stop_console_tree_leaked');
+  checks.console_stop_kills_process_tree=true;
+  terminalMenu.querySelector('summary').click();
+  [...terminalMenu.querySelectorAll('button')].find(b=>b.textContent==='Остановить сервер OpenCode проекта').click();
+  await waitFor(()=>document.querySelector('.terminal-pane [role="status"]')?.textContent==='Сервер OpenCode уже остановлен','stop_server_noop_feedback');
+  if(terminalMenu.open)throw Error('stop_server_menu_remains_open');
+  checks.opencode_server_stop_feedback=true;
   checks.independent_terminal_tabs=true;checks.background_tab_output=true;checks.tab_close_preserves_peer=true;
 
   const proofTerminal=terminal,proofTab=document.querySelector('[role="tab"][aria-selected="true"]');
@@ -357,6 +373,28 @@
   await waitUI(()=>!document.querySelector('.project-select option[value="other"]'),'project_remove_list_not_updated');
   if(!(await invoke('projects')).some(p=>p.id==='proof'))throw Error('project_remove_deleted_other_project');
   checks.project_removal_preview_cancel_apply=true;
+  if(!options.live_tui){
+   selectProject('proof');
+   const profileSelect=document.querySelector('[aria-label="Программа терминала"]');profileSelect.value='opencode';profileSelect.dispatchEvent(new Event('change',{bubbles:true}));
+   await new Promise(r=>setTimeout(r,50));
+   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
+   await waitUI(()=>document.querySelector('.terminal-tabs [aria-selected="true"]')?.textContent.includes('opencode · завершена'),'failed_opencode_console_exit');
+   const failedTerminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
+   const pid=bufferText(failedTerminal).match(/FAILED_CONSOLE_SERVER_PID:(\d+)/)?.[1];
+   if(!pid)throw Error('failed_opencode_daemon_missing');
+   const stopButton=[...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить OpenCode');
+   if(!stopButton||stopButton.disabled)throw Error('failed_opencode_stop_button_disabled');
+   stopButton.click();
+   try{await waitUI(()=>document.querySelector('.terminal-pane [role="status"]')?.textContent==='Сервер OpenCode остановлен','failed_opencode_stop_no_feedback');}
+   catch(e){checks.stop_error=document.querySelector('.terminal-pane [role="alert"]')?.textContent;checks.stop_status=document.querySelector('.terminal-pane [role="status"]')?.textContent;checks.stop_button=stopButton.textContent;throw e;}
+   if(!bufferText(failedTerminal).includes('[процесс завершён: 1]'))throw Error('failed_opencode_output_lost');
+   const proof=await invoke('terminal_open',{project:'proof',profile:'shell',task:null,rows:24,cols:80});
+   await invoke('terminal_write',{session:proof,bytes:Array.from(new TextEncoder().encode(`if kill -0 ${pid} 2>/dev/null; then echo OPENCODE_STOP_LEAK; else echo OPENCODE_STOP_CLEAN; fi\n`))});
+   let output='';
+   await waitUI(async()=>{for(const event of await invoke('terminal_read',{session:proof}))if(event.type==='data')output+=new TextDecoder().decode(new Uint8Array(event.bytes));return output.split(/[\r\n]+/).includes('OPENCODE_STOP_CLEAN');},'failed_opencode_daemon_alive');
+   await invoke('terminal_close',{session:proof});
+   checks.failed_opencode_stop_button_enabled=true;checks.failed_opencode_stop_kills_server=true;
+  }
   const exitSession=await invoke('terminal_open',{project:'proof',profile:'shell',task:null,rows:24,cols:80});
   await invoke('terminal_write',{session:exitSession,bytes:Array.from(new TextEncoder().encode("trap '' TERM; echo EXIT_PARENT:$$; sleep 90 & echo EXIT_CHILD:$!; wait\n"))});
   let exitOutput='';

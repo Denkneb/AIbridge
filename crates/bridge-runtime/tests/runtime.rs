@@ -1733,3 +1733,41 @@ fn attachment_routes_task_checkout_and_refuses_stale_or_unbound_targets() {
         .unwrap();
     assert!(resolve().is_err());
 }
+
+#[test]
+fn explicit_opencode_stop_routes_by_saved_task_mode_and_preserves_checkout() {
+    let _network = network_fence();
+    let f = Fixture::new();
+    f.start("ready").unwrap();
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.record()).unwrap()).unwrap();
+    let tree =
+        bridge_runtime::process_tree::ProcessTree::capture(record["pid"].as_u64().unwrap() as u32)
+            .unwrap();
+    // Changing defaults must not redirect an existing worktree console to main.
+    let config_path = f.root.join("projects.toml");
+    let config = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("execution_mode=\"worktree\"", "execution_mode=\"direct\"");
+    std::fs::write(&config_path, config).unwrap();
+    let project = load_config(&config_path)
+        .unwrap()
+        .project("proj")
+        .unwrap()
+        .clone();
+    assert!(bridge_runtime::project::stop_opencode(&project, &f.layout, Some(f.task)).unwrap());
+    assert!(!tree.is_alive());
+    assert!(f.checkout.join("file").exists());
+    assert_eq!(
+        f.layout
+            .open_readonly()
+            .unwrap()
+            .get_task(f.task)
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Implementing
+    );
+    assert!(!f.record().exists());
+    assert!(!bridge_runtime::project::stop_opencode(&project, &f.layout, Some(f.task)).unwrap());
+}

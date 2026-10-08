@@ -5,6 +5,7 @@ import type {Project} from './types';
 interface Health {ready:boolean;servers:Record<string,{ready:boolean;managed:boolean;process_record:string;idle?:boolean;message?:string}>}
 type Status='checking'|'running'|'idle'|'partial'|'stopped'|'unknown';
 interface State {value:Status;message?:string}
+const statusOrder:Record<Status,number>={running:0,idle:0,partial:1,stopped:2,checking:3,unknown:4};
 const labels:Record<Status,string>={checking:'Проверка состояния',running:'Запущен: OpenCode и MCP доступны',idle:'Запущен: основной OpenCode запускается по требованию; MCP доступен',partial:'Частично запущен: часть сервисов недоступна',stopped:'Не запущен',unknown:'Состояние недоступно'};
 const listLabels:Record<Status,string>={checking:'… проверка',running:'● активен',idle:'● активен',partial:'◐ частично запущен',stopped:'○ остановлен',unknown:'? статус недоступен'};
 
@@ -33,7 +34,8 @@ export function ProjectSelector({projects,selected,revision,onSelect}:{projects:
   };
   void refresh();return()=>{stopped=true;clearTimeout(timer);};
  },[projectIds,revision]);
+ const sortedProjects=[...projects].sort((a,b)=>statusOrder[states[a.id]?.value??'checking']-statusOrder[states[b.id]?.value??'checking']||a.id.localeCompare(b.id,'ru',{numeric:true}));
  const status=states[selected]??{value:'checking'};
  const description=`Проект ${selected}: ${labels[status.value]}${status.message?' — '+status.message:''}`;
- return <label className="project-select" title={projects.find(p=>p.id===selected)?.workspace}>Проект<select aria-label="Проект" value={selected} onChange={e=>onSelect(e.target.value)}><option value="" disabled>Выберите проект</option>{projects.map(p=>{const state=states[p.id]??{value:'checking'};return <option key={p.id} value={p.id} title={labels[state.value]}>{p.id} · {listLabels[state.value]}</option>;})}</select>{selected&&<span className={`project-indicator project-indicator-${status.value}`} role="status" aria-label={description} title={description}><span className="project-status-dot" aria-hidden="true"/></span>}</label>;
+ return <label className="project-select" title={projects.find(p=>p.id===selected)?.workspace}>Проект<select aria-label="Проект" value={selected} onChange={e=>onSelect(e.target.value)}><option value="" disabled>Выберите проект</option>{sortedProjects.map(p=>{const state=states[p.id]??{value:'checking'};return <option key={p.id} value={p.id} title={labels[state.value]}>{p.id} · {listLabels[state.value]}</option>;})}</select>{selected&&<span className={`project-indicator project-indicator-${status.value}`} role="status" aria-label={description} title={description}><span className="project-status-dot" aria-hidden="true"/></span>}</label>;
 }

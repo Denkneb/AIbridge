@@ -123,7 +123,10 @@ that project is closed.
 The project dropdown shows a service status beside every project: active, partially
 started, stopped, checking or unavailable. Read-only diagnostics refresh all
 projects every five seconds after each sweep, with at most four simultaneous
-queries, and immediately after lifecycle actions. A project whose MCP is ready
+queries, and immediately after lifecycle actions. Projects are sorted with active
+projects first, followed by partially started, stopped, checking and unavailable
+projects; names are sorted alphabetically within each group. Refreshing statuses
+reorders the list without changing the selected project. A project whose MCP is ready
 and whose main OpenCode is idle is active. The selected project uses the same
 status snapshot for its adjacent dot; changing selection does not start services.
 

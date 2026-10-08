@@ -281,3 +281,40 @@ pub fn launch_command_mode(
     });
     Ok(json!({"run_id":id.to_string(),"pid":pid,"status":"starting"}))
 }
+
+/// Pause without deleting task worktrees, then terminate the owned supervisor tree.
+pub fn shutdown(layout: &RustStateLayout, project: &ProjectEntry) -> Result<(), Error> {
+    let store = AutomationRunStore::new(layout.clone());
+    let run = match store.load(None) {
+        Ok(run) => run,
+        Err(bridge_storage::automation::AutomationStoreError::NotFound) => return Ok(()),
+        Err(_) => return Err(Error::State),
+    };
+    if !run.status().is_terminal() && run.control() != RunControl::Stop {
+        store
+            .set_control(run.id(), RunControl::Pause)
+            .map_err(|_| Error::State)?;
+    }
+    if supervisor_running(layout, project, run.id())? {
+        let record: Record = serde_json::from_slice(
+            &read_bounded(&directory(layout, run.id()).join("process.json"), 16384)
+                .map_err(|_| Error::State)?,
+        )
+        .map_err(|_| Error::State)?;
+        bridge_runtime::process_tree::ProcessTree::from_identity(
+            record.pid,
+            &record.start,
+            &record.boot_id,
+        )
+        .and_then(|tree| tree.stop())
+        .map_err(|_| Error::State)?;
+    }
+    let _guard = AutomationLock::acquire(layout)?;
+    let run = store.load(Some(run.id())).map_err(|_| Error::State)?;
+    if !run.status().is_terminal() && run.control() == RunControl::Pause {
+        store
+            .save(run.document(), RunStatus::Paused)
+            .map_err(|_| Error::State)?;
+    }
+    Ok(())
+}

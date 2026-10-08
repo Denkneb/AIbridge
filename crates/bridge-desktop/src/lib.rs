@@ -8,3 +8,5 @@ mod opencode_keys;
 pub mod projects;
 mod task_recovery;
 pub mod terminal;
+
+mod shutdown;

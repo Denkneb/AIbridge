@@ -11,6 +11,7 @@ pub mod diagnostics;
 pub mod hook;
 pub mod lock;
 mod process;
+pub mod process_tree;
 pub mod project;
 pub mod readiness;
 use bridge_config::{Endpoint, ProjectEntry};

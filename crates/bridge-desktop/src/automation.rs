@@ -36,6 +36,7 @@ impl ProjectService {
             return Err("Конфигурация изменилась; проверьте план заново".into());
         }
         let id = uuid::Uuid::new_v4().to_string();
+        let _activity = self.activity_guard()?;
         let mut pending = self
             .pending_automation
             .lock()
@@ -65,6 +66,7 @@ impl ProjectService {
         review_id: &str,
         cli: &std::path::Path,
     ) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let mut pending = self
             .pending_automation
             .lock()
@@ -135,6 +137,7 @@ impl ProjectService {
         action: &str,
         cli: &std::path::Path,
     ) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let run: RunId = run.parse().map_err(|_| "Некорректный запуск")?;
         let action = match action {
             "pause" => "automation-pause",

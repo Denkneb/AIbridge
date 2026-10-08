@@ -1626,3 +1626,31 @@ fn delivery_failure_preserves_accepted_artifact_for_explicit_retry() {
     assert_eq!(c.tick().unwrap(), Tick::Done);
     assert_eq!(c.document()["status"], "completed");
 }
+
+#[test]
+fn application_shutdown_pauses_supervisor_preserving_run_and_git() {
+    let fixture = Fixture::new();
+    fixture.repo();
+    let run = create_run(&fixture.project, &fixture.layout, &plan()).unwrap();
+    let result = launch_command(
+        &fixture.layout,
+        &fixture.project,
+        run.id(),
+        std::path::Path::new("/usr/bin/python3"),
+        vec!["-c".into(), "import time;time.sleep(90)".into()],
+        false,
+    )
+    .unwrap();
+    assert!(result["pid"].is_number());
+    assert!(supervisor_running(&fixture.layout, &fixture.project, run.id()).unwrap());
+    bridge_automation::lifecycle::shutdown(&fixture.layout, &fixture.project).unwrap();
+    assert!(!supervisor_running(&fixture.layout, &fixture.project, run.id()).unwrap());
+    let saved = AutomationRunStore::new(fixture.layout.clone())
+        .load(Some(run.id()))
+        .unwrap();
+    assert_eq!(saved.status(), RunStatus::Paused);
+    assert_eq!(saved.control(), RunControl::Pause);
+    assert_eq!(saved.document()["plan"], run.document()["plan"]);
+    assert!(fixture.project.workspace().join(".git").exists());
+    bridge_automation::lifecycle::shutdown(&fixture.layout, &fixture.project).unwrap();
+}

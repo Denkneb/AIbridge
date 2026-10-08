@@ -538,6 +538,43 @@ pub fn stop(projects: &[(ProjectEntry, RustStateLayout)]) -> Result<Value, Runti
     Ok(json!({"status":"stopped","processes":stopped}))
 }
 
+/// Desktop exit must interrupt an MCP worker even while it owns the manager
+/// lock during server startup. Signal proven process trees first; record removal
+/// remains serialized by the ordinary stop manager fence.
+pub fn shutdown(project: &ProjectEntry, layout: &RustStateLayout) -> Result<Value, RuntimeError> {
+    if !layout.project_dir().exists() {
+        return Ok(json!({"status":"not_managed"}));
+    }
+    validate(project, layout)?;
+    layout
+        .open_readonly()
+        .map_err(|_| RuntimeError::Ownership)?;
+    let mut error = None;
+    for kind in ["mcp", "opencode"] {
+        let result = (|| {
+            let Some(record) =
+                read_record(&layout.project_dir().join(format!("{kind}.process.json")))?
+            else {
+                return Ok(());
+            };
+            if identity(record.pid).as_deref() != Some(&record.start)
+                || process::boot_id()? != record.boot_id
+            {
+                return Ok(());
+            }
+            readiness::require_main_record(&record, project, kind)?;
+            stop_record(&record)
+        })();
+        if let Err(e) = result {
+            error = Some(e);
+        }
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    stop(&[(project.clone(), layout.clone())])
+}
+
 /// Holds every manager/admission/controller/worker fence during shared config edits.
 /// Existing owned namespaces must have no running services or executors.
 pub struct ConfigEditGuard {

@@ -45,6 +45,7 @@ fn dispatch(args: LaunchArgs, req: Value) -> Result<Value, String> {
     }
     let op = req["op"].as_str().ok_or("remote_operation_missing")?;
     match op {
+        "shutdown" => return service.shutdown_project(&args.project),
         "lifecycle" => {
             return service
                 .lifecycle(

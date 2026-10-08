@@ -115,6 +115,14 @@ def main():
                     subprocess.run(['import', '-window', 'root', str(args.screenshot.resolve())], env=env, check=True, timeout=5)
                 code = desktop.wait(timeout=10)
                 report['exit_code'] = code
+                def process_alive(pid):
+                    try:
+                        return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[0] not in ('Z', 'X')
+                    except FileNotFoundError:
+                        return False
+                exit_processes = report.get('checks', {}).pop('exit_processes', [])
+                report['checks']['exit_cleans_active_terminal_tree'] = bool(exit_processes) and all(not process_alive(pid) for pid in exit_processes)
+                report['passed'] = report['passed'] and report['checks']['exit_cleans_active_terminal_tree']
                 args.output.write_text(json.dumps(report, indent=2) + '\n')
                 print(json.dumps(report))
                 return int(not report['passed'] or code != 0)

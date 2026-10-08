@@ -64,6 +64,7 @@ impl ProjectService {
     /// Content-free WAL notification stamp. A periodic full refresh remains the
     /// fallback for filesystem timestamp granularity and database replacement.
     pub fn dashboard_revision(&self, project: &str, linked: bool) -> Result<String, &'static str> {
+        let _activity = self.activity_guard()?;
         use std::{
             hash::{Hash, Hasher},
             os::unix::fs::MetadataExt,
@@ -119,6 +120,7 @@ impl ProjectService {
     }
 
     pub fn dashboard(&self, q: Query) -> Result<Value, &'static str> {
+        let _activity = self.activity_guard()?;
         if q.limit == 0 || q.limit > 200 || q.offset > 100000 {
             return Err("invalid page");
         }
@@ -267,6 +269,7 @@ impl ProjectService {
         )
     }
     pub fn task_detail(&self, project: &str, task: &str) -> Result<Value, &'static str> {
+        let _activity = self.activity_guard()?;
         let (project, layout) = self.project(project)?;
         if let Some(settings) = project.remote_execution() {
             return bridge_automation::remote::rpc(settings, &json!({"op":"detail","task":task}))
@@ -351,6 +354,7 @@ impl ProjectService {
         before: u32,
         expected_revision: &str,
     ) -> Result<Value, &'static str> {
+        let _activity = self.activity_guard()?;
         if before == 0 {
             return Err("invalid round cursor");
         }

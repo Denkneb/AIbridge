@@ -5,11 +5,60 @@ use bridge_desktop::{
     terminal::{Event, Terminals},
 };
 use serde_json::Value;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 use tauri::{Manager, State};
 struct AppState {
     projects: Arc<ProjectService>,
     terminals: Arc<Terminals>,
+    shutdown: Arc<AtomicU8>,
+}
+fn request_shutdown(app: &tauri::AppHandle, code: i32) {
+    let state = app.state::<AppState>();
+    if state
+        .shutdown
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let projects = state.projects.clone();
+    let terminals = state.terminals.clone();
+    projects.begin_shutdown();
+    terminals.begin_shutdown();
+    let shutdown = state.shutdown.clone();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let terminal_failed = if let Err(error) = terminals.shutdown() {
+            eprintln!("desktop shutdown: {error}");
+            true
+        } else {
+            false
+        };
+        let report = projects.shutdown_all();
+        let failed = match report {
+            Ok(report) if report["status"] == "stopped" => false,
+            Ok(report) => {
+                eprintln!("desktop shutdown: {report}");
+                true
+            }
+            Err(error) => {
+                eprintln!("desktop shutdown: {error}");
+                true
+            }
+        };
+        shutdown.store(2, Ordering::Release);
+        app.exit(if (failed || terminal_failed) && code == 0 {
+            1
+        } else {
+            code
+        });
+    });
 }
 #[tauri::command]
 async fn projects(state: State<'_, AppState>) -> Result<Vec<ProjectDraft>, String> {
@@ -95,16 +144,31 @@ async fn project_branch_switch(
     .map_err(|_| "Не удалось переключить ветку проекта".to_owned())?
 }
 #[tauri::command]
-async fn task_set_status(state: State<'_, AppState>, project: String, task: String, expected: String, target: String, reason: String) -> Result<Value, String> {
+async fn task_set_status(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+    expected: String,
+    target: String,
+    reason: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.set_task_status(&project, &task, &expected, &target, &reason))
-        .await.map_err(|_| "Смена статуса завершилась ошибкой".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        p.set_task_status(&project, &task, &expected, &target, &reason)
+    })
+    .await
+    .map_err(|_| "Смена статуса завершилась ошибкой".to_owned())?
 }
 #[tauri::command]
-async fn task_recover(state: State<'_, AppState>, project: String, task: String) -> Result<Value, String> {
+async fn task_recover(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.recover_failed_task(&project, &task))
-        .await.map_err(|_| "Проверка продолжения сессии завершилась ошибкой".to_owned())?
+        .await
+        .map_err(|_| "Проверка продолжения сессии завершилась ошибкой".to_owned())?
 }
 #[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
@@ -114,16 +178,33 @@ async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, St
         .map_err(|_| "dashboard query failed".to_owned())?
 }
 #[tauri::command]
-async fn task_detail(state: State<'_, AppState>, project: String, task: String) -> Result<Value, String> {
+async fn task_detail(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.task_detail(&project, &task).map_err(str::to_owned))
-        .await.map_err(|_| "Не удалось загрузить карточку задачи".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        p.task_detail(&project, &task).map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить карточку задачи".to_owned())?
 }
 #[tauri::command]
-async fn task_rounds(state: State<'_, AppState>, project: String, task: String, before: u32, expected_revision: String) -> Result<Value, String> {
+async fn task_rounds(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+    before: u32,
+    expected_revision: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.task_rounds(&project, &task, before, &expected_revision).map_err(str::to_owned))
-        .await.map_err(|_| "Не удалось загрузить историю раундов".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        p.task_rounds(&project, &task, before, &expected_revision)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить историю раундов".to_owned())?
 }
 #[tauri::command]
 async fn dashboard_revision(
@@ -154,10 +235,14 @@ async fn project_preview(
     .map_err(|_| "preview failed".to_owned())?
 }
 #[tauri::command]
-async fn project_remove_preview(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+async fn project_remove_preview(
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.preview_remove(&project))
-        .await.map_err(|_| "Не удалось подготовить удаление проекта".to_owned())?
+        .await
+        .map_err(|_| "Не удалось подготовить удаление проекта".to_owned())?
 }
 #[tauri::command]
 async fn project_apply(state: State<'_, AppState>, review_id: String) -> Result<Value, String> {
@@ -215,32 +300,49 @@ fn opencode_config_cancel(state: State<'_, AppState>, review_id: String) {
     state.projects.cancel_opencode_config(&review_id);
 }
 #[tauri::command]
-async fn automation_preview(state: State<'_, AppState>, project: String, content: String) -> Result<Value, String> {
+async fn automation_preview(
+    state: State<'_, AppState>,
+    project: String,
+    content: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.automation_preview(&project, &content))
-        .await.map_err(|_| "Не удалось проверить план".to_owned())?
+        .await
+        .map_err(|_| "Не удалось проверить план".to_owned())?
 }
 #[tauri::command]
 fn automation_cancel(state: State<'_, AppState>, review_id: String) {
     state.projects.automation_cancel(&review_id);
 }
 #[tauri::command]
-async fn automation_start(state: State<'_, AppState>, project: String, review_id: String) -> Result<Value, String> {
+async fn automation_start(
+    state: State<'_, AppState>,
+    project: String,
+    review_id: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.automation_start(&project, &review_id))
-        .await.map_err(|_| "Не удалось запустить план".to_owned())?
+        .await
+        .map_err(|_| "Не удалось запустить план".to_owned())?
 }
 #[tauri::command]
 async fn automation_status(state: State<'_, AppState>, project: String) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.automation_status(&project))
-        .await.map_err(|_| "Не удалось загрузить запуск".to_owned())?
+        .await
+        .map_err(|_| "Не удалось загрузить запуск".to_owned())?
 }
 #[tauri::command]
-async fn automation_control(state: State<'_, AppState>, project: String, run: String, action: String) -> Result<Value, String> {
+async fn automation_control(
+    state: State<'_, AppState>,
+    project: String,
+    run: String,
+    action: String,
+) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.automation_control(&project, &run, &action))
-        .await.map_err(|_| "Не удалось изменить состояние запуска".to_owned())?
+        .await
+        .map_err(|_| "Не удалось изменить состояние запуска".to_owned())?
 }
 #[tauri::command]
 async fn lifecycle(
@@ -340,9 +442,17 @@ async fn terminal_external(
     launch_env: Option<String>,
 ) -> Result<(), String> {
     let p = state.projects.clone();
+    let t = state.terminals.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let cmd = terminal_command(&p, &project, &profile, task, launch_env.clone())?;
-        let mut external = std::process::Command::new("x-terminal-emulator");
+        let emulator = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .find_map(|dir| std::fs::canonicalize(dir.join("x-terminal-emulator")).ok())
+            .unwrap_or_else(|| PathBuf::from("x-terminal-emulator"));
+        let mut external = std::process::Command::new(&emulator);
+        // Konsole otherwise hands the window to an existing process over D-Bus.
+        if emulator.file_name().is_some_and(|name| name == "konsole") {
+            external.arg("--separate");
+        }
         external
             .arg("-e")
             .args(cmd.get_argv())
@@ -358,13 +468,7 @@ async fn terminal_external(
         for (name, value) in launch_env::parse(launch_env.as_deref().unwrap_or(""))? {
             external.env(name, value);
         }
-        let mut child = external
-            .spawn()
-            .map_err(|_| "external terminal unavailable: install x-terminal-emulator".to_owned())?;
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        Ok(())
+        t.open_external(external).map_err(str::to_owned)
     })
     .await
     .map_err(|_| "external terminal launch failed".to_owned())?
@@ -505,19 +609,10 @@ async fn smoke_native_keyboard() -> Result<bool, String> {
     .map_err(|_| "native keyboard failed".to_owned())?
 }
 #[tauri::command]
-async fn smoke_complete(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    passed: bool,
-    checks: Value,
-) -> Result<(), String> {
+async fn smoke_complete(app: tauri::AppHandle, passed: bool, checks: Value) -> Result<(), String> {
     if !cfg!(feature = "desktop-smoke") {
         return Err("smoke build required".into());
     }
-    let t = state.terminals.clone();
-    tauri::async_runtime::spawn_blocking(move || t.close_all())
-        .await
-        .map_err(|_| "smoke cleanup failed")?;
     let path = std::env::var_os("AIBRIDGE_DESKTOP_SMOKE_RESULT").ok_or("smoke output required")?;
     std::fs::write(
         path,
@@ -527,7 +622,11 @@ async fn smoke_complete(
     .map_err(|_| "smoke output failed")?;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(3));
-        app.exit(if passed { 0 } else { 1 });
+        if passed {
+            if let Some(window) = app.get_webview_window("main") {
+                if window.close().is_err() { app.exit(1); }
+            } else { app.exit(1); }
+        } else { app.exit(1); }
     });
     Ok(())
 }
@@ -553,6 +652,7 @@ fn main() {
         .manage(AppState {
             projects: Arc::new(service),
             terminals: Arc::new(Terminals::default()),
+            shutdown: Arc::new(AtomicU8::new(0)),
         })
         .invoke_handler(tauri::generate_handler![
             projects,
@@ -608,14 +708,16 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let terminals = window.state::<AppState>().terminals.clone();
-                let app = window.app_handle().clone();
-                std::thread::spawn(move || {
-                    terminals.close_all();
-                    app.exit(0);
-                });
+                request_shutdown(window.app_handle(), 0);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("desktop launch failed");
+        .build(tauri::generate_context!())
+        .expect("desktop launch failed")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event
+                && app.state::<AppState>().shutdown.load(Ordering::Acquire) != 2 {
+                api.prevent_exit();
+                request_shutdown(app, code.unwrap_or(0));
+            }
+        });
 }

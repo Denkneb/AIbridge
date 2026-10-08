@@ -1755,3 +1755,67 @@ fn remote_settings_are_reviewed_persisted_and_disabled_by_default() {
             .contains("remote_execution")
     );
 }
+
+#[test]
+fn shutdown_all_is_readonly_for_unused_projects_and_rejects_new_launches() {
+    let f = Fixture::new();
+    let config = fs::read(&f.service.config).unwrap();
+    assert_eq!(f.service.shutdown_all().unwrap()["status"], "stopped");
+    assert!(!f.service.state.exists());
+    assert_eq!(fs::read(&f.service.config).unwrap(), config);
+    assert_eq!(
+        f.service.lifecycle("primary", "start").unwrap_err(),
+        "application is shutting down"
+    );
+    assert_eq!(f.service.shutdown_all().unwrap()["status"], "stopped");
+}
+#[test]
+fn shutdown_closes_every_project_and_continues_after_a_foreign_record() {
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+    let f = Fixture::new();
+    let mut children = vec![];
+    for id in ["primary", "second"] {
+        let (p, l) = f.service.project(id).unwrap();
+        l.initialize().unwrap();
+        let child = Command::new("sleep").arg("90").spawn().unwrap();
+        let raw = fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
+        let start = raw
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap();
+        let record = serde_json::json!({"pid":child.id(),"start":start,"boot_id":fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),"project_id":if id=="primary" { "foreign" } else { id },"task_id":"00000000-0000-0000-0000-000000000000","checkout":p.workspace(),"kind":"opencode","port":p.opencode_endpoint().port(),"endpoint":p.opencode_endpoint().url()});
+        let path = l.project_dir().join("opencode.process.json");
+        fs::write(&path, record.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        children.push(child);
+    }
+    let report = f.service.shutdown_all().unwrap();
+    assert_eq!(report["status"], "incomplete");
+    assert_eq!(report["errors"].as_array().unwrap().len(), 1);
+    assert!(children[0].try_wait().unwrap().is_none());
+    assert!(children[1].try_wait().unwrap().is_some());
+    assert!(f.root.join("main").exists());
+    assert!(f.root.join("second").exists());
+    children[0].kill().unwrap();
+    children[0].wait().unwrap();
+}
+
+#[test]
+fn shutdown_unused_project_with_saved_preferences_does_not_require_setup() {
+    let f = Fixture::new();
+    f.service
+        .save_codex_env("primary", "EXAMPLE=value")
+        .unwrap();
+    let (_, layout) = f.service.project("primary").unwrap();
+    assert!(layout.project_dir().exists());
+    assert!(!layout.database().exists());
+    assert_eq!(f.service.shutdown_all().unwrap()["status"], "stopped");
+    assert!(!layout.database().exists());
+    assert_eq!(
+        f.service.read_codex_env("primary").unwrap(),
+        "EXAMPLE=value"
+    );
+}

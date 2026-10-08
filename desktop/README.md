@@ -110,6 +110,16 @@ and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
+Closing the desktop waits for terminal and project cleanup before exiting.
+Managed MCP/OpenCode servers, task servers, workers and automation supervisors
+are stopped for every configured project, including SSH executors. Automation
+is paused; project files, task worktrees, history and intermediate results remain
+available. New desktop launches are blocked during shutdown. Cleanup continues
+across project failures; failures are written to stderr and produce a nonzero
+exit code. An unreachable SSH executor cannot be stopped until connectivity returns.
+CLI-only detached runs keep their existing lifetime unless a desktop managing
+that project is closed.
+
 The project dropdown shows a service status beside every project: active, partially
 started, stopped, checking or unavailable. Read-only diagnostics refresh all
 projects every five seconds after each sweep, with at most four simultaneous

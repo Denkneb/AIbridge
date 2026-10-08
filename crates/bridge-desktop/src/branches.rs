@@ -9,6 +9,7 @@ fn view(state: BranchState, workspace: &std::path::Path) -> Value {
 }
 impl ProjectService {
     pub fn project_branches(&self, project: &str) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let (p, _) = self.project(project)?;
         let state =
             branches(p.workspace()).map_err(|_| "Не удалось прочитать ветки Git проекта")?;
@@ -22,6 +23,7 @@ impl ProjectService {
         expected_head: Option<&str>,
         expected_workspace: &str,
     ) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let _lock = self.config_file_guard()?;
         let config = self.config_view()?;
         let p = config.project(project).ok_or("Проект не найден")?;
@@ -70,6 +72,8 @@ impl ProjectService {
             return Err("Не завершена операция Git (merge, rebase или другая). Завершите её перед переключением ветки".into());
         }
         switch_branch(p.workspace(),reference).map_err(|_|"Git отклонил переключение. Ветка может быть занята другим worktree, локальная ветка уже существует или файлы мешают переключению")?;
-        self.project_branches(project)
+        let state =
+            branches(p.workspace()).map_err(|_| "Не удалось прочитать ветки Git проекта")?;
+        Ok(view(state, p.workspace()))
     }
 }

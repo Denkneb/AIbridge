@@ -12,6 +12,7 @@ impl ProjectService {
         target: &str,
         reason: &str,
     ) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let _config = self.config_file_guard()?;
         let (p, layout) = self.project(project)?;
         if let Some(settings) = p.remote_execution() {
@@ -42,6 +43,7 @@ impl ProjectService {
     }
     /// Explicitly resume observation of a failed assistant session. Never sends a prompt.
     pub fn recover_failed_task(&self, project: &str, task: &str) -> Result<Value, String> {
+        let _activity = self.activity_guard()?;
         let _config_guard = self.config_file_guard()?;
         let (p, layout) = self.project(project)?;
         if let Some(settings) = p.remote_execution() {
@@ -95,7 +97,11 @@ impl ProjectService {
                     .spawn(move || {
                         match bridge_worker::spawn_worker(&invocation, &worker_layout, &workspace) {
                             Ok(mut worker) => {
-                                let _ = tx.send(Ok(()));
+                                let tree = bridge_runtime::process_tree::ProcessTree::capture(
+                                    worker.pid(),
+                                );
+                                let _ = tx.send(tree.map_err(|_| ()));
+
                                 let _ = worker.wait();
                             }
                             Err(_) => {
@@ -104,7 +110,11 @@ impl ProjectService {
                         }
                     })
                     .map_err(|_| ())?;
-                rx.recv().map_err(|_| ())?
+                let tree = rx.recv().map_err(|_| ())??;
+                let mut workers = self.workers.lock().map_err(|_| ())?;
+                workers.retain(|worker| worker.is_alive());
+                workers.push(tree);
+                Ok::<(), ()>(())
             },
         )
         .map_err(|_| "Не удалось проверить привязку задачи, сессии и рабочего каталога")?;

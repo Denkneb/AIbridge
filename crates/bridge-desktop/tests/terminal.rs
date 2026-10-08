@@ -100,3 +100,78 @@ fn closing_one_real_pty_preserves_the_other_process_and_input() {
     }
     terms.close(&first).unwrap();
 }
+
+#[test]
+fn shutdown_cleans_terminal_child_and_blocks_reopen() {
+    let terms = Terminals::default();
+    let mut cmd = CommandBuilder::new("/bin/bash");
+    cmd.args([
+        "--noprofile",
+        "--norc",
+        "-c",
+        "trap '' TERM; sleep 90 & echo CHILD:$!; wait",
+    ]);
+    let id = terms.open(cmd, 24, 80).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    let child = loop {
+        assert!(Instant::now() < deadline);
+        for event in terms.read(&id).unwrap() {
+            if let Event::Data { bytes, .. } = event {
+                output.extend(bytes);
+            }
+        }
+        let text = String::from_utf8_lossy(&output);
+        if let Some(tail) = text.split("CHILD:").nth(1)
+            && let Some(line) = tail.split_once('\n')
+        {
+            break line.0.trim().parse::<i32>().unwrap();
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    terms.shutdown().unwrap();
+    let stat = std::fs::read_to_string(format!("/proc/{child}/stat")).ok();
+    assert!(stat.is_none_or(|s| s.rsplit_once(") ").unwrap().1.starts_with('Z')));
+    assert!(terms.read(&id).is_err());
+    assert_eq!(
+        terms
+            .open(CommandBuilder::new("/bin/bash"), 24, 80)
+            .unwrap_err(),
+        "application is shutting down"
+    );
+    terms.shutdown().unwrap();
+}
+
+#[test]
+fn external_terminal_launcher_is_owned_and_shutdown_blocks_new_launches() {
+    let terms = Terminals::default();
+    let root = std::env::temp_dir().join(format!("bridge-external-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("pid");
+    let mut cmd = std::process::Command::new("python3");
+    cmd.args([
+        "-c",
+        "import os,time,sys; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(90)",
+    ])
+    .arg(&path);
+    terms.open_external(cmd).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    let pid: i32 = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    terms.shutdown().unwrap();
+    assert!(
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_none_or(|s| s.rsplit_once(") ").unwrap().1.starts_with('Z'))
+    );
+    assert_eq!(
+        terms
+            .open_external(std::process::Command::new("/bin/true"))
+            .unwrap_err(),
+        "application is shutting down"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

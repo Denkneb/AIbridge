@@ -145,6 +145,9 @@ step=context['step']['id'];kind=context['operation']
 with (root/'codex-trace').open('a') as trace:trace.write(kind+':'+step+'\n')
 if kind=='prepare': answer={'task':'PROOF:'+('final' if step=='__final__' else step)}
 else:
+ if os.environ.get('REMOTE_TEST_HOLD_REVIEW')=='1':
+  import time
+  time.sleep(90)
  if step!='__final__': assert (workspace/(step+'.txt')).read_text().strip()==step
  revised=root/'revised'
  if step=='left' and not revised.exists():
@@ -543,4 +546,101 @@ fn remote_pause_and_stop_cleanup_survive_local_source_drift() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn remote_shutdown_pauses_executor_and_preserves_intermediate_worktrees() {
+    let f = Fixture::new();
+    let launched = f
+        .cmd("a", "launch-codex")
+        .env("REMOTE_TEST_HOLD_REVIEW", "1")
+        .args(["--auto", "--plan"])
+        .arg(f.plan())
+        .output()
+        .unwrap();
+    assert!(launched.status.success());
+    let project =
+        load_config_with_state_root(&f.root.join("b/projects.toml"), f.remote.state_root())
+            .unwrap()
+            .project("proj")
+            .unwrap()
+            .clone();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let tasks = loop {
+        let tasks = f
+            .remote
+            .open_readonly()
+            .ok()
+            .and_then(|storage| {
+                storage
+                    .list_tasks(f.remote.project_id(), false, 100, 0)
+                    .ok()
+            })
+            .unwrap_or_default();
+        if !tasks.is_empty()
+            && tasks.iter().any(|task| {
+                f.remote
+                    .open_readonly()
+                    .unwrap()
+                    .get_worktree(task.task_id, f.remote.project_id())
+                    .unwrap()
+                    .is_some_and(|tree| tree.status == bridge_storage::WorktreeStatus::Created)
+                    && bridge_runtime::worktree_server_state(&f.remote, &project, task.task_id)
+                        .is_ok_and(|state| state == bridge_runtime::ServerState::Live)
+            })
+        {
+            break tasks;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let local_project =
+        load_config_with_state_root(&f.root.join("a/projects.toml"), f.local.state_root())
+            .unwrap()
+            .project("proj")
+            .unwrap()
+            .clone();
+    bridge_automation::lifecycle::shutdown(&f.local, &local_project).unwrap();
+    let mut command = f.cmd("b", "remote-rpc");
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"{\"op\":\"shutdown\"}\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success(), "{:?}", result);
+    let reply: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(reply["status"], "stopped", "{reply}");
+    let run = AutomationRunStore::new(f.remote.clone())
+        .load(None)
+        .unwrap();
+    assert_eq!(run.status(), RunStatus::Paused);
+    let project =
+        load_config_with_state_root(&f.root.join("b/projects.toml"), f.remote.state_root())
+            .unwrap()
+            .project("proj")
+            .unwrap()
+            .clone();
+    assert!(
+        !bridge_automation::lifecycle::supervisor_running(&f.remote, &project, run.id()).unwrap()
+    );
+    let storage = f.remote.open_readonly().unwrap();
+    for task in tasks {
+        if let Some(tree) = storage
+            .get_worktree(task.task_id, f.remote.project_id())
+            .unwrap()
+        {
+            assert!(Path::new(&tree.path).exists());
+            assert!(matches!(
+                bridge_runtime::worktree_server_state(&f.remote, &project, task.task_id).unwrap(),
+                bridge_runtime::ServerState::Missing | bridge_runtime::ServerState::Stale
+            ));
+        }
+    }
 }

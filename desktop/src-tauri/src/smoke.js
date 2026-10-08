@@ -357,6 +357,16 @@
   await waitUI(()=>!document.querySelector('.project-select option[value="other"]'),'project_remove_list_not_updated');
   if(!(await invoke('projects')).some(p=>p.id==='proof'))throw Error('project_remove_deleted_other_project');
   checks.project_removal_preview_cancel_apply=true;
+  const exitSession=await invoke('terminal_open',{project:'proof',profile:'shell',task:null,rows:24,cols:80});
+  await invoke('terminal_write',{session:exitSession,bytes:Array.from(new TextEncoder().encode("trap '' TERM; echo EXIT_PARENT:$$; sleep 90 & echo EXIT_CHILD:$!; wait\n"))});
+  let exitOutput='';
+  for(let i=0;i<100;i++) {
+    for(const event of await invoke('terminal_read',{session:exitSession})) if(event.type==='data')exitOutput+=new TextDecoder().decode(new Uint8Array(event.bytes));
+    const parent=exitOutput.match(/EXIT_PARENT:(\d+)/),child=exitOutput.match(/EXIT_CHILD:(\d+)/);
+    if(parent&&child){checks.exit_processes=[Number(parent[1]),Number(child[1])];break;}
+    await new Promise(r=>setTimeout(r,30));
+  }
+  if(!checks.exit_processes)throw Error('exit_process_proof_missing');
   await invoke('smoke_complete',{passed:true,checks});
  }catch(error){checks.failure=error.message;await invoke('smoke_complete',{passed:false,checks});}
 })();

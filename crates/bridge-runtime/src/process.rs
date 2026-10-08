@@ -5,7 +5,6 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -123,38 +122,8 @@ pub(crate) fn require_pidfd() -> Result<(), RuntimeError> {
 }
 #[cfg(target_os = "linux")]
 pub(crate) fn stop_record(record: &ProcessRecord) -> Result<(), RuntimeError> {
-    use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
-    let pid = Pid::from_raw(record.pid).ok_or(RuntimeError::Record)?;
-    let fd = match pidfd_open(pid, PidfdFlags::empty()) {
-        Ok(fd) => fd,
-        Err(rustix::io::Errno::SRCH) => return Ok(()),
-        Err(_) => return Err(RuntimeError::Unsupported),
-    };
-    if identity(record.pid).as_deref() != Some(record.start.as_str())
-        || boot_id()? != record.boot_id
-    {
-        return Err(RuntimeError::ForeignProcess);
-    }
-    for (signal, grace) in [
-        (Signal::TERM, Duration::from_secs(5)),
-        (Signal::KILL, Duration::from_secs(2)),
-    ] {
-        match pidfd_send_signal(&fd, signal) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::SRCH) => return Ok(()),
-            Err(_) => return Err(RuntimeError::Io),
-        }
-        let deadline = Instant::now() + grace;
-        while identity(record.pid).as_deref() == Some(record.start.as_str())
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if identity(record.pid).as_deref() != Some(record.start.as_str()) {
-            return Ok(());
-        }
-    }
-    Err(RuntimeError::Io)
+    crate::process_tree::ProcessTree::from_identity(record.pid, &record.start, &record.boot_id)?
+        .stop()
 }
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn stop_record(_: &ProcessRecord) -> Result<(), RuntimeError> {

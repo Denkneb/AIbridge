@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -19,7 +19,7 @@ pub enum Event {
     Error { message: &'static str },
 }
 struct Session {
-    pid: Option<u32>,
+    tree: Arc<bridge_runtime::process_tree::ProcessTree>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     input: SyncSender<Vec<u8>>,
@@ -29,6 +29,8 @@ struct Session {
 #[derive(Default)]
 pub struct Terminals {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    closing: AtomicBool,
+    external: Mutex<Vec<bridge_runtime::process_tree::ProcessTree>>,
 }
 fn enqueue(tx: &SyncSender<Event>, mut event: Event, cancel: &AtomicBool) -> bool {
     loop {
@@ -53,6 +55,9 @@ impl Terminals {
             .sessions
             .lock()
             .map_err(|_| "terminal state unavailable")?;
+        if self.closing.load(Ordering::Acquire) {
+            return Err("application is shutting down");
+        }
         if sessions.len() >= 8 {
             return Err("terminal session limit reached");
         }
@@ -72,12 +77,25 @@ impl Terminals {
             .master
             .take_writer()
             .map_err(|_| "PTY writer unavailable")?;
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|_| "terminal process failed to start")?;
         drop(pair.slave);
-        let pid = child.process_id();
+        let tree = match child
+            .process_id()
+            .ok_or("terminal process unavailable")
+            .and_then(|pid| {
+                bridge_runtime::process_tree::ProcessTree::capture(pid)
+                    .map_err(|_| "terminal ownership unavailable")
+            }) {
+            Ok(tree) => Arc::new(tree),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let child = Arc::new(Mutex::new(child));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(32);
@@ -85,6 +103,7 @@ impl Terminals {
         let read_cancel = cancel.clone();
         let read_child = child.clone();
         let read_tx = tx.clone();
+        let read_tree = tree.clone();
         std::thread::spawn(move || {
             let mut sequence = 0;
             let mut bytes = [0u8; 8192];
@@ -107,6 +126,7 @@ impl Terminals {
                     Err(_) => break,
                 }
             }
+            let _ = read_tree.stop();
             let code = loop {
                 if read_cancel.load(Ordering::Acquire) {
                     return;
@@ -152,7 +172,7 @@ impl Terminals {
         sessions.insert(
             id.clone(),
             Arc::new(Session {
-                pid,
+                tree,
                 master: Mutex::new(pair.master),
                 child,
                 input,
@@ -208,57 +228,92 @@ impl Terminals {
             return Ok(());
         };
         s.cancel.store(true, Ordering::Release);
-        // Only this mutex can reap the child. Hold it across liveness check and
-        // signals so a completed process ID can never be reused underneath us.
         let mut child = s.child.lock().map_err(|_| "terminal process unavailable")?;
-        if child
-            .try_wait()
-            .map_err(|_| "terminal process unavailable")?
-            .is_some()
-        {
-            return Ok(());
-        }
-        let pid = s.pid.map(|p| nix::unistd::Pid::from_raw(p as i32));
-        if let Some(pid) = pid {
-            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_millis(500);
-        loop {
-            if child
-                .try_wait()
-                .map_err(|_| "terminal process unavailable")?
-                .is_some()
-            {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                if let Some(pid) = pid {
-                    let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
-                }
-                let _ = child.kill();
-                child
-                    .wait()
-                    .map_err(|_| "terminal process cleanup failed")?;
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        s.tree
+            .stop()
+            .map_err(|_| "terminal process cleanup failed")?;
+        child
+            .wait()
+            .map_err(|_| "terminal process cleanup failed")?;
+        Ok(())
     }
-
-    pub fn close_all(&self) {
+    /// External terminal launchers are owned by the same shutdown fence.
+    pub fn open_external(&self, mut command: std::process::Command) -> Result<(), &'static str> {
+        let _sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "terminal state unavailable")?;
+        if self.closing.load(Ordering::Acquire) {
+            return Err("application is shutting down");
+        }
+        let mut external = self
+            .external
+            .lock()
+            .map_err(|_| "terminal state unavailable")?;
+        external.retain(|tree| tree.is_alive());
+        let mut child = command
+            .spawn()
+            .map_err(|_| "external terminal unavailable: install x-terminal-emulator")?;
+        match bridge_runtime::process_tree::ProcessTree::capture(child.id()) {
+            Ok(tree) => external.push(tree),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("external terminal ownership unavailable");
+            }
+        }
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+    pub fn begin_shutdown(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+    pub fn shutdown(&self) -> Result<(), &'static str> {
+        {
+            let _sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "terminal state unavailable")?;
+            self.begin_shutdown();
+        }
+        let mut result = self.close_all_result();
+        match self.external.lock() {
+            Ok(mut external) => {
+                for tree in external.drain(..) {
+                    if tree.stop().is_err() {
+                        result = Err("external terminal cleanup failed");
+                    }
+                }
+            }
+            Err(_) => result = Err("terminal state unavailable"),
+        }
+        result
+    }
+    fn close_all_result(&self) -> Result<(), &'static str> {
         let ids = self
             .sessions
             .lock()
-            .map(|s| s.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
+            .map_err(|_| "terminal state unavailable")?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut result = Ok(());
         for id in ids {
-            let _ = self.close(&id);
+            if let Err(error) = self.close(&id) {
+                result = Err(error);
+            }
         }
+        result
+    }
+    pub fn close_all(&self) {
+        let _ = self.close_all_result();
     }
 }
 impl Drop for Terminals {
     fn drop(&mut self) {
-        self.close_all();
+        let _ = self.shutdown();
     }
 }
 fn size(rows: u16, cols: u16) -> Result<(), &'static str> {

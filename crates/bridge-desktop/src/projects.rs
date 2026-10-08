@@ -12,7 +12,7 @@ use std::{
     net::TcpListener,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
-    sync::Mutex,
+    sync::{Mutex, RwLock, atomic::AtomicBool},
     time::Duration,
 };
 #[derive(Clone, Serialize, Deserialize)]
@@ -95,6 +95,9 @@ struct Pending {
     remove: bool,
 }
 pub struct ProjectService {
+    pub(crate) activity: RwLock<bool>,
+    pub(crate) closing: AtomicBool,
+    pub(crate) workers: Mutex<Vec<bridge_runtime::process_tree::ProcessTree>>,
     pub config: PathBuf,
     pub state: PathBuf,
     pending: Mutex<HashMap<String, Pending>>,
@@ -113,6 +116,9 @@ impl ProjectService {
                 .map_err(|_| "config invalid")?;
         }
         Ok(Self {
+            activity: RwLock::new(false),
+            closing: AtomicBool::new(false),
+            workers: Mutex::new(Vec::new()),
             config,
             state,
             pending: Mutex::new(HashMap::new()),
@@ -181,6 +187,7 @@ impl ProjectService {
         Ok((p, l))
     }
     pub fn lifecycle(&self, id: &str, command: &str) -> Result<Value, &'static str> {
+        let _activity = self.activity_guard()?;
         let (p, l) = self.project(id)?;
         if let Some(settings) = p.remote_execution() {
             return bridge_automation::remote::rpc(settings, &json!({"op":"lifecycle","command":command})).map_err(|_| "Удалённый мост недоступен; проверьте SSH, agent-bridge и настройки проекта на втором ПК");

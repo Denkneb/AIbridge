@@ -115,12 +115,45 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
             let model = run.document()["plan"]["codex_model"]
                 .as_str()
                 .map(str::to_owned);
-            let client = CodexClient::new(
+            let mut client = CodexClient::new(
                 lifecycle::directory(&layout, id).join("codex"),
                 Duration::from_secs(timeout),
                 model,
             )
             .map_err(|e| e.to_string())?;
+            if let Some(settings) = project.remote_execution() {
+                let result = super::remote::controller(project, &layout, id, settings, &mut client);
+                if let Err(error) = &result {
+                    let run = store.load(Some(id)).map_err(|e| e.to_string())?;
+                    if !run.status().is_terminal() {
+                        let mut doc = run.document().clone();
+                        doc["blocker"] = json!({"code":error});
+                        store
+                            .save(&doc, bridge_storage::automation::RunStatus::Blocked)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                return result.map(|_| ExitCode::SUCCESS);
+            }
+            if let Some(repository) = run.document()["remote_executor"]["repository"].as_str() {
+                let model = bridge_automation::remote::RemoteReview {
+                    layout: layout.clone(),
+                    run: id,
+                    repository: repository.to_owned(),
+                };
+                let mut coordinator = Coordinator::with_guard(
+                    project.clone(),
+                    layout.clone(),
+                    id,
+                    worker_spawner(project, &layout, &path)?,
+                    config.projects().values().cloned().collect(),
+                    model,
+                    guard,
+                )
+                .map_err(|e| e.to_string())?;
+                coordinator.run().map_err(|e| e.to_string())?;
+                return Ok(ExitCode::SUCCESS);
+            }
             let mut coordinator = Coordinator::with_guard(
                 project.clone(),
                 layout.clone(),
@@ -144,6 +177,7 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
         }
         Action::Resume(id) => {
             let run = store.load(id).map_err(|e| e.to_string())?;
+            remote_control(project, run.id(), RunControl::Run)?;
             lifecycle::launch(&layout, project, run.id(), &executable, true)
                 .map_err(|e| e.to_string())?
         }
@@ -152,6 +186,7 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
             let run = store
                 .set_control(run.id(), RunControl::Pause)
                 .map_err(|e| e.to_string())?;
+            remote_control(project, run.id(), RunControl::Pause)?;
             status(
                 &run,
                 lifecycle::supervisor_running(&layout, project, run.id())
@@ -163,6 +198,7 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
             let run = store
                 .set_control(run.id(), RunControl::Stop)
                 .map_err(|e| e.to_string())?;
+            remote_control(project, run.id(), RunControl::Stop)?;
             if lifecycle::supervisor_running(&layout, project, run.id())
                 .map_err(|e| e.to_string())?
             {
@@ -187,4 +223,22 @@ fn status(run: &bridge_storage::automation::AutomationRun, live: bool) -> Value 
     let doc = run.document();
     let i = doc["index"].as_u64().unwrap_or(0) as usize;
     json!({"run_id":run.id().to_string(),"status":run.status().as_str(),"control":run.control().as_str(),"supervisor_running":live,"phase":doc["phase"],"index":i,"steps":doc["steps"].as_array().map(Vec::len),"final_task_id":doc["steps"].as_array().and_then(|s|s.last()).map(|s|s["task_id"].clone()),"current_step":doc["steps"][i]["step"]["id"],"task_id":doc["steps"][i]["task_id"],"blocker_code":doc["blocker"]["code"],"elapsed":doc["elapsed"]})
+}
+
+fn remote_control(
+    project: &bridge_config::ProjectEntry,
+    id: RunId,
+    control: RunControl,
+) -> Result<(), String> {
+    if let Some(settings) = project.remote_execution() {
+        match bridge_automation::remote::rpc(
+            settings,
+            &json!({"op":"control","run_id":id.to_string(),"control":control.as_str()}),
+        ) {
+            Ok(_) => {}
+            Err(error) if error == "automation run not found" => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }

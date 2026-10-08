@@ -19,6 +19,10 @@ PID/ownership records, token-файлы, логи и endpoints. Rust всегд�
 использует собственную пустую БД и отдельную историю задач; импорт, копирование
 или перенос Python state/history в Rust не поддерживается и не планируется.
 
+Удалённый OpenCode на втором Linux-ПК включается отдельной настройкой проекта в UI;
+Codex и ревью остаются на первом ПК, снимки передаются через GitHub/GitLab.
+[Настройка и порядок работы](docs/remote-execution.md).
+
 ## Расхождение версий и ближайший шаг
 
 Интерактивный `launch-codex` подключает process-local local/HTTP MCP и status hooks;

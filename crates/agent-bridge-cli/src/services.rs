@@ -114,6 +114,24 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
                     .ok_or("project not configured")?,
             ]
         };
+        if selected.iter().any(|p| p.remote_execution().is_some()) {
+            let service = bridge_desktop::projects::ProjectService::new(
+                args.config.clone(),
+                args.state_root.clone(),
+            )?;
+            let mut reports = vec![];
+            for p in selected {
+                reports.push(service.lifecycle(p.id().as_str(), &command)?);
+            }
+            if json {
+                println!("{}", json!({"schema_version":1,"projects":reports}));
+            } else {
+                for report in reports {
+                    println!("{report}");
+                }
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
         let projects = selected
             .iter()
             .map(|p| {
@@ -180,6 +198,30 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     if let Action::Attach { task, session } = action {
+        if let Some(settings) = config
+            .project(&args.project)
+            .and_then(|p| p.remote_execution())
+        {
+            use std::os::unix::process::ExitStatusExt;
+            let status = bridge_automation::remote::attach(
+                settings,
+                if session {
+                    "attach-opencode"
+                } else {
+                    "console"
+                },
+                task,
+            )?;
+            return Ok(ExitCode::from(
+                u8::try_from(
+                    status
+                        .code()
+                        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
+                )
+                .unwrap_or(1),
+            ));
+        }
+
         use std::os::unix::process::ExitStatusExt;
         let project = config
             .project(&args.project)
@@ -237,11 +279,11 @@ pub fn run(args: LaunchArgs, action: Action) -> Result<ExitCode, String> {
     for p in projects {
         let layout = RustStateLayout::new(args.state_root.clone(), p.id().clone())
             .map_err(|_| "state binding invalid")?;
-        reports.push(bridge_runtime::diagnostics::status(
-            p,
-            &layout,
-            Duration::from_millis(300),
-        ));
+        reports.push(if let Some(settings) = p.remote_execution() {
+            bridge_automation::remote::rpc(settings, &json!({"op":"lifecycle","command":"doctor"}))?
+        } else {
+            bridge_runtime::diagnostics::status(p, &layout, Duration::from_millis(300))
+        });
     }
     let ready = reports.iter().all(|r| r["ready"] == true);
     if json {

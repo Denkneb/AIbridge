@@ -527,6 +527,7 @@ fn first_project_can_be_created_without_initial_config_write() {
     assert!(service.projects().unwrap().is_empty());
     assert!(!service.config.exists());
     let existing = bridge_desktop::projects::ProjectDraft {
+        remote_execution: None,
         id: "first".into(),
         workspace: f.root.join("main").to_string_lossy().into(),
         opencode_url: "http://127.0.0.1:4103".into(),
@@ -1702,4 +1703,55 @@ fn removal_refuses_paused_automation_until_stopped() {
         )
         .unwrap();
     f.service.apply(id).unwrap();
+}
+
+#[test]
+fn remote_settings_are_reviewed_persisted_and_disabled_by_default() {
+    let f = Fixture::new();
+    let mut draft = f
+        .service
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "primary")
+        .unwrap();
+    assert!(draft.remote_execution.is_none());
+    let original = fs::read(&f.service.config).unwrap();
+    let remote = bridge_config::remote::RemoteExecution {
+        host: "192.168.1.22".into(),
+        user: "executor".into(),
+        port: 22,
+        executable: "/opt/bridge/agent-bridge".into(),
+        config: "/home/executor/projects.toml".into(),
+        state_root: "/home/executor/state".into(),
+        project: "proj".into(),
+        repository: "git@gitlab.example:owner/repo.git".into(),
+    };
+    draft.remote_execution = Some(remote.clone());
+    let preview = f.service.preview(draft.clone(), None, None).unwrap();
+    assert_eq!(fs::read(&f.service.config).unwrap(), original);
+    assert_eq!(preview["after"]["remote_execution"]["host"], "192.168.1.22");
+    f.service
+        .apply(preview["review_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        f.service
+            .projects()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "primary")
+            .unwrap()
+            .remote_execution,
+        Some(remote)
+    );
+    draft.remote_execution = None;
+    let preview = f.service.preview(draft, None, None).unwrap();
+    f.service
+        .apply(preview["review_id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        !fs::read_to_string(&f.service.config)
+            .unwrap()
+            .contains("remote_execution")
+    );
 }

@@ -168,7 +168,7 @@ impl ProjectService {
             json!({"step":item["step"],"phase":item["phase"],"task_id":item["task_id"],"revisions":item["revisions"],"review":item["review"],"findings":item["pending_revision"]["findings"]})
         ).collect();
         Ok(crate::dashboard::sanitize(
-            &json!({"run_id":run.id().to_string(),"status":run.status().as_str(),"control":run.control().as_str(),"supervisor_running":live,"goal":doc["plan"]["goal"],"delivery":doc["plan"]["delivery"],"phase":doc["phase"],"index":doc["index"],"steps":steps,"blocker_code":doc["blocker"]["code"]}),
+            &json!({"run_id":run.id().to_string(),"status":run.status().as_str(),"control":run.control().as_str(),"supervisor_running":live,"goal":doc["plan"]["goal"],"delivery":doc["plan"]["delivery"],"phase":doc["phase"],"index":doc["index"],"steps":steps,"blocker_code":doc["blocker"]["code"],"remote_result":doc["remote_result"]}),
         ))
     }
 }

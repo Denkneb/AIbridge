@@ -144,6 +144,17 @@
   if(document.querySelector('.project-indicator-running')||!document.querySelector('.project-indicator').getAttribute('aria-label').includes('proof'))throw Error('project_status_binding');checks.project_status_indicator=true;
   await waitUI(()=>document.querySelector('.project-select option[value="proof"]').textContent.includes('остановлен'),'project_list_stopped_status');checks.project_list_service_status=true;
   const setInput=(label,value)=>{const input=document.querySelector(`[aria-label="${label}"]`);if(!input)throw Error('missing_'+label);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
+  const remoteToggle=[...document.querySelectorAll('.settings label.check')].find(label=>label.textContent.includes('Запуск OpenCode на другом ПК')).querySelector('input');
+  if(remoteToggle.checked||document.querySelector('[aria-label="host"]'))throw Error('remote_not_default_off');
+  remoteToggle.click();await waitUI(()=>document.querySelector('[aria-label="host"]'),'remote_fields_missing');
+  for(const [key,value] of Object.entries({host:'192.0.2.1',user:'executor',project:'proof',executable:'/opt/bridge/agent-bridge',config:'/home/executor/projects.toml',state_root:'/home/executor/state',repository:'git@gitlab.example:owner/repo.git'}))setInput(key,value);
+  await new Promise(r=>setTimeout(r,50));document.querySelector('.settings form').requestSubmit();
+  await waitUI(()=>document.querySelector('[aria-label="Просмотр изменений"]'),'remote_preview_missing');
+  if(!document.querySelector('[aria-label="Просмотр изменений"]').textContent.includes('192.0.2.1'))throw Error('remote_preview_missing_binding');
+  [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Отмена').click();
+  await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'remote_preview_cancel');
+  remoteToggle.click();await waitUI(()=>!document.querySelector('[aria-label="host"]'),'remote_toggle_off');
+  if((await invoke('projects'))[0].remote_execution)throw Error('remote_preview_wrote_configuration');checks.remote_execution_opt_in_preview=true;
   setInput('Модель исполнителя OpenCode','fixture/executor');setInput('Модель контроллера OpenCode','fixture/controller');await new Promise(r=>setTimeout(r,50));
   document.querySelector('.settings form').requestSubmit();
   await waitUI(()=>document.querySelector('[aria-label="Просмотр изменений"]'),'model_preview_missing');

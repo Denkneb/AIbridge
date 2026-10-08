@@ -12,6 +12,7 @@ bridge-domain.workspace = true
 base64 = "0.22"
 regex = "1"
 serde_json.workspace = true
+serde.workspace = true
 toml = { workspace = true }
 url.workspace = true
 nix.workspace = true

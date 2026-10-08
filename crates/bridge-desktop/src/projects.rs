@@ -20,6 +20,8 @@ use std::{
 pub struct ProjectDraft {
     pub id: String,
     pub workspace: String,
+    #[serde(default)]
+    pub remote_execution: Option<bridge_config::remote::RemoteExecution>,
     pub opencode_url: String,
     pub mcp_url: Option<String>,
     #[serde(default)]
@@ -46,6 +48,7 @@ impl ProjectDraft {
     fn from_project(p: &bridge_config::ProjectEntry) -> Self {
         Self {
             id: p.id().to_string(),
+            remote_execution: p.remote_execution().cloned(),
             workspace: p.workspace().to_string_lossy().into(),
             opencode_url: p.opencode_endpoint().url(),
             mcp_url: p.mcp_endpoint().map(|v| v.url()),
@@ -179,6 +182,9 @@ impl ProjectService {
     }
     pub fn lifecycle(&self, id: &str, command: &str) -> Result<Value, &'static str> {
         let (p, l) = self.project(id)?;
+        if let Some(settings) = p.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"lifecycle","command":command})).map_err(|_| "Удалённый мост недоступен; проверьте SSH, agent-bridge и настройки проекта на втором ПК");
+        }
         match command {
             "setup" => bridge_runtime::project::setup(&[(p, l)]).map_err(|error| match error {
                 bridge_runtime::RuntimeError::Ownership =>
@@ -316,6 +322,21 @@ impl ProjectService {
         } else if let Some(t) = table.as_table_mut() {
             t.remove("mcp_url");
             t.remove("mcp_token_file");
+        }
+        if let Some(remote) = &draft.remote_execution {
+            remote.validate().map_err(|e| e.message())?;
+            let value = serde_json::to_value(remote).map_err(|_| "remote settings invalid")?;
+            let mut settings = toml_edit::Table::new();
+            for (key, value) in value.as_object().ok_or("remote settings invalid")? {
+                settings[key] = match value {
+                    Value::String(v) => toml_edit::value(v.as_str()),
+                    Value::Number(v) => toml_edit::value(v.as_i64().ok_or("remote port invalid")?),
+                    _ => return Err("remote settings invalid"),
+                };
+            }
+            table["remote_execution"] = toml_edit::Item::Table(settings);
+        } else if let Some(table) = table.as_table_mut() {
+            table.remove("remote_execution");
         }
         let proposed = doc.to_string().into_bytes();
         let checked = validate_config_text(

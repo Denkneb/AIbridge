@@ -1,0 +1,8 @@
+import type {RemoteExecution} from './types';
+const defaults=(project:string):RemoteExecution=>({host:'',user:'',port:22,executable:'/usr/local/bin/agent-bridge',config:'/home/user/.config/aibridge/projects.toml',state_root:'/home/user/.local/state/aibridge',project,repository:''});
+export function RemoteSettings({value,onChange,project}:{value:RemoteExecution|null;onChange:(value:RemoteExecution|null)=>void;project:string}){
+ return <div className="wide"><label className="check"><input type="checkbox" checked={!!value} onChange={e=>onChange(e.target.checked?defaults(project):null)}/>Запуск OpenCode на другом ПК по SSH</label>
+ <p className="muted">Codex и ревью работают на этом ПК. OpenCode, проверки и состояние задач — на удалённом Linux. Снимки кода передаются через отдельные ветки GitHub/GitLab. Оба ПК должны иметь доступ к одному Git-репозиторию. SSH использует ключ и known_hosts; настройте доступ заранее. Модели и ключи OpenCode настраиваются на втором ПК.</p>
+ {value&&<div className="form-grid">{(['host','user','project','executable','config','state_root','repository'] as const).map(key=><label key={key}>{({host:'Адрес второго ПК',user:'SSH-пользователь',project:'ID проекта на втором ПК',executable:'Путь к agent-bridge на втором ПК',config:'projects.toml на втором ПК',state_root:'Rust state на втором ПК',repository:'Git URL (без токенов)'})[key]}<input required aria-label={key} value={value[key]} onChange={e=>onChange({...value,[key]:e.target.value})}/></label>)}<label>SSH-порт<input required type="number" min={1} max={65535} value={value.port} onChange={e=>onChange({...value,port:Number(e.target.value)})}/></label></div>}
+ </div>;
+}

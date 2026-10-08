@@ -101,6 +101,8 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
 use bridge_domain::{DeliveryMode, DomainError, ExecutionMode, ProjectId, Result};
+pub mod remote;
+
 mod delivery;
 mod state_approval;
 pub use state_approval::state_directory_permission_pattern;
@@ -565,10 +567,14 @@ pub struct ProjectEntry {
     auto_approve_state_directory: bool,
     auto_approve_permissions: Vec<String>,
     auto_approve_external_directories: Vec<PathBuf>,
+    remote_execution: Option<remote::RemoteExecution>,
     values: toml::Table,
 }
 
 impl ProjectEntry {
+    pub fn remote_execution(&self) -> Option<&remote::RemoteExecution> {
+        self.remote_execution.as_ref()
+    }
     /// Configuration source for shell-quoted user action commands.
     pub fn source_path(&self) -> &Path {
         &self.source_path
@@ -1115,6 +1121,7 @@ fn validate_projects(raw: BTreeMap<String, toml::Table>, config_dir: &Path) -> R
                 auto_approve_state_directory,
                 auto_approve_permissions,
                 auto_approve_external_directories,
+                remote_execution: remote::parse(&values)?,
                 values,
             },
         );

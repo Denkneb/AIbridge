@@ -3,6 +3,7 @@ mod add_project;
 mod automation;
 mod migration;
 mod prune;
+mod remote;
 mod services;
 use bridge_config::load_config_with_state_root;
 use bridge_domain::TaskId;
@@ -25,6 +26,7 @@ Commands:
   launch-codex      Launch Codex controller; --auto --plan PATH starts an approved workflow
   automation-status/pause/resume/stop   Inspect or control a run (--run UUID optional)
   automation-worker  Private detached workflow supervisor (--run UUID required)
+  remote-rpc       Private SSH executor protocol (bounded JSON on stdin)
   deliver-task      Build, validate or apply accepted worktree changes (--task ID)
   worker            Run an existing task round (--task ID --round N required)
   launch-opencode   Launch an OpenCode controller using local or HTTP MCP servers
@@ -58,6 +60,7 @@ enum Action {
     Migration(migration::Args),
     Prune(prune::Args),
     AddProject(add_project::Args),
+    Remote(LaunchArgs),
     Help,
     Version,
     Launch(LaunchArgs),
@@ -103,7 +106,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
             Err("unexpected arguments after version")
         };
     }
-    if command != "launch-opencode"
+    if command != "remote-rpc"
+        && command != "launch-opencode"
         && command != "mcp"
         && command != "serve-mcp"
         && command != "worker"
@@ -209,7 +213,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Action, &'static st
         config,
         state_root,
     };
-    Ok(if services::is_command(&command) {
+    Ok(if command == "remote-rpc" {
+        Action::Remote(common)
+    } else if services::is_command(&command) {
         Action::Services(common, services::parse(&command, task, json, all)?)
     } else if automation::is_command(&command) {
         Action::Automation(common, automation::parse(&command, auto, plan, run)?)
@@ -255,6 +261,17 @@ fn launch(args: LaunchArgs) -> Result<ExitCode, String> {
         .ok_or("project not configured")?;
     let layout =
         RustStateLayout::new(args.state_root, primary.id().clone()).map_err(|e| e.to_string())?;
+    if let Some(settings) = primary.remote_execution() {
+        let status = bridge_automation::remote::attach(settings, "launch-opencode", None)?;
+        return Ok(ExitCode::from(
+            u8::try_from(
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
+            )
+            .unwrap_or(1),
+        ));
+    }
     let executable = env::current_exe().map_err(|_| "bridge executable unavailable")?;
     let status = launch_controller(
         primary,
@@ -279,6 +296,13 @@ fn mcp(args: LaunchArgs, http: bool) -> Result<ExitCode, String> {
         .ok_or("project not configured")?;
     let layout =
         RustStateLayout::new(args.state_root, project.id().clone()).map_err(|e| e.to_string())?;
+    if let Some(settings) = project.remote_execution() {
+        if http {
+            return Err("remote_mode_uses_stdio_mcp_over_ssh".into());
+        }
+        layout.initialize().map_err(|e| e.to_string())?;
+        return remote::mcp_proxy(project, &layout, settings);
+    }
     let spawner = worker_spawner(project, &layout, &config_path)?;
     let registry = config.projects().values().cloned().collect();
     if http {
@@ -426,6 +450,7 @@ fn main() -> ExitCode {
         Ok(Action::Worker(args, task, round)) => finish(worker(args, task, round)),
         Ok(Action::Deliver(args, task, mode)) => finish(deliver(args, task, mode)),
         Ok(Action::Automation(args, action)) => finish(automation::run(args, action)),
+        Ok(Action::Remote(args)) => finish(remote::serve(args)),
         Ok(Action::Services(args, action)) => finish(services::run(args, action)),
         Err(_) if hook => ExitCode::SUCCESS,
         Err(error) => {

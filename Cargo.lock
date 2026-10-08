@@ -6,6 +6,7 @@ version = 4
 name = "agent-bridge-cli"
 version = "0.1.0"
 dependencies = [
+ "bridge-artifact",
  "bridge-automation",
  "bridge-config",
  "bridge-delivery",
@@ -116,6 +117,7 @@ dependencies = [
  "bridge-domain",
  "nix 0.27.1",
  "regex",
+ "serde",
  "serde_json",
  "toml",
  "toml_edit",

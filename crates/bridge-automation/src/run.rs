@@ -70,7 +70,7 @@ fn binding(project: &ProjectEntry, layout: &RustStateLayout) -> Result<Value, Er
         json!({"project":project.id().as_str(), "workspace":project.workspace(), "config_sha256":format!("{:x}", Sha256::digest(bytes))}),
     )
 }
-fn origin(project: &ProjectEntry) -> Result<Value, Error> {
+pub(crate) fn origin(project: &ProjectEntry) -> Result<Value, Error> {
     let snapshot = bridge_git::take_snapshot(project.workspace()).map_err(|_| Error::Repository)?;
     if !snapshot.status().is_empty() {
         return Err(Error::Repository);
@@ -97,6 +97,33 @@ pub fn create_run(
     layout: &RustStateLayout,
     raw: &Value,
 ) -> Result<AutomationRun, Error> {
+    create_run_with_id(
+        project,
+        layout,
+        raw,
+        uuid::Uuid::new_v4()
+            .to_string()
+            .parse()
+            .map_err(|_| Error::State)?,
+    )
+}
+/// Explicit identity allows an authenticated remote admission retry to find the
+/// existing run instead of submitting the approved pool twice.
+pub fn create_run_with_id(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+    raw: &Value,
+    id: bridge_storage::automation::RunId,
+) -> Result<AutomationRun, Error> {
+    create_bound_run(project, layout, raw, id, serde_json::Value::Null)
+}
+pub fn create_bound_run(
+    project: &ProjectEntry,
+    layout: &RustStateLayout,
+    raw: &Value,
+    id: bridge_storage::automation::RunId,
+    remote_executor: Value,
+) -> Result<AutomationRun, Error> {
     validate_plan(project, raw)?;
     let bound = binding(project, layout)?;
     layout.initialize().map_err(|_| Error::State)?;
@@ -118,6 +145,16 @@ pub fn create_run(
     {
         return Err(Error::UnfinishedTasks);
     }
+    if !remote_executor.is_null() {
+        let store = AutomationRunStore::new(layout.clone());
+        match store.load(None) {
+            Ok(run) if !run.status().is_terminal() => return Err(Error::Busy),
+            Ok(_) | Err(AutomationStoreError::NotFound) => {}
+            Err(_) => return Err(Error::State),
+        }
+        crate::remote::synchronize_source(project, &remote_executor)
+            .map_err(|_| Error::Repository)?;
+    }
     let original = origin(project)?;
     let scopes = plan
         .steps()
@@ -138,9 +175,9 @@ pub fn create_run(
         "allowed_paths":scopes,"test_commands":plan.final_test_commands(),
         "acceptance_criteria":FINAL_CRITERIA,"profile":null
     },"phase":"prepare","task_id":null,"revisions":0}));
-    let document = json!({"run_id":uuid::Uuid::new_v4().to_string(),"plan":plan,"binding":bound,"origin":original,
+    let document = json!({"run_id":id.to_string(),"plan":plan,"binding":bound,"origin":original,
         "started":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::State)?.as_secs_f64(),
-        "elapsed":0.0,"steps":steps,"index":0,"phase":"steps","blocker":null});
+        "remote_executor":remote_executor,"elapsed":0.0,"steps":steps,"index":0,"phase":"steps","blocker":null});
     // Repeat external binding proofs immediately before the durable write.
     if binding(project, layout)? != document["binding"] || origin(project)? != document["origin"] {
         return Err(Error::Binding);

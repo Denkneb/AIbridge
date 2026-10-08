@@ -14,6 +14,12 @@ impl ProjectService {
     ) -> Result<Value, String> {
         let _config = self.config_file_guard()?;
         let (p, layout) = self.project(project)?;
+        if let Some(settings) = p.remote_execution() {
+            return bridge_automation::remote::rpc(
+                settings,
+                &json!({"op":"set_status","task":task,"expected":expected,"target":target,"reason":reason}),
+            );
+        }
         let id = task.parse().map_err(|_| "Некорректный ID задачи")?;
         let expected = expected
             .parse()
@@ -38,6 +44,10 @@ impl ProjectService {
     pub fn recover_failed_task(&self, project: &str, task: &str) -> Result<Value, String> {
         let _config_guard = self.config_file_guard()?;
         let (p, layout) = self.project(project)?;
+        if let Some(settings) = p.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"recover","task":task}));
+        }
+
         let id = task.parse().map_err(|_| "Некорректный ID задачи")?;
         bridge_storage::read_task_budget_readonly(&layout.database(), id, p.id())
             .map_err(|_| "Не удалось проверить бюджет задачи")?

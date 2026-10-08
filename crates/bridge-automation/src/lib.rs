@@ -37,3 +37,5 @@ impl std::fmt::Display for AutomationError {
     }
 }
 impl std::error::Error for AutomationError {}
+
+pub mod remote;

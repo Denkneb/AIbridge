@@ -71,6 +71,13 @@ impl ProjectService {
         let config = bridge_config::load_config_with_state_root(&self.config, &self.state)
             .map_err(|_| "config invalid")?;
         let selected = config.project(project).ok_or("project not configured")?;
+        if let Some(settings) = selected.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"revision"}))
+                .map_err(|_| "remote dashboard unavailable")?
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("remote revision invalid");
+        }
         let mut projects = vec![selected];
         if linked {
             projects.extend(config.linked_projects(project));
@@ -118,6 +125,10 @@ impl ProjectService {
         let config = bridge_config::load_config_with_state_root(&self.config, &self.state)
             .map_err(|_| "config invalid")?;
         let selected = config.project(&q.project).ok_or("project not configured")?;
+        if let Some(settings) = selected.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"dashboard","query":q}))
+                .map_err(|_| "remote dashboard unavailable");
+        }
         let mut projects = vec![selected];
         if q.linked {
             projects.extend(config.linked_projects(&q.project));
@@ -257,6 +268,10 @@ impl ProjectService {
     }
     pub fn task_detail(&self, project: &str, task: &str) -> Result<Value, &'static str> {
         let (project, layout) = self.project(project)?;
+        if let Some(settings) = project.remote_execution() {
+            return bridge_automation::remote::rpc(settings, &json!({"op":"detail","task":task}))
+                .map_err(|_| "remote task unavailable");
+        }
         let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
         let tx = storage
             .connection()
@@ -340,6 +355,13 @@ impl ProjectService {
             return Err("invalid round cursor");
         }
         let (project, layout) = self.project(project)?;
+        if let Some(settings) = project.remote_execution() {
+            return bridge_automation::remote::rpc(
+                settings,
+                &json!({"op":"rounds","task":task,"before":before,"revision":expected_revision}),
+            )
+            .map_err(|_| "remote task rounds unavailable");
+        }
         let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
         let tx = storage
             .connection()

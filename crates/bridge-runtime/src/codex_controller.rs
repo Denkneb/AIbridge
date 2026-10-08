@@ -51,11 +51,16 @@ pub fn build_codex_args(
         "--disable".into(),
         "multi_agent".into(),
     ];
+    let remote_rules = if primary.remote_execution().is_some() {
+        "\nУдалённый исполнитель: используй review_workspace и Git SHA из task_status для независимого ревью. Перед accept_task сначала получи свежий task_status и проверь код в review_workspace. Локальный исходный workspace не содержит удалённые изменения. Итог находится в отдельной Git-ветке."
+    } else {
+        ""
+    };
     let mut overrides = vec![
         format!(
             "developer_instructions={}",
             quoted(&format!(
-                "Правила постоянны (включая /new).\n{}",
+                "Правила постоянны (включая /new).\n{}{remote_rules}",
                 CONTROLLER_PROMPT.replace(
                     "тебе запрещены конфигурацией",
                     "тебе запрещены этими постоянными правилами"
@@ -79,7 +84,10 @@ pub fn build_codex_args(
         } else {
             format!("agent_bridge_{}", project.id())
         };
-        let entry = if let Some(endpoint) = project.mcp_endpoint() {
+        let entry = if let Some(endpoint) = project
+            .mcp_endpoint()
+            .filter(|_| project.remote_execution().is_none())
+        {
             let var = if index == 0 {
                 "AGENT_BRIDGE_MCP_TOKEN".to_owned()
             } else {

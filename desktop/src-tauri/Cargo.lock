@@ -217,6 +217,7 @@ dependencies = [
  "bridge-domain",
  "nix 0.27.1",
  "regex",
+ "serde",
  "serde_json",
  "toml 0.8.23",
  "toml_edit 0.22.27",

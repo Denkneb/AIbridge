@@ -352,7 +352,7 @@ pub(crate) fn controller_env(
         .chain(linked.iter().copied())
         .enumerate()
     {
-        if project.mcp_endpoint().is_none() {
+        if project.mcp_endpoint().is_none() || project.remote_execution().is_some() {
             continue;
         }
         let token = project

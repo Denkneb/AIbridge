@@ -1,4 +1,5 @@
-export interface Project {id:string;workspace:string;opencode_url:string;mcp_url:string|null;opencode_model:string|null;opencode_controller_model:string|null;opencode_env_file:string|null;max_rounds:number;execution_mode:string;delivery_mode:string;max_active_tasks:number;allow_parallel_writers:boolean;auto_approve_state_directory:boolean;auto_approve_permissions:string[];auto_approve_external_directories:string[]}
+export interface RemoteExecution {host:string;user:string;port:number;executable:string;config:string;state_root:string;project:string;repository:string}
+export interface Project {id:string;workspace:string;remote_execution?:RemoteExecution|null;opencode_url:string;mcp_url:string|null;opencode_model:string|null;opencode_controller_model:string|null;opencode_env_file:string|null;max_rounds:number;execution_mode:string;delivery_mode:string;max_active_tasks:number;allow_parallel_writers:boolean;auto_approve_state_directory:boolean;auto_approve_permissions:string[];auto_approve_external_directories:string[]}
 export interface Round {number:number;status:string;findings:unknown;checkpoint:unknown;verification:Record<string,unknown>|null}
 export interface TaskSummary {task_id:string;project_id:string;title:string;status:string;updated_at:string;revision:string}
 export interface RoundPage {rounds:Round[];next_before:number|null}

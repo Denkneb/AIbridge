@@ -78,3 +78,13 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 
 header .icon-button{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;flex-shrink:0}
 header .icon-button svg{display:block;pointer-events:none}
+
+.git-dialog{width:420px;max-width:calc(100vw - 40px);max-height:calc(100vh - 60px);overflow:auto;border:1px solid var(--line);border-radius:8px;padding:16px;background:var(--raised);color:var(--ink);font-size:13px;white-space:normal}
+.git-dialog::backdrop{background:#0007}
+.git-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.git-dialog fieldset{display:flex;flex-direction:column;gap:10px;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:6px;min-width:0}
+.git-dialog label{display:flex;flex-direction:column;gap:5px}
+.git-dialog input:not([type=checkbox]),.git-dialog select{width:100%;box-sizing:border-box}
+.git-dialog .git-checkbox{flex-direction:row;align-items:center}
+.git-dialog p{overflow-wrap:anywhere;line-height:1.5}
+.git-push-preview{padding:12px;border:1px solid var(--line);border-radius:6px}

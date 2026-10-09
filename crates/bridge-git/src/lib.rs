@@ -54,6 +54,7 @@ mod comparison;
 mod multi_repo;
 mod runner;
 mod sha256;
+pub mod transfer;
 mod worktree;
 
 pub use comparison::{

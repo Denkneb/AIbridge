@@ -8,6 +8,7 @@ rust-version.workspace = true
 bridge-domain.workspace = true
 bridge-path-policy = { workspace = true }
 serde_json.workspace = true
+process-wrap.workspace = true
 
 [lints]
 workspace = true

@@ -305,10 +305,28 @@ local and cached remote branches every five seconds. Select a branch and press
 fetching. Switching requires stopped project/related controllers, services and
 workers, a clean tracked/untracked state, and no unfinished Git operation.
 Projects sharing the same worktree are fenced together. Unfinished task rows
-are preserved. No stash, force checkout, commit, push or project Git hooks are
-run. Ignored files that would be overwritten and branches occupied by another
+are preserved. Switching does not run stash, force checkout, commit or project
+Git hooks. Ignored files that would be overwritten and branches occupied by another
 worktree are refused by Git. The current HEAD/workspace is rechecked before
 switching; external branch changes require refreshing the selection.
+
+The **Git** icon beside the branch selector opens branch creation, **Fetch** and
+**Push**. Create from the current HEAD or a selected local/cached remote branch;
+optionally switch immediately. Creation without switching preserves dirty files.
+Fetch updates remote-tracking branches without merging or changing local files.
+Push first displays the remote name, destination branch, pinned commit, outgoing
+commit count, divergence and whether a new remote branch/upstream will be created.
+Only **Отправить** sends that reviewed branch. Changed HEAD, workspace, remote URL
+or remote branch invalidates the preview. Divergence is refused; fetch and merge
+through Git before trying again. Force push and automatic commits are unavailable.
+New branches receive an upstream after a successful push. Git uses existing
+SSH/credential-helper authentication without interactive prompts. A network
+subprocess has a 30-second deadline and stops its process group on completion or
+timeout; after a timeout, refresh the remote before retrying. All mutations use
+the same project/controller/service/worker fences as switching. Remote URLs and
+raw Git errors are not sent to the UI. Remotes with multiple push URLs are refused.
+The actual WebView smoke uses a disposable local bare remote to check creation,
+push preview, explicit send, upstream and fetch without contacting GitHub/GitLab.
 
 Failed assistant tasks expose **Проверить продолжение сессии** in the task card.
 After manually continuing the saved OpenCode session, this explicit action claims

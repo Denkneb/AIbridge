@@ -1,6 +1,7 @@
 //! UI-independent project settings, read-only dashboard and bounded PTY services.
 mod automation;
 mod branches;
+pub use branches::{GitAction, GitRequest};
 pub mod codex_env;
 pub mod dashboard;
 mod opencode_config;

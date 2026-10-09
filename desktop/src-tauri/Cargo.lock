@@ -278,6 +278,7 @@ version = "0.1.0"
 dependencies = [
  "bridge-domain",
  "bridge-path-policy",
+ "process-wrap",
  "serde_json",
 ]
 

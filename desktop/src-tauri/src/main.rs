@@ -144,6 +144,17 @@ async fn project_branch_switch(
     .map_err(|_| "Не удалось переключить ветку проекта".to_owned())?
 }
 #[tauri::command]
+async fn project_git(
+    state: State<'_, AppState>,
+    project: String,
+    request: bridge_desktop::GitRequest,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.project_git(&project, request))
+        .await
+        .map_err(|_| "Не удалось выполнить операцию Git".to_owned())?
+}
+#[tauri::command]
 async fn task_set_status(
     state: State<'_, AppState>,
     project: String,
@@ -680,6 +691,7 @@ fn main() {
             project_suggest_endpoints,
             project_branches,
             project_branch_switch,
+            project_git,
             codex_env_read,
             codex_env_save,
             opencode_keys_read,

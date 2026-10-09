@@ -294,3 +294,204 @@ fn ignored_files_that_would_be_overwritten_are_preserved() {
     );
     assert_eq!(f.view()["current"], "refs/heads/main");
 }
+
+impl Fixture {
+    fn action(&self, operation: Value, view: &Value) -> Result<Value, String> {
+        let request=serde_json::from_value(json!({"workspace":view["workspace"],"current":view["current"],"head":view["head"],"operation":operation})).unwrap();
+        self.service.project_git("primary", request)
+    }
+    fn remote(&self) {
+        let bare = self.root.join("remote.git");
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&bare)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        self.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    }
+    fn remote_head(&self, name: &str) -> Option<String> {
+        let result = Command::new("git")
+            .arg("--git-dir")
+            .arg(self.root.join("remote.git"))
+            .args(["rev-parse", "--verify", &format!("refs/heads/{name}")])
+            .output()
+            .unwrap();
+        result
+            .status
+            .success()
+            .then(|| String::from_utf8(result.stdout).unwrap().trim().into())
+    }
+    fn push(&self, plan: &Value, view: &Value) -> Result<Value, String> {
+        self.action(json!({"action":"push","remote":plan["remote"],"destination":plan["destination"],"fingerprint":plan["fingerprint"]}),view)
+    }
+}
+#[test]
+fn create_branch_from_selected_base_preserves_dirty_worktree_and_rejects_bad_names() {
+    let f = Fixture::new(false);
+    fs::write(f.root.join("main/tracked.txt"), "private edit").unwrap();
+    let view = f.view();
+    assert_eq!(view["dirty"], 1);
+    assert!(
+        f.action(
+            json!({"action":"create","name":"topic","base":"HEAD","switch":true}),
+            &view
+        )
+        .unwrap_err()
+        .contains("незакоммиченные")
+    );
+    let next = f
+        .action(
+            json!({"action":"create","name":"topic","base":"refs/heads/feature","switch":false}),
+            &view,
+        )
+        .unwrap();
+    assert_eq!(next["current"], "refs/heads/main");
+    assert_eq!(
+        f.git(&["rev-parse", "topic"]),
+        f.git(&["rev-parse", "feature"])
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "private edit"
+    );
+    for name in ["--force", "bad..name", "topic", "@{-1}"] {
+        assert!(
+            f.action(
+                json!({"action":"create","name":name,"base":"HEAD","switch":false}),
+                &next
+            )
+            .is_err()
+        );
+    }
+    fs::write(f.root.join("main/tracked.txt"), "main\n").unwrap();
+    let next = f
+        .action(
+            json!({"action":"create","name":"new-topic","base":"HEAD","switch":true}),
+            &f.view(),
+        )
+        .unwrap();
+    assert_eq!(next["current"], "refs/heads/new-topic");
+}
+#[test]
+fn push_preview_is_read_only_push_sets_upstream_and_fetch_preserves_files() {
+    let f = Fixture::new(false);
+    f.remote();
+    let view = f.view();
+    assert_eq!(view["remotes"], json!(["origin"]));
+    let plan = f
+        .action(
+            json!({"action":"preview","remote":"origin","destination":"main"}),
+            &view,
+        )
+        .unwrap();
+    assert_eq!(plan["ahead"], 1);
+    assert_eq!(plan["behind"], 0);
+    assert_eq!(plan["new_branch"], true);
+    assert_eq!(plan["set_upstream"], true);
+    assert!(f.remote_head("main").is_none());
+    assert!(view["upstream"].is_null());
+    let result = f.push(&plan, &view).unwrap();
+    assert_eq!(f.remote_head("main").as_deref(), view["head"].as_str());
+    assert_eq!(
+        result["upstream"],
+        json!({"remote":"origin","destination":"main"})
+    );
+    assert_eq!(result["upstream_saved"], true);
+    f.git(&["push", "origin", "feature:server-topic"]);
+    fs::write(f.root.join("main/tracked.txt"), "keep me").unwrap();
+    let next = f
+        .action(json!({"action":"fetch","remote":"origin"}), &f.view())
+        .unwrap();
+    assert!(
+        next["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["reference"] == "refs/remotes/origin/server-topic")
+    );
+    assert_eq!(next["current"], "refs/heads/main");
+    assert_eq!(next["head"], view["head"]);
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "keep me"
+    );
+    let plan = f
+        .action(
+            json!({"action":"preview","remote":"origin","destination":"main"}),
+            &next,
+        )
+        .unwrap();
+    assert_eq!(plan["ahead"], 0);
+}
+#[test]
+fn stale_push_approval_changed_remote_and_divergence_are_refused() {
+    let f = Fixture::new(false);
+    f.remote();
+    let view = f.view();
+    let preview = json!({"action":"preview","remote":"origin","destination":"main"});
+    let plan = f.action(preview.clone(), &view).unwrap();
+    f.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        f.root.join("missing.git").to_str().unwrap(),
+    ]);
+    assert!(f.push(&plan, &view).is_err());
+    assert!(f.remote_head("main").is_none());
+    f.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        f.root.join("remote.git").to_str().unwrap(),
+    ]);
+    f.git(&["commit", "--allow-empty", "-m", "new local commit"]);
+    assert!(f.push(&plan, &view).unwrap_err().contains("HEAD"));
+    let view = f.view();
+    let plan = f.action(preview.clone(), &view).unwrap();
+    f.git(&["push", "origin", "feature:main"]);
+    assert!(f.push(&plan, &view).unwrap_err().contains("изменились"));
+    let plan = f.action(preview, &view).unwrap();
+    assert_eq!(plan["behind"], 1);
+    assert_eq!(plan["ahead"], 1);
+    f.git(&["config", "push.default", "matching"]);
+    f.git(&["config", "remote.origin.mirror", "true"]);
+    assert!(f.push(&plan, &view).is_err());
+    assert_eq!(
+        f.remote_head("main").unwrap(),
+        f.git(&["rev-parse", "feature"])
+    );
+}
+#[test]
+fn new_git_actions_respect_active_nested_workers_and_workspace_binding() {
+    let f = Fixture::new(true);
+    f.remote();
+    let initial = f.view();
+    let (_, peer) = f.service.project("peer").unwrap();
+    peer.initialize().unwrap();
+    let bridge_worker::WorkerLockOutcome::Acquired(worker) =
+        bridge_worker::WorkerLock::try_acquire(&peer).unwrap()
+    else {
+        panic!("worker lock")
+    };
+    for operation in [
+        json!({"action":"create","name":"topic","base":"HEAD","switch":false}),
+        json!({"action":"fetch","remote":"origin"}),
+        json!({"action":"preview","remote":"origin","destination":"main"}),
+    ] {
+        assert!(f.action(operation, &initial).unwrap_err().contains("peer"));
+    }
+    drop(worker);
+    let mut wrong = initial;
+    wrong["workspace"] = json!("/wrong/workspace");
+    assert!(
+        f.action(json!({"action":"fetch","remote":"origin"}), &wrong)
+            .unwrap_err()
+            .contains("Workspace")
+    );
+}

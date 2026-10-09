@@ -322,8 +322,9 @@ through Git before trying again. Force push and automatic commits are unavailabl
 New branches receive an upstream after a successful push. Git uses existing
 SSH/credential-helper authentication without interactive prompts. A network
 subprocess has a 30-second deadline and stops its process group on completion or
-timeout; after a timeout, refresh the remote before retrying. All mutations use
-the same project/controller/service/worker fences as switching. Remote URLs and
+timeout; after a timeout, refresh the remote before retrying. Push, fetch and creation without switching work while services, controllers and
+workers are running; they preserve HEAD, index and working files. Actions that
+change the checkout retain the project/controller/service/worker fences. Remote URLs and
 raw Git errors are not sent to the UI. Remotes with multiple push URLs are refused.
 The actual WebView smoke uses a disposable local bare remote to check creation,
 push preview, explicit send, upstream and fetch without contacting GitHub/GitLab.

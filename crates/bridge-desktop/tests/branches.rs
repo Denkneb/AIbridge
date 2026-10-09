@@ -468,7 +468,7 @@ fn stale_push_approval_changed_remote_and_divergence_are_refused() {
     );
 }
 #[test]
-fn new_git_actions_respect_active_nested_workers_and_workspace_binding() {
+fn checkout_changes_respect_active_nested_workers_and_transfers_check_binding() {
     let f = Fixture::new(true);
     f.remote();
     let initial = f.view();
@@ -480,12 +480,25 @@ fn new_git_actions_respect_active_nested_workers_and_workspace_binding() {
         panic!("worker lock")
     };
     for operation in [
-        json!({"action":"create","name":"topic","base":"HEAD","switch":false}),
-        json!({"action":"fetch","remote":"origin"}),
-        json!({"action":"preview","remote":"origin","destination":"main"}),
+        json!({"action":"create","name":"topic","base":"HEAD","switch":true}),
+        json!({"action":"switch","reference":"refs/heads/feature"}),
     ] {
         assert!(f.action(operation, &initial).unwrap_err().contains("peer"));
     }
+    f.action(json!({"action":"fetch","remote":"origin"}), &initial)
+        .unwrap();
+    let plan = f
+        .action(
+            json!({"action":"preview","remote":"origin","destination":"main"}),
+            &initial,
+        )
+        .unwrap();
+    f.push(&plan, &initial).unwrap();
+    f.action(
+        json!({"action":"create","name":"topic","base":"HEAD","switch":false}),
+        &initial,
+    )
+    .unwrap();
     drop(worker);
     let mut wrong = initial;
     wrong["workspace"] = json!("/wrong/workspace");
@@ -494,4 +507,91 @@ fn new_git_actions_respect_active_nested_workers_and_workspace_binding() {
             .unwrap_err()
             .contains("Workspace")
     );
+}
+
+#[test]
+fn live_mcp_allows_reviewed_push_fetch_and_creation_without_checkout_changes() {
+    let f = Fixture::new(false);
+    f.remote();
+    let config = f.root.join("projects.toml");
+    let mut document = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    document["projects"]["primary"]["mcp_url"] = toml_edit::value("http://127.0.0.1:4103/mcp");
+    fs::write(config, document.to_string()).unwrap();
+    let task = f.task();
+    let (project, layout) = f.service.project("primary").unwrap();
+    let pid = std::process::id();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap();
+    let endpoint = project.mcp_endpoint().unwrap();
+    let record = layout.project_dir().join("mcp.process.json");
+    fs::write(&record,json!({"pid":pid,"start":start,"boot_id":fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),"project_id":"primary","task_id":"00000000-0000-0000-0000-000000000000","checkout":project.workspace(),"kind":"mcp","port":endpoint.port(),"endpoint":endpoint.base().url()}).to_string()).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        bridge_runtime::readiness::record_state(&layout, &project, "mcp").unwrap(),
+        "live"
+    );
+    let initial = f.view();
+    assert!(
+        f.switch("refs/heads/feature", &initial)
+            .unwrap_err()
+            .contains("сервис mcp")
+    );
+    assert!(
+        f.action(
+            json!({"action":"create","name":"checkout-topic","base":"HEAD","switch":true}),
+            &initial
+        )
+        .unwrap_err()
+        .contains("сервис mcp")
+    );
+    let bridge_worker::WorkerLockOutcome::Acquired(_worker) =
+        bridge_worker::WorkerLock::try_acquire_task(&layout, task.parse().unwrap()).unwrap()
+    else {
+        panic!("worker lock")
+    };
+    fs::write(f.root.join("main/tracked.txt"), "unsaved work\n").unwrap();
+    let plan = f
+        .action(
+            json!({"action":"preview","remote":"origin","destination":"main"}),
+            &initial,
+        )
+        .unwrap();
+    assert!(f.remote_head("main").is_none());
+    let result = f.push(&plan, &initial).unwrap();
+    assert_eq!(result["head"], initial["head"]);
+    assert_eq!(f.remote_head("main").as_deref(), initial["head"].as_str());
+    f.action(json!({"action":"fetch","remote":"origin"}), &initial)
+        .unwrap();
+    f.action(
+        json!({"action":"create","name":"topic","base":"HEAD","switch":false}),
+        &initial,
+    )
+    .unwrap();
+    assert_eq!(f.view()["current"], initial["current"]);
+    assert_eq!(f.git(&["diff", "--cached"]), "");
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "unsaved work\n"
+    );
+    assert_eq!(
+        bridge_runtime::readiness::record_state(&layout, &project, "mcp").unwrap(),
+        "live"
+    );
+    let plan = f
+        .action(
+            json!({"action":"preview","remote":"origin","destination":"main"}),
+            &initial,
+        )
+        .unwrap();
+    f.git(&["commit", "--allow-empty", "-m", "external head change"]);
+    assert!(f.push(&plan, &initial).unwrap_err().contains("HEAD"));
 }

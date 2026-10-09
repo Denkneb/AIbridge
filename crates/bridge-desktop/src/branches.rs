@@ -97,24 +97,37 @@ impl ProjectService {
         }
         let root = repository_root(p.workspace())
             .map_err(|_| "Workspace проекта не является Git-репозиторием")?;
-        // Switching a root also changes any configured nested workspace in it.
-        let mut affected = vec![project];
-        for other in config.projects().values() {
-            if other.id().as_str() != project && other.workspace().starts_with(&root) {
-                let other_root = repository_root(other.workspace())
-                    .map_err(|_| "Не удалось проверить Git другого проекта в этом workspace")?;
-                if other_root == root {
-                    affected.push(other.id().as_str());
+        // Only checkout-changing actions require idle services/controllers/workers.
+        // Transfers use explicit refs and pinned commits, leaving HEAD/index/files
+        // untouched; Git's own ref/config locks serialize their writes.
+        let _runtime = if matches!(
+            &request.operation,
+            GitAction::Switch { .. } | GitAction::Create { switch: true, .. }
+        ) {
+            Some({
+                // Switching a root also changes any configured nested workspace in it.
+                let mut affected = vec![project];
+                for other in config.projects().values() {
+                    if other.id().as_str() != project && other.workspace().starts_with(&root) {
+                        let other_root = repository_root(other.workspace()).map_err(
+                            |_| "Не удалось проверить Git другого проекта в этом workspace",
+                        )?;
+                        if other_root == root {
+                            affected.push(other.id().as_str());
+                        }
+                    }
                 }
-            }
-        }
-        let _runtime = bridge_runtime::project::projects_config_edit_guard(
-            &config,
-            &config,
-            &affected,
-            &self.state,
-        )
-        .map_err(|e| e.to_string())?;
+                bridge_runtime::project::projects_config_edit_guard(
+                    &config,
+                    &config,
+                    &affected,
+                    &self.state,
+                )
+                .map_err(|e| e.to_string())?
+            })
+        } else {
+            None
+        };
         let state =
             branches(p.workspace()).map_err(|_| "Не удалось прочитать ветки Git проекта")?;
         if state.current.as_deref() != expected_current || state.head.as_deref() != expected_head {

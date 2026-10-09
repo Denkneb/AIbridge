@@ -130,13 +130,13 @@
   if(await invoke('clipboard_read')!=='CLIPBOARD_界е\u0301')throw Error('clipboard_roundtrip');checks.native_clipboard_unicode=true;
   const xterm=document.querySelector('.xterm');if(!xterm)throw Error('xterm_missing');
   const separator=document.querySelector('[role="separator"]'),before=separator.getAttribute('aria-valuenow');separator.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));await new Promise(r=>setTimeout(r,100));if(separator.getAttribute('aria-valuenow')===before)throw Error('split_unchanged');checks.split_keyboard=true;
-  const settings=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
+  const settings=[...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('terminal_recreated_on_rerender');checks.terminal_survives_rerender=true;
   const waitUI=async(check,label)=>{for(let i=0;i<150;i++){if(await check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
   const branchSelect=document.querySelector('[aria-label="Ветка Git проекта"]');
   await waitUI(()=>branchSelect.value==='refs/heads/main'&&branchSelect.querySelector('option[value="refs/heads/feature"]'),'project_branches_missing');
   const chooseBranch=reference=>{branchSelect.value=reference;branchSelect.dispatchEvent(new Event('change',{bubbles:true}));};
-  const switchBranch=async(reference)=>{chooseBranch(reference);await waitUI(()=>[...document.querySelectorAll('.project-branches button')].some(b=>b.textContent==='Переключить'),'branch_switch_missing');[...document.querySelectorAll('.project-branches button')].find(b=>b.textContent==='Переключить').click();await waitUI(async()=>(await invoke('project_branches',{project:'proof'})).current===reference,'branch_switch_failed');await waitUI(()=>!document.querySelector('.project-branches button'),'branch_switch_busy');};
+  const switchBranch=async(reference)=>{chooseBranch(reference);await waitUI(()=>[...document.querySelectorAll('.project-branches button')].some(b=>b.getAttribute('aria-label')==='Переключить'),'branch_switch_missing');[...document.querySelectorAll('.project-branches button')].find(b=>b.getAttribute('aria-label')==='Переключить').click();await waitUI(async()=>(await invoke('project_branches',{project:'proof'})).current===reference,'branch_switch_failed');await waitUI(()=>!document.querySelector('.project-branches button'),'branch_switch_busy');};
   await switchBranch('refs/heads/feature');await switchBranch('refs/heads/main');
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('branch_switch_recreated_pty');
   checks.project_git_branches=true;checks.project_git_switch=true;
@@ -253,7 +253,7 @@
   const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
   terminal.input('\x15');terminal.paste("mkdir -p "+quote(otherWorkspace)+"; printf 'OTHER_WORKSPACE_READY\\n'");terminal.input('\r');
   await waitFor(()=>bufferText(terminal).split('\n').includes('OTHER_WORKSPACE_READY'),'other_workspace_missing');
-  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки').click();
+  [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Настройки').click();
   await waitUI(()=>document.querySelector('.settings'),'other_project_settings');
   [...document.querySelectorAll('.settings button')].find(b=>b.textContent==='Клонировать').click();await new Promise(r=>setTimeout(r,50));
   const editField=(input,value)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
@@ -304,7 +304,7 @@
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(envField,'');envField.dispatchEvent(new Event('input',{bubbles:true}));
   await waitUI(()=>!document.querySelector('.terminal-launch-env button').disabled,'codex_env_clear_not_dirty');document.querySelector('.terminal-launch-env button').click();
   await waitUI(async()=>await invoke('codex_env_read',{project:'proof'})==='','codex_env_not_cleared');checks.codex_environment_persistence=true;
-  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Автоматизация').click();
+  [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Автоматизация').click();
   await waitUI(()=>document.querySelector('[aria-label="JSON-план автоматизации"]'),'automation_tab_missing');
   const plan={version:1,goal:'Smoke approved goal',steps:[{id:'one',task:'Create file',allowed_paths:['file.txt'],test_commands:['true'],acceptance_criteria:['File exists']}],final_test_commands:['true'],delivery:'manual'};
   const planField=document.querySelector('[aria-label="JSON-план автоматизации"]');
@@ -322,7 +322,7 @@
   await waitUI(()=>document.querySelector('.automation [role="alert"]'),'automation_invalid_plan_no_error');
   if(document.querySelector('[aria-label="Согласование плана"]'))throw Error('automation_invalid_plan_approved');
   checks.automation_plan_preview_and_invalidation=true;checks.automation_invalid_plan_refused=true;
-  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Dashboard').click();
+  [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Dashboard').click();
   const options=await invoke('smoke_options');
   if(options.live_tui){
    for(const profile of ['codex','opencode']){
@@ -360,7 +360,7 @@
    }
   }
   selectProject('other');
-  [...document.querySelectorAll('nav button')].find(b=>b.textContent==='Настройки').click();
+  [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Настройки').click();
   await waitUI(()=>document.querySelector('[aria-label="Удаление проекта"]'),'project_remove_button_missing');
   const removeButton=()=>[...document.querySelectorAll('[aria-label="Удаление проекта"] button')].find(b=>b.textContent==='Удалить проект');
   removeButton().click();await waitUI(()=>document.querySelector('[aria-label="Подтверждение удаления проекта"]'),'project_remove_preview_missing');

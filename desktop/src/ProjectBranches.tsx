@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
+import {IconButton} from './IconButton';
 
 interface Branch {reference:string;name:string;remote:boolean}
 interface Branches {workspace:string;current:string|null;head:string|null;branches:Branch[]}
@@ -16,6 +17,6 @@ export function ProjectBranches({project}:{project:string}){
   {!view&&<option value="">{readError?'Git недоступен':'Загрузка…'}</option>}
   {view&&(!view.current||!view.branches.some(b=>b.reference===view.current))&&<option value={view.current??''} disabled>{current}</option>}
   {view&&<><optgroup label="Локальные">{view.branches.filter(b=>!b.remote).map(b=><option key={b.reference} value={b.reference}>{b.name}{b.reference===view.current?' · текущая':''}</option>)}</optgroup><optgroup label="Удалённые">{view.branches.filter(b=>b.remote).map(b=><option key={b.reference} value={b.reference}>{b.name}</option>)}</optgroup></>}
- </select></label>{view&&target&&target!==view.current&&<button disabled={busy} title={`Переключить с ${current} на выбранную ветку`} onClick={()=>void change()}>{busy?'Переключение…':'Переключить'}</button>}
+ </select></label>{view&&target&&target!==view.current&&<IconButton icon="switch" label={busy?'Переключение…':'Переключить'} disabled={busy} aria-busy={busy} title={busy?'Переключение…':`Переключить с ${current} на выбранную ветку`} onClick={()=>void change()}/>}
  {(error||readError)&&<details className="toolbar-menu branch-error" open><summary aria-label="Ошибка Git" title="Ошибка Git">!</summary><div className="toolbar-menu-content"><p role="alert">{error||readError}</p><button disabled={busy} onClick={()=>{setError('');void refresh();}}>Обновить список веток</button></div></details>}</div>;
 }

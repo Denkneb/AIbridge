@@ -75,3 +75,6 @@ header button,header select,.pane-bar button,.pane-bar select,.filters input,.fi
 .automation{padding:16px}.automation>p{line-height:1.6}.automation textarea{width:100%;min-height:260px;font-family:monospace;margin:12px 0;resize:vertical}.automation-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0}.automation-run{border:1px solid var(--line);border-radius:8px;padding:12px;margin:18px 0}.automation-run progress{width:160px;max-width:100%;accent-color:var(--accent)}.automation li{overflow-wrap:anywhere}.automation li[aria-current=step]>details{border-color:var(--accent)}.automation dd{white-space:pre-wrap}.plan-file{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.plan-file input{max-width:240px}.automation .review h4{margin-bottom:8px}
 
 .project-removal{border-top:1px solid var(--line);padding:16px 0;margin-top:16px}.danger{color:#ee665a;border-color:#ee665a}.project-removal .review p{overflow-wrap:anywhere}
+
+header .icon-button{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;flex-shrink:0}
+header .icon-button svg{display:block;pointer-events:none}

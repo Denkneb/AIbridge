@@ -279,7 +279,11 @@ The app header combines project selection, service actions, navigation, and them
 in one row. The workspace path is shown on hover over the project selector.
 Narrow windows can scroll the header horizontally to reach every action.
 
-Settings includes “Ключи провайдеров OpenCode”: enter a variable name and a masked
+Settings combines provider keys and env-file selection in “Ключи провайдеров
+OpenCode”. “Дополнительные настройки: готовый env-файл” is collapsed by default
+and lets you select an existing file, then preview and save its binding. New
+projects can bind a file before saving; entering keys through the UI requires a
+saved project. Enter a variable name and a masked
 value, save or replace it, or delete a saved name. Existing values are never
 returned to the frontend. AIbridge creates a private 0600 per-project env file
 under the config directory’s secrets folder and binds it automatically. Existing

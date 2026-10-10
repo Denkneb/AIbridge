@@ -88,3 +88,6 @@ header .icon-button svg{display:block;pointer-events:none}
 .git-dialog .git-checkbox{flex-direction:row;align-items:center}
 .git-dialog p{overflow-wrap:anywhere;line-height:1.5}
 .git-push-preview{padding:12px;border:1px solid var(--line);border-radius:6px}
+
+.opencode-env-settings{margin-top:16px}
+.opencode-env-settings form>label{display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--muted);margin:12px 0}

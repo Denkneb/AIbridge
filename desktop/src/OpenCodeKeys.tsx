@@ -1,14 +1,15 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useState,type ReactNode} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {FieldHelp} from './FieldHelp';
 
 interface Keys {file:string|null;names:string[]}
-export function OpenCodeKeys({project,onConfigured}:{project:string;onConfigured:(file:string)=>void}){
+export function OpenCodeKeys({project,onConfigured,children}:{project:string;onConfigured:(file:string)=>void;children?:ReactNode}){
  const[view,setView]=useState<Keys|null>(null),[name,setName]=useState(''),[value,setValue]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false);
  useEffect(()=>{let cancelled=false;invoke<Keys>('opencode_keys_read',{project}).then(v=>{if(!cancelled)setView(v);}).catch(e=>{if(!cancelled)setError(String(e));});return()=>{cancelled=true;};},[project]);
  const load=async()=>{setBusy(true);setError('');try{setView(await invoke<Keys>('opencode_keys_read',{project}));}catch(e){setError(String(e));}finally{setBusy(false);}};
  const save=async(key:string,secret:string|null)=>{if(!view)return;setBusy(true);setError('');setSaved(false);try{const next=await invoke<Keys>('opencode_key_save',{project,name:key,value:secret,expectedFile:view.file});setView(next);setValue('');setSaved(true);if(next.file)onConfigured(next.file);}catch(e){setError(String(e));}finally{setBusy(false);}};
  return <section className="opencode-keys"><h3><FieldHelp label="Ключи провайдеров OpenCode" description="Введите имя переменной, указанное в настройках вашего провайдера в opencode.json, и её значение. Ключи сохраняются отдельно для этого проекта в приватном env-файле с правами 0600. Существующие значения не загружаются в интерфейс. При первом сохранении переменные из выбранного env-файла копируются в файл проекта; исходный файл остаётся без изменений. Для сохранения остановите исполнителей, сервисы и контроллеры проекта. Незавершённые задачи сами по себе сохранение не блокируют."/></h3>
+  <p className="muted">Добавьте ключи здесь — приложение автоматически создаст и подключит env-файл проекта. Готовый файл можно выбрать в дополнительных настройках.</p>
   {error&&<p className="error" role="alert">{error}</p>}
   {!view?<button type="button" disabled={busy} onClick={()=>void load()}>Загрузить список ключей</button>:<>
    <div className="provider-key-list">{view.names.map(key=><div key={key}><code>{key}</code><span className="muted">Значение скрыто</span><button type="button" disabled={busy} onClick={()=>{setName(key);setValue('');setSaved(false);}}>Заменить</button><button type="button" disabled={busy} aria-label={`Удалить ключ ${key}`} onClick={()=>void save(key,null)}>Удалить</button></div>)}</div>
@@ -17,5 +18,6 @@ export function OpenCodeKeys({project,onConfigured}:{project:string;onConfigured
    <p className="muted">В opencode.json используйте {'{env:ИМЯ_ПЕРЕМЕННОЙ}'}. Значение вводится без export и обрамляющих кавычек.</p>
   </>}
   {saved&&<p role="status">Ключи сохранены. Запустите сервисы и заново откройте OpenCode.</p>}
+  {children}
  </section>;
 }

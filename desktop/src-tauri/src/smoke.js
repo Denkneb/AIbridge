@@ -204,7 +204,7 @@
   await waitUI(()=>!document.querySelector('[aria-label="Просмотр изменений"]'),'retry_not_saved');
   if(document.querySelector('.settings .error'))throw Error('successful_save_retained_old_error');checks.successful_save_clears_error=true;
 
-  await waitUI(()=>document.querySelector('.opencode-keys form'),'provider_keys_missing');
+  await waitUI(()=>document.querySelector('.opencode-keys [aria-label="Имя переменной провайдера"]'),'provider_keys_missing');
   setInput('Имя переменной провайдера','PROVIDER_API_KEY');setInput('Значение ключа провайдера','fixture-provider-secret');await new Promise(r=>setTimeout(r,50));
   if(document.querySelector('[aria-label="Значение ключа провайдера"]').type!=='password')throw Error('provider_key_not_masked');
   document.querySelector('.opencode-keys form').requestSubmit();

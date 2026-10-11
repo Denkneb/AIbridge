@@ -287,8 +287,15 @@
   await waitUI(()=>document.querySelector('.project-select option[value="other"]'),'other_project_not_saved');
   document.querySelector('nav button').click();
   const selectProject=value=>{const select=document.querySelector('.project-select select');select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));};
+  const cycleProject=async(key,term,project)=>{
+   const data=[];const listener=term.onData(value=>data.push(value));
+   const event=new KeyboardEvent('keydown',{key,code:key,shiftKey:true,bubbles:true,cancelable:true});
+   term.textarea.dispatchEvent(event);
+   await waitFor(()=>document.querySelector('.project-select select').value===project,'project_shortcut_failed');
+   listener.dispose();if(!event.defaultPrevented||data.length)throw Error('project_shortcut_sent_to_pty');
+  };
   proofTerminal.input('\x15');proofTerminal.paste("sleep 1; printf 'PROJECT_BACKGROUND_OUTPUT\\n'");proofTerminal.input('\r');
-  selectProject('other');await waitFor(()=>binding()==='Нет сессии','other_showed_proof_terminal');
+  await cycleProject('ArrowRight',proofTerminal,'other');await waitFor(()=>binding()==='Нет сессии','other_showed_proof_terminal');
   if(document.querySelectorAll('.terminal-tabs [role="tab"]').length||document.querySelector('.terminal-session:not([hidden])'))throw Error('foreign_terminal_visible');
   await waitFor(()=>document.querySelector('.dashboard')?.getAttribute('aria-label')==='Задачи проекта other','other_dashboard_binding');
   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
@@ -298,7 +305,10 @@
   otherTerminal.paste("export TAB_MARKER=other; printf 'OTHER_PROJECT_READY\\n'");otherTerminal.input('\r');
   await waitFor(()=>bufferText(otherTerminal).split('\n').includes('OTHER_PROJECT_READY'),'other_terminal_not_ready');
   const programSelect=document.querySelector('[aria-label="Программа терминала"]');programSelect.value='codex';programSelect.dispatchEvent(new Event('change',{bubbles:true}));
-  selectProject('proof');await waitFor(()=>binding()==='proof · shell','proof_active_tab_lost');
+  await cycleProject('ArrowLeft',otherTerminal,'proof');await waitFor(()=>binding()==='proof · shell','proof_active_tab_lost');
+  await cycleProject('ArrowDown',proofTerminal,'other');await waitFor(()=>binding()==='other · shell','shortcut_other_active_tab');
+  await cycleProject('ArrowUp',otherTerminal,'proof');await waitFor(()=>binding()==='proof · shell','shortcut_proof_active_tab');
+  checks.project_shift_arrow_shortcuts=true;
   if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==proofTerminal||document.querySelector('[role="tab"][aria-selected="true"]').id!==proofTab.id)throw Error('project_switch_recreated_terminal');
   if(document.querySelector('[aria-label="Программа терминала"]').value!=='shell'||document.querySelectorAll('.terminal-tabs [role="tab"]').length!==1)throw Error('project_terminal_controls_leaked');
   await waitFor(()=>bufferText(proofTerminal).split('\n').includes('PROJECT_BACKGROUND_OUTPUT'),'hidden_project_output_lost');

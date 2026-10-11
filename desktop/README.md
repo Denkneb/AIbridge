@@ -123,7 +123,10 @@ that project is closed.
 The project dropdown shows a service status beside every project: active, partially
 started, stopped, checking or unavailable. Read-only diagnostics refresh all
 projects every five seconds after each sweep, with at most four simultaneous
-queries, and immediately after lifecycle actions. Projects are sorted with active
+queries, and immediately after lifecycle actions. Shift+Left/Right (also
+Shift+Up/Down) cycles projects in the displayed order, wrapping at either end.
+It works while the terminal has focus without sending the shortcut to its process.
+Text fields retain Shift+Arrow selection; open dialogs suspend project shortcuts. Projects are sorted with active
 projects first, followed by partially started, stopped, checking and unavailable
 projects; names are sorted alphabetically within each group. Refreshing statuses
 reorders the list without changing the selected project. A project whose MCP is ready

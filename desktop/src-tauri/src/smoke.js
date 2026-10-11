@@ -379,6 +379,8 @@ for project in ['proof','other']:
  c=sqlite3.connect(root/project/'state.sqlite');c.execute("DELETE FROM tasks WHERE task LIKE 'OVERVIEW_SMOKE_%'");c.commit();c.close()`, 'OVERVIEW_CLEANED');
   [...document.querySelectorAll('.overview button')].find(b=>b.textContent==='Обновить').click();
   await waitUI(()=>document.querySelector('.overview-summary')?.textContent.includes('2 из 2')&&document.querySelector('.overview-summary')?.textContent.includes('Активных задач: 0'),'overview_recovery_refresh');
+  await waitUI(()=>document.querySelectorAll('.overview-project').length===0&&document.querySelector('.overview')?.textContent.includes('Нет активных проектов'),'overview_inactive_projects_not_hidden');
+  checks.overview_hides_inactive_projects=true;
   document.querySelector('nav button').click();await waitUI(()=>document.querySelector('.dashboard'),'overview_return_dashboard');
   checks.overview_multi_project_attention=true;checks.overview_opens_task_beyond_first_page=true;checks.overview_cross_project_navigation=true;checks.overview_partial_failure_and_recovery=true;checks.overview_preserves_terminal=true;
 

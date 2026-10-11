@@ -124,8 +124,11 @@ and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
-**Обзор проектов** shows all registered projects together, independently of the
-selected terminal project. Each card lists up to twelve recent unfinished tasks
+**Обзор проектов** shows active projects together, independently of the selected
+terminal project. Stopped projects with no unfinished tasks or pending automatic
+run are hidden. Running services, unfinished work and projects with unavailable
+state or diagnostics remain visible; completed/stopped runs alone do not keep a
+project in the overview. Each card lists up to twelve recent unfinished tasks
 and the latest automatic run with step progress, plus shared service diagnostics
 (the same snapshot as the project selector), with links to project tasks and automation. The
 **Требует внимания** section includes questions, unknown delivery outcomes,

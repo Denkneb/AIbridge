@@ -49,6 +49,7 @@
     "project_switch_preserves_pty": true,
     "project_dashboard_scope": true,
     "overview_off_page_detail_refreshes": true,
+    "overview_hides_inactive_projects": true,
     "overview_multi_project_attention": true,
     "overview_opens_task_beyond_first_page": true,
     "overview_cross_project_navigation": true,
@@ -67,5 +68,6 @@
   "live_tui": false,
   "exit_code": 0,
   "date": "2026-10-11",
-  "rust_toolchain": "1.98.0 (installed toolchain; pinned 1.98.1 unavailable locally)"
+  "rust_toolchain": "1.98.0 (installed toolchain; pinned 1.98.1 unavailable locally)",
+  "software_rendering": true
 }

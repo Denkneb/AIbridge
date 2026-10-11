@@ -198,6 +198,35 @@ async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, St
         .map_err(|_| "dashboard query failed".to_owned())?
 }
 #[tauri::command]
+async fn project_diff(
+    state: State<'_, AppState>,
+    project: String,
+    scope: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.project_diff(&project, &scope).map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить diff проекта".to_owned())?
+}
+#[tauri::command]
+async fn project_diff_file(
+    state: State<'_, AppState>,
+    project: String,
+    scope: String,
+    path: String,
+    expected_revision: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.project_diff_file(&project, &scope, &path, &expected_revision)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить файл diff".to_owned())?
+}
+#[tauri::command]
 async fn task_diff(
     state: State<'_, AppState>,
     project: String,
@@ -762,6 +791,8 @@ fn main() {
             dashboard,
             project_overview,
             task_detail,
+            project_diff,
+            project_diff_file,
             task_diff,
             task_diff_file,
             task_rounds,

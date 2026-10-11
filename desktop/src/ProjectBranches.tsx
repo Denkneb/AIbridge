@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {IconButton} from './IconButton';
+import {ProjectDiff} from './ProjectDiff';
 import {ProjectGitMenu} from './ProjectGitMenu';
 
 interface Branch {reference:string;name:string;remote:boolean}
@@ -20,5 +21,6 @@ export function ProjectBranches({project}:{project:string}){
   {view&&<><optgroup label="Локальные">{view.branches.filter(b=>!b.remote).map(b=><option key={b.reference} value={b.reference}>{b.name}{b.reference===view.current?' · текущая':''}</option>)}</optgroup><optgroup label="Удалённые">{view.branches.filter(b=>b.remote).map(b=><option key={b.reference} value={b.reference}>{b.name}</option>)}</optgroup></>}
  </select></label>{view&&target&&target!==view.current&&<IconButton icon="switch" label={busy?'Переключение…':'Переключить'} disabled={busy} aria-busy={busy} title={busy?'Переключение…':`Переключить с ${current} на выбранную ветку`} onClick={()=>void change()}/>}
  {view&&<ProjectGitMenu project={project} view={view} busy={busy} onResult={apply} onBusy={value=>{switching.current=value;generation.current++;setBusy(value);}}/>}
+ <ProjectDiff project={project}/>
  {(error||readError)&&<details className="toolbar-menu branch-error" open><summary aria-label="Ошибка Git" title="Ошибка Git">!</summary><div className="toolbar-menu-content"><p role="alert">{error||readError}</p><button disabled={busy} onClick={()=>{setError('');void refresh();}}>Обновить список веток</button></div></details>}</div>;
 }

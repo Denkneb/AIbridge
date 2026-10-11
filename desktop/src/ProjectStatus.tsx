@@ -4,14 +4,13 @@ import type {Project} from './types';
 
 interface Health {ready:boolean;servers:Record<string,{ready:boolean;managed:boolean;process_record:string;idle?:boolean;message?:string}>}
 type Status='checking'|'running'|'idle'|'partial'|'stopped'|'unknown';
-interface State {value:Status;message?:string}
+export interface ProjectHealthState {value:Status;message?:string}
 const statusOrder:Record<Status,number>={running:0,idle:0,partial:1,stopped:2,checking:3,unknown:4};
 const labels:Record<Status,string>={checking:'Проверка состояния',running:'Запущен: OpenCode и MCP доступны',idle:'Запущен: основной OpenCode запускается по требованию; MCP доступен',partial:'Частично запущен: часть сервисов недоступна',stopped:'Не запущен',unknown:'Состояние недоступно'};
 const listLabels:Record<Status,string>={checking:'… проверка',running:'● активен',idle:'● активен',partial:'◐ частично запущен',stopped:'○ остановлен',unknown:'? статус недоступен'};
 
-export function ProjectSelector({projects,selected,revision,onSelect}:{projects:Project[];selected:string;revision:number;onSelect:(project:string)=>void}){
- const [states,setStates]=useState<Record<string,State>>({});
- const current=useRef(selected);current.current=selected;
+export function useProjectHealth(projects:Project[],revision:number){
+ const [states,setStates]=useState<Record<string,ProjectHealthState>>({});
  const projectIds=projects.map(p=>p.id).join(',');
  useEffect(()=>{
   const ids=projectIds?projectIds.split(','):[];
@@ -19,7 +18,7 @@ export function ProjectSelector({projects,selected,revision,onSelect}:{projects:
   let stopped=false,timer:ReturnType<typeof setTimeout>;
   setStates(previous=>Object.fromEntries(ids.map(id=>[id,previous[id]??{value:'checking'}])));
   const check=async(project:string)=>{
-   let next:State;
+   let next:ProjectHealthState;
    try{
     const health=await invoke<Health>('lifecycle',{project,action:'doctor'});
     const servers=Object.values(health.servers);
@@ -35,6 +34,16 @@ export function ProjectSelector({projects,selected,revision,onSelect}:{projects:
   };
   void refresh();return()=>{stopped=true;clearTimeout(timer);};
  },[projectIds,revision]);
+ return states;
+}
+
+export function projectHealthLabel(state:ProjectHealthState|undefined){
+ const current=state??{value:'checking'};
+ return `${labels[current.value]}${current.message?' — '+current.message:''}`;
+}
+
+export function ProjectSelector({projects,selected,states,onSelect}:{projects:Project[];selected:string;states:Record<string,ProjectHealthState>;onSelect:(project:string)=>void}){
+ const current=useRef(selected);current.current=selected;
  const sortedProjects=[...projects].sort((a,b)=>statusOrder[states[a.id]?.value??'checking']-statusOrder[states[b.id]?.value??'checking']||a.id.localeCompare(b.id,'ru',{numeric:true}));
  useEffect(()=>{
   const switchProject=(event:KeyboardEvent)=>{

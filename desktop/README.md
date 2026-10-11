@@ -110,6 +110,26 @@ and reopen controllers after changing their configuration.
 
 ## Terminal and dashboard
 
+**Обзор проектов** shows all registered projects together, independently of the
+selected terminal project. Each card lists up to twelve recent unfinished tasks
+and the latest automatic run with step progress, plus shared service diagnostics
+(the same snapshot as the project selector), with links to project tasks and automation. The
+**Требует внимания** section includes questions, unknown delivery outcomes,
+failures and results awaiting review, plus blocked/failed runs and runs ready for
+delivery. It reads separate pages (up to twelve per attention status), so older
+blockers cannot disappear behind newer running tasks. Exact counts and links to
+the full project dashboard accompany truncated lists.
+
+Refresh is read-only and never starts services or recovers tasks. At most four
+projects refresh concurrently, every five seconds after a sweep; revision stamps
+skip unchanged summaries, with a full refresh every thirty seconds. Unavailable
+projects are reported separately and excluded from current aggregate counts;
+their last successful card remains visible with an error and timestamp. Task
+links open the correct project's detail even outside its first list page. Session
+links use the existing task attachment lifecycle. Switching views preserves PTYs.
+Remote projects reuse the existing dashboard RPC and route through their local
+registration ID; no new remote protocol operation or database migration is needed.
+
 Closing the desktop waits for terminal and project cleanup before exiting.
 Managed MCP/OpenCode servers, task servers, workers and automation supervisors
 are stopped for every configured project, including SSH executors. Automation

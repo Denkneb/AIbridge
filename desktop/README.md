@@ -33,6 +33,20 @@ For development, start `npm run dev` in `desktop` and run the Tauri target with
 `desktop/dist` and prohibit remote content through CSP. The window has no
 arbitrary shell, filesystem or SQL IPC. Native directory/file pickers use the only enabled dialog permission.
 
+## Linux graphics startup
+
+If WebKit aborts with `Could not create GBM EGL display: EGL_NOT_INITIALIZED`,
+start with `--software-rendering` alongside `--config` and `--state-root`.
+The flag sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`,
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` and `LIBGL_ALWAYS_SOFTWARE=1` before WebKit
+starts. It disables accelerated compositing for this process without changing
+system graphics settings or disabling the WebKit sandbox. Without the flag,
+the application retains the renderer chosen by WebKit and your environment.
+
+For a smaller workaround, try prefixing the normal command with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`; this avoids the DMA-BUF renderer while
+retaining compositing when the remaining graphics backend works.
+
 ## Remove a project
 
 Settings → **Удалить проект** previews removal of the selected saved registration.

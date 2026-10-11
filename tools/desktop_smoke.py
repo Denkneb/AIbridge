@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--weston', type=Path, help='headless Weston executable for Wayland')
     parser.add_argument('--live-tui', action='store_true', help='launch installed Codex/OpenCode in the actual pane with isolated homes')
     parser.add_argument('--ibus', action='store_true', help='use a private IBus input method for native keyboard checks')
+    parser.add_argument('--software-rendering', action='store_true', help='exercise the Linux software rendering startup flag')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='aibridge-desktop-smoke-') as tmp:
         root = Path(tmp)
@@ -131,7 +132,10 @@ sys.exit(1)
                         if input_method.poll() is not None or time.monotonic() > deadline:
                             raise RuntimeError('private_ibus_unavailable')
                         time.sleep(.05)
-                desktop = subprocess.Popen([str(args.desktop.resolve()), '--config', str(config), '--state-root', str(root / 'state')], env=env, stdout=log, stderr=log)
+                desktop_args = [str(args.desktop.resolve()), '--config', str(config), '--state-root', str(root / 'state')]
+                if args.software_rendering:
+                    desktop_args.append('--software-rendering')
+                desktop = subprocess.Popen(desktop_args, env=env, stdout=log, stderr=log)
                 deadline = time.monotonic() + (110 if args.live_tui else 50)
                 while not (root / 'result.json').exists():
                     if desktop.poll() is not None or time.monotonic() > deadline:

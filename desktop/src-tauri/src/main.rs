@@ -672,7 +672,12 @@ async fn smoke_complete(app: tauri::AppHandle, passed: bool, checks: Value) -> R
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let (mut config, mut state) = (None, None);
+    let mut software_rendering = false;
     while let Some(flag) = args.next() {
+        if flag == "--software-rendering" {
+            software_rendering = true;
+            continue;
+        }
         let value = args.next().expect("option value required");
         if flag == "--config" {
             config = Some(PathBuf::from(value));
@@ -685,6 +690,21 @@ fn main() {
     }
     let config = config.expect("--config required");
     let state = state.expect("--state-root required");
+    #[cfg(target_os = "linux")]
+    if software_rendering {
+        // SAFETY: startup is still single-threaded, before GTK/WebKit/Tauri or
+        // project services can start threads or read the process environment.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if software_rendering {
+        eprintln!("--software-rendering is supported only on Linux");
+        std::process::exit(2);
+    }
     let service = ProjectService::new(config, state).expect("desktop config invalid");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

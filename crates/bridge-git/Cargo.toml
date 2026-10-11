@@ -9,6 +9,7 @@ bridge-domain.workspace = true
 bridge-path-policy = { workspace = true }
 serde_json.workspace = true
 process-wrap.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

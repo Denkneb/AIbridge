@@ -51,6 +51,7 @@ pub mod branches;
 pub mod checkout;
 pub mod checkpoint;
 mod comparison;
+pub mod diff;
 mod multi_repo;
 mod runner;
 mod sha256;

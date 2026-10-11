@@ -133,6 +133,9 @@
   const settings=[...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Настройки');settings.click();await new Promise(r=>setTimeout(r,100));if(!document.querySelector('input[type="password"]'))throw Error('settings_missing');checks.settings_rendered=true;
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('terminal_recreated_on_rerender');checks.terminal_survives_rerender=true;
   const waitUI=async(check,label)=>{for(let i=0;i<150;i++){if(await check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
+  const bufferText=t=>Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i).translateToString(true)).join('\n');
+  const waitFor=async(check,label)=>{for(let i=0;i<150;i++){if(check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
+  const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
   const branchSelect=document.querySelector('[aria-label="Ветка Git проекта"]');
   await waitUI(()=>branchSelect.value==='refs/heads/main'&&branchSelect.querySelector('option[value="refs/heads/feature"]'),'project_branches_missing');
   const chooseBranch=reference=>{branchSelect.value=reference;branchSelect.dispatchEvent(new Event('change',{bubbles:true}));};
@@ -163,6 +166,36 @@
   gitButton('Закрыть').click();await waitUI(()=>!document.querySelector('.git-dialog').open,'git_menu_close');await switchBranch('refs/heads/main');
   if(document.querySelector('.xterm')!==xterm||binding()!=='proof · shell')throw Error('git_actions_recreated_pty');
   checks.project_git_create=true;checks.project_git_preview_push=true;checks.project_git_fetch=true;
+  const projectDiffShell=async(script,marker)=>{
+   terminal.input('\x15');terminal.paste('python3 -c '+quote(script+'\nprint('+JSON.stringify(marker)+')'));terminal.input('\r');
+   await waitFor(()=>bufferText(terminal).split('\n').includes(marker),'project_diff_fixture_'+marker);
+  };
+  await projectDiffShell(`import pathlib,subprocess
+repo=pathlib.Path(${JSON.stringify(projects[0].workspace)});p=repo/'.project-diff.txt'
+p.write_text('исходное\\n')
+def git(*args):subprocess.check_call(['git','-C',str(repo),*args])
+git('add','--',p.name);git('-c','core.hooksPath=/dev/null','commit','-m','project diff fixture','--only','--',p.name)
+p.write_text('индекс\\n');git('add','--',p.name);p.write_text('рабочее\\n')
+(repo/'.project-diff-new.txt').write_text('new project file\\n')`,'PROJECT_DIFF_SEEDED');
+  [...document.querySelectorAll('.project-branches button')].find(b=>b.textContent==='Изменения').click();
+  const projectDialog=()=>document.querySelector('.project-diff-dialog');
+  await waitUI(()=>projectDialog()?.open&&projectDialog().querySelector('.diff-files'),'project_diff_dialog_missing');
+  const selectProjectDiffFile=()=>[...projectDialog().querySelectorAll('.diff-files button')].find(b=>b.textContent.includes('.project-diff.txt')).click();
+  selectProjectDiffFile();
+  await waitUI(()=>projectDialog().querySelector('.diff-line-added code')?.textContent==='рабочее'&&projectDialog().querySelector('.diff-line-deleted code')?.textContent==='исходное','project_diff_all');
+  const changeDiffScope=scope=>{const select=projectDialog().querySelector('[aria-label="Режим diff проекта"]');select.value=scope;select.dispatchEvent(new Event('change',{bubbles:true}));};
+  changeDiffScope('staged');await waitUI(()=>projectDialog().querySelector('.diff-line-added code')?.textContent==='индекс','project_diff_staged');
+  if([...projectDialog().querySelectorAll('.diff-files button')].some(b=>b.textContent.includes('.project-diff-new.txt')))throw Error('project_diff_untracked_in_staged');
+  changeDiffScope('unstaged');await waitUI(()=>projectDialog().querySelector('.diff-line-deleted code')?.textContent==='индекс'&&projectDialog().querySelector('.diff-line-added code')?.textContent==='рабочее','project_diff_unstaged');
+  if((await invoke('dashboard',{query:{project:'proof',active_only:false,linked:false,offset:0,limit:100}})).tasks.length)throw Error('project_diff_requires_tasks');
+  if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==terminal)throw Error('project_diff_recreated_pty');
+  projectDialog().querySelector('.git-dialog-header button').click();await waitUI(()=>!projectDialog().open,'project_diff_close');
+  await projectDiffShell(`import pathlib,subprocess
+repo=pathlib.Path(${JSON.stringify(projects[0].workspace)})
+subprocess.check_call(['git','-C',str(repo),'restore','--staged','--worktree','--','.project-diff.txt'])
+(repo/'.project-diff-new.txt').unlink()`,'PROJECT_DIFF_CLEANED');
+  checks.project_diff_without_tasks=true;checks.project_diff_head_index_worktree=true;checks.project_diff_preserves_terminal=true;
+
 
   await waitUI(()=>document.querySelector('.project-indicator')&&!document.querySelector('.project-indicator-checking'),'project_status_not_loaded');
   if(document.querySelector('.project-indicator-running')||!document.querySelector('.project-indicator').getAttribute('aria-label').includes('proof'))throw Error('project_status_binding');checks.project_status_indicator=true;
@@ -233,8 +266,6 @@
   checks.opencode_project_editor=true;
 
   document.querySelector('nav button').click();await new Promise(r=>setTimeout(r,100));
-  const bufferText=t=>Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i).translateToString(true)).join('\n');
-  const waitFor=async(check,label)=>{for(let i=0;i<150;i++){if(check())return;await new Promise(r=>setTimeout(r,30));}throw Error(label);};
   terminal.input('\x15');terminal.paste("export TAB_MARKER=first; printf 'FIRST_TAB_READY\\n'");terminal.input('\r');
   await waitFor(()=>bufferText(terminal).split('\n').includes('FIRST_TAB_READY'),'first_tab_ready');
   const firstTab=document.querySelector('[role="tab"][aria-selected="true"]');
@@ -273,7 +304,6 @@
 
   const proofTerminal=terminal,proofTab=document.querySelector('[role="tab"][aria-selected="true"]');
   const otherWorkspace=projects[0].workspace.slice(0,projects[0].workspace.lastIndexOf('/'))+'/other';
-  const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
   terminal.input('\x15');terminal.paste("mkdir -p "+quote(otherWorkspace)+"; printf 'OTHER_WORKSPACE_READY\\n'");terminal.input('\r');
   await waitFor(()=>bufferText(terminal).split('\n').includes('OTHER_WORKSPACE_READY'),'other_workspace_missing');
   [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Настройки').click();

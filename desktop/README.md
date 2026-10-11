@@ -122,6 +122,32 @@ not replace OpenCode's complete schema/provider validation. In worktree mode,
 project configuration must also be present in the task checkout. Restart services
 and reopen controllers after changing their configuration.
 
+## Project diff without tasks
+
+Click **Изменения** beside the Git branch selector. This opens the project's
+uncommitted changes without requiring a task, running services or initialized
+bridge state. It includes changes made by standalone Codex and manual edits;
+Git does not identify which program made an edit.
+
+**Все** compares HEAD with working files, **Staged** compares HEAD with the
+index, and **Unstaged** compares the index with working files. Untracked,
+non-ignored files appear in **Все** and **Unstaged**. The selected file is kept
+when switching modes if it still belongs to that comparison. A staged edit
+undone in the working file can disappear from **Все** while remaining visible
+in the separate staged and unstaged modes. Repositories without a first commit
+are supported. Renames appear as a deletion and an addition.
+
+The window reuses filename search, numbered unified lines, context toggling and
+the task viewer's size/content limits. **Обновить diff** reloads the comparison;
+changed Git state invalidates pending file reads. Close/reopen also refreshes.
+Viewing does not stage, edit or commit anything, and the existing terminal stays
+mounted. Already committed changes require a separate commit/branch comparison
+and do not appear here. Remote projects use `project_diff` and
+`project_diff_file`; update the executor's `agent-bridge` too.
+The [real WebView proof](../docs/fixtures/runtime/desktop-project-diff-smoke-2026-10-12.json)
+checks all three comparisons on a partially staged Unicode file without tasks,
+untracked-file separation, and terminal preservation.
+
 ## Task diff
 
 Open a task from **Задачи** or **Обзор проектов** to view **Изменения**.

@@ -6,6 +6,9 @@ export interface RoundPage {rounds:Round[];next_before:number|null}
 export interface Task extends TaskSummary,RoundPage {recoverable:boolean;revision_count:number;execution_mode:string;delivery_mode:string;delivery_state:string|null;delivery_refusal:{code:string;created_at:string}|null;workflow_id:string|null;depends_on:unknown;usage:unknown;budget:unknown;base_head:string|null;allowed_paths:string[];test_commands:string[];repositories:unknown}
 export interface Snapshot {tasks:TaskSummary[];total:number;active_count:number;writer_count:number;waiting_count:number;reservations:Record<string,unknown>[];runs:Record<string,unknown>[];errors:Record<string,unknown>[];offset:number;limit:number}
 export interface ProjectOverview {project_id:string;active_count:number;attention_count:number;tasks:TaskSummary[];attention:TaskSummary[];runs:Record<string,unknown>[]}
+export interface DiffFile {path:string;change:'added'|'modified'|'deleted'}
+export interface TaskDiffList {files:DiffFile[];total:number;revision:string;repositories:{id:number;label:string}[];mode:string}
+export interface TaskFileDiff {path:string;kind:string;patch:string;truncated:boolean;message?:string;before_mode?:string|null;after_mode?:string|null}
 export interface Review {review_id:string;before:Project|null;after:Project;credentials_changed:boolean}
 export type TerminalEvent={type:'data';sequence:number;bytes:number[]}|{type:'exit';code:number}|{type:'error';message:string};
 export const statuses:Record<string,string>={implementing:'В работе',revising:'Доработка',awaiting_review:'На проверке',needs_user:'Нужен ответ',waiting_dependencies:'Ждёт зависимости',accepted:'Принята',closed:'Закрыта',failed:'Ошибка',delivery_unknown:'Доставка неизвестна'};

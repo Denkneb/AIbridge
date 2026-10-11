@@ -184,9 +184,11 @@ async fn task_recover(
 #[tauri::command]
 async fn project_overview(state: State<'_, AppState>, project: String) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.project_overview(&project).map_err(str::to_owned))
-        .await
-        .map_err(|_| "project overview failed".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        p.project_overview(&project).map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "project overview failed".to_owned())?
 }
 #[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
@@ -194,6 +196,38 @@ async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, St
     tauri::async_runtime::spawn_blocking(move || p.dashboard(query).map_err(str::to_owned))
         .await
         .map_err(|_| "dashboard query failed".to_owned())?
+}
+#[tauri::command]
+async fn task_diff(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+    repository: u32,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.task_diff(&project, &task, repository)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить diff".to_owned())?
+}
+#[tauri::command]
+async fn task_diff_file(
+    state: State<'_, AppState>,
+    project: String,
+    task: String,
+    repository: u32,
+    path: String,
+    expected_revision: String,
+) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.task_diff_file(&project, &task, repository, &path, &expected_revision)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить файл diff".to_owned())?
 }
 #[tauri::command]
 async fn task_detail(
@@ -728,6 +762,8 @@ fn main() {
             dashboard,
             project_overview,
             task_detail,
+            task_diff,
+            task_diff_file,
             task_rounds,
             dashboard_revision,
             project_preview,

@@ -280,6 +280,7 @@ dependencies = [
  "bridge-path-policy",
  "process-wrap",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

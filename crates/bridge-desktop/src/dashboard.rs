@@ -272,8 +272,16 @@ impl ProjectService {
         let _activity = self.activity_guard()?;
         let (project, layout) = self.project(project)?;
         if let Some(settings) = project.remote_execution() {
-            return bridge_automation::remote::rpc(settings, &json!({"op":"detail","task":task}))
-                .map_err(|_| "remote task unavailable");
+            let mut detail =
+                bridge_automation::remote::rpc(settings, &json!({"op":"detail","task":task}))
+                    .map_err(|_| "remote task unavailable")?;
+            if detail["project_id"].as_str() != Some(settings.project.as_str())
+                || detail["task_id"].as_str() != Some(task)
+            {
+                return Err("remote task identity invalid");
+            }
+            detail["project_id"] = json!(project.id().as_str());
+            return Ok(detail);
         }
         let storage = layout.open_readonly().map_err(|_| "state unavailable")?;
         let tx = storage

@@ -55,6 +55,103 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn overview_keeps_old_blockers_visible_and_is_scoped_and_readonly() {
+    let f = Fixture::new();
+    let blocker = f.task("primary", "old question", "2025-01-01");
+    let (_, layout) = f.service.project("primary").unwrap();
+    let storage = layout.open().unwrap();
+    let mut running = Vec::new();
+    for _ in 0..14 {
+        let task = f.task("primary", "recent work", "2026-01-01");
+        running.push(task);
+    }
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET status='needs_user' WHERE task_id=?1",
+            [&blocker],
+        )
+        .unwrap();
+    for task in running {
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status='implementing' WHERE task_id=?1",
+                [&task],
+            )
+            .unwrap();
+    }
+    f.task("second", "other project", "2027-01-01");
+    let before = f.service.dashboard_revision("primary", false).unwrap();
+    let overview = f.service.project_overview("primary").unwrap();
+    assert_eq!(overview["active_count"], 15);
+    assert_eq!(overview["tasks"].as_array().unwrap().len(), 12);
+    assert_eq!(overview["attention_count"], 1);
+    assert_eq!(overview["attention"][0]["task_id"], blocker);
+    assert_eq!(overview["attention"][0]["project_id"], "primary");
+    assert!(!overview.to_string().contains("other project"));
+    assert!(overview["tasks"][0].get("rounds").is_none());
+    assert_eq!(
+        f.service.dashboard_revision("primary", false).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn overview_distinguishes_empty_uninitialized_and_unavailable_state() {
+    let f = Fixture::new();
+    assert_eq!(
+        f.service.project_overview("primary").unwrap()["active_count"],
+        0
+    );
+    assert!(!f.service.state.exists());
+    let (_, layout) = f.service.project("primary").unwrap();
+    fs::create_dir_all(layout.project_dir()).unwrap();
+    fs::write(layout.database(), b"foreign state").unwrap();
+    assert!(f.service.project_overview("primary").is_err());
+    assert_eq!(
+        f.service.project_overview("second").unwrap()["attention_count"],
+        0
+    );
+    assert!(f.service.project_overview("missing").is_err());
+    assert_eq!(fs::read(layout.database()).unwrap(), b"foreign state");
+}
+
+#[test]
+fn overview_attention_counts_all_statuses_and_redacts_titles() {
+    let f = Fixture::new();
+    let mut updates = Vec::new();
+    for status in [
+        "needs_user",
+        "awaiting_review",
+        "failed",
+        "delivery_unknown",
+        "waiting_dependencies",
+        "closed",
+    ] {
+        let task = f.task("primary", "/private/title", "2026-01-01");
+        updates.push((status, task));
+    }
+    let (_, layout) = f.service.project("primary").unwrap();
+    for (status, task) in updates {
+        layout
+            .open()
+            .unwrap()
+            .connection()
+            .execute(
+                "UPDATE tasks SET status=?1 WHERE task_id=?2",
+                rusqlite::params![status, task],
+            )
+            .unwrap();
+    }
+    let overview = f.service.project_overview("primary").unwrap();
+    assert_eq!(overview["attention_count"], 4);
+    assert_eq!(overview["active_count"], 5);
+    assert!(!overview.to_string().contains("/private/title"));
+    assert_eq!(overview["attention"][0]["status"], "needs_user");
+}
+
+#[test]
 fn endpoint_suggestions_skip_configured_ports_and_other_listeners_without_writing() {
     use std::net::TcpListener;
     let f = Fixture::new();

@@ -182,6 +182,13 @@ async fn task_recover(
         .map_err(|_| "Проверка продолжения сессии завершилась ошибкой".to_owned())?
 }
 #[tauri::command]
+async fn project_overview(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || p.project_overview(&project).map_err(str::to_owned))
+        .await
+        .map_err(|_| "project overview failed".to_owned())?
+}
+#[tauri::command]
 async fn dashboard(state: State<'_, AppState>, query: Query) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || p.dashboard(query).map_err(str::to_owned))
@@ -699,6 +706,7 @@ fn main() {
             task_set_status,
             task_recover,
             dashboard,
+            project_overview,
             task_detail,
             task_rounds,
             dashboard_revision,

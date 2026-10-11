@@ -315,6 +315,17 @@
   await waitFor(()=>bufferText(proofTerminal).split('\n').includes('PROJECT_BACKGROUND_OUTPUT'),'hidden_project_output_lost');
   proofTerminal.paste("printf 'PROJECT_SURVIVED:%s\\n' $TAB_MARKER");proofTerminal.input('\r');
   await waitFor(()=>bufferText(proofTerminal).split('\n').includes('PROJECT_SURVIVED:first'),'switching_project_killed_pty');
+  const grouping=document.querySelector('.session-group-toolbar input');grouping.click();
+  await waitUI(()=>document.querySelectorAll('.session-project-group').length===2,'session_groups_missing');
+  if(localStorage.getItem('aibridge-session-groups')!=='true')throw Error('session_group_preference_not_saved');
+  document.querySelector('.session-project-group[data-project="other"] [role="tab"]').click();
+  await waitUI(()=>binding()==='other · shell'&&document.querySelector('.project-select select').value==='other','group_session_project_route');
+  if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==otherTerminal)throw Error('group_other_terminal_recreated');
+  document.querySelector('.session-project-group[data-project="proof"] .session-project-title').click();
+  await waitUI(()=>binding()==='proof · shell','group_project_title_route');
+  if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==proofTerminal)throw Error('group_proof_terminal_recreated');
+  grouping.click();await waitUI(()=>document.querySelectorAll('.terminal-tabs [role="tab"]').length===1,'session_group_filter_restore');
+  checks.sessions_grouped_by_project=true;checks.session_group_navigation_preserves_pty=true;
   closeActive();
   selectProject('other');await waitFor(()=>binding()==='other · shell','closing_proof_killed_other');
   if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==otherTerminal||document.querySelector('[aria-label="Программа терминала"]').value!=='codex')throw Error('other_project_state_lost');

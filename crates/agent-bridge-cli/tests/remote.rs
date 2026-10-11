@@ -741,5 +741,17 @@ fn remote_diff_rpc_reads_executor_files_and_rejects_invalid_requests() {
         assert!(response["error"].is_string(), "{response}");
         assert!(response.get("patch").is_none());
     }
+    let project_list = rpc(json!({"op":"project_diff","scope":"all"}));
+    assert_eq!(project_list["total"], 1, "{project_list}");
+    let project_file = rpc(
+        json!({"op":"project_diff_file","scope":"all","path":"check.py","revision":project_list["revision"]}),
+    );
+    assert!(
+        project_file["patch"]
+            .as_str()
+            .unwrap()
+            .contains("+print('executor change')")
+    );
+    assert!(rpc(json!({"op":"project_diff","scope":"invalid"}))["error"].is_string());
     assert!(!f.local.database().exists());
 }

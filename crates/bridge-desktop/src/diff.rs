@@ -249,6 +249,112 @@ impl ProjectService {
             mode,
         })
     }
+    pub fn project_diff(&self, project: &str, scope: &str) -> Result<Value> {
+        let _activity = self.activity_guard()?;
+        check_scope(scope)?;
+        let (entry, _) = self.project(project)?;
+        if let Some(remote) = entry.remote_execution() {
+            return bridge_automation::remote::rpc(
+                remote,
+                &json!({"op":"project_diff","scope":scope}),
+            )
+            .map_err(|_| "Diff второго ПК недоступен; обновите agent-bridge и проверьте SSH");
+        }
+        let root = entry.workspace();
+        let current = bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?;
+        let changes =
+            bridge_git::diff::project_changes(root, scope, current.head().map(|h| h.as_str()))
+                .map_err(|_| "Не удалось прочитать изменения Git")?;
+        let mut files = vec![];
+        for (path, change) in changes {
+            safe_path(&path)?;
+            files.push(json!({"path":path,"change":change}));
+        }
+        if revision(&bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?)
+            != revision(&current)
+        {
+            return Err("Файлы изменились — обновите diff");
+        }
+        let total = files.len();
+        files.truncate(500);
+        Ok(
+            json!({"files":files,"total":total,"revision":revision(&current),"repositories":[],"mode":"project"}),
+        )
+    }
+    pub fn project_diff_file(
+        &self,
+        project: &str,
+        scope: &str,
+        path: &str,
+        expected_revision: &str,
+    ) -> Result<Value> {
+        let _activity = self.activity_guard()?;
+        check_scope(scope)?;
+        safe_path(path)?;
+        let (entry, _) = self.project(project)?;
+        if let Some(remote) = entry.remote_execution() {
+            return bridge_automation::remote::rpc(remote,&json!({"op":"project_diff_file","scope":scope,"path":path,"revision":expected_revision})).map_err(|_|"Diff второго ПК недоступен; обновите agent-bridge и проверьте SSH");
+        }
+        let root = entry.workspace();
+        let current = bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?;
+        if revision(&current) != expected_revision {
+            return Err("Файлы изменились — обновите diff");
+        }
+        let changes =
+            bridge_git::diff::project_changes(root, scope, current.head().map(|h| h.as_str()))
+                .map_err(|_| "Не удалось прочитать изменения Git")?;
+        if !changes.iter().any(|(name, _)| name == path) {
+            return Err("Файл не входит в выбранные изменения");
+        }
+        let before = if scope == "unstaged" {
+            bridge_git::diff::index_file(root, path)
+        } else {
+            current
+                .head()
+                .map(|h| commit_file(root, h.as_str(), path))
+                .transpose()
+                .map(Option::flatten)
+        }
+        .map_err(|_| "Исходный файл недоступен; проверьте конфликты Git")?;
+        let after = if scope == "staged" {
+            bridge_git::diff::index_file(root, path)
+                .map_err(|_| "Файл в индексе недоступен; проверьте конфликты Git")?
+        } else {
+            read_file(root, path)?
+        };
+        if revision(&bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?)
+            != expected_revision
+        {
+            return Err("Файлы изменились — обновите diff");
+        }
+        if before.as_ref().is_some_and(Option::is_none)
+            || after.as_ref().is_some_and(Option::is_none)
+        {
+            return Ok(
+                json!({"path":path,"kind":"large","message":"Файл больше 256 КиБ; построчный diff недоступен","patch":"","truncated":false}),
+            );
+        }
+        let after = after.flatten();
+        if scope != "staged" {
+            let actual = after.as_ref().map(digest);
+            let expected = current
+                .manifest()
+                .entries()
+                .iter()
+                .find(|e| e.path() == OsStr::new(path))
+                .map(|e| e.digest_hex());
+            if actual != expected {
+                return Err("Файл изменился — обновите diff");
+            }
+        }
+        let response = render_file(path, before.flatten(), after)?;
+        if revision(&bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?)
+            != expected_revision
+        {
+            return Err("Файлы изменились — обновите diff");
+        }
+        Ok(response)
+    }
     pub fn task_diff(&self, project: &str, task: &str, repository: u32) -> Result<Value> {
         let _activity = self.activity_guard()?;
         let (entry, _) = self.project(project)?;
@@ -373,25 +479,7 @@ impl ProjectService {
         if actual != expected {
             return Err("Файл изменился — обновите список изменений");
         }
-        let old = before.as_ref().map_or(&[][..], |o| o.data.as_slice());
-        let new = after.as_ref().map_or(&[][..], |o| o.data.as_slice());
-        if old.contains(&0)
-            || new.contains(&0)
-            || std::str::from_utf8(old).is_err()
-            || std::str::from_utf8(new).is_err()
-        {
-            return message(
-                "binary",
-                "Бинарный файл или текст с неподдерживаемой кодировкой",
-            );
-        }
-        if [old, new].iter().any(|data| {
-            !bridge_config::suspected_secret_categories(std::str::from_utf8(data).unwrap())
-                .is_empty()
-        }) {
-            return message("redacted", "Содержимое скрыто: возможные секреты");
-        }
-        let (patch, truncated) = text_patch(old, new).map_err(|_| "Не удалось построить diff")?;
+        let response = render_file(path, before, after)?;
         if revision(
             &bridge_git::take_snapshot(&context.root)
                 .map_err(|_| "Не удалось проверить изменения")?,
@@ -399,8 +487,45 @@ impl ProjectService {
         {
             return Err("Файлы изменились — обновите список изменений");
         }
-        Ok(
-            json!({"path":path,"kind":"text","patch":patch,"truncated":truncated,"before_mode":before.map(|o|format!("{:o}",o.mode)),"after_mode":after.map(|o|format!("{:o}",o.mode))}),
-        )
+        Ok(response)
+    }
+}
+
+fn render_file(
+    path: &str,
+    before: Option<bridge_git::objects::CommitObject>,
+    after: Option<bridge_git::objects::CommitObject>,
+) -> Result<Value> {
+    let message = |kind: &str, text: &str| {
+        Ok(json!({"path":path,"kind":kind,"message":text,"patch":"","truncated":false}))
+    };
+    let old = before.as_ref().map_or(&[][..], |o| o.data.as_slice());
+    let new = after.as_ref().map_or(&[][..], |o| o.data.as_slice());
+    if old.contains(&0)
+        || new.contains(&0)
+        || std::str::from_utf8(old).is_err()
+        || std::str::from_utf8(new).is_err()
+    {
+        return message(
+            "binary",
+            "Бинарный файл или текст с неподдерживаемой кодировкой",
+        );
+    }
+    if [old, new].iter().any(|data| {
+        !bridge_config::suspected_secret_categories(std::str::from_utf8(data).unwrap()).is_empty()
+    }) {
+        return message("redacted", "Содержимое скрыто: возможные секреты");
+    }
+    let (patch, truncated) = text_patch(old, new).map_err(|_| "Не удалось построить diff")?;
+    Ok(
+        json!({"path":path,"kind":"text","patch":patch,"truncated":truncated,"before_mode":before.map(|o|format!("{:o}",o.mode)),"after_mode":after.map(|o|format!("{:o}",o.mode))}),
+    )
+}
+
+fn check_scope(scope: &str) -> Result<()> {
+    if matches!(scope, "all" | "staged" | "unstaged") {
+        Ok(())
+    } else {
+        Err("Недопустимый режим diff")
     }
 }

@@ -415,3 +415,151 @@ fn inherited_dirty_baseline_uses_exact_parent_bytes() {
     assert_eq!(f.file(child, "file.txt")["kind"], "baseline_unavailable");
     assert_eq!(p.id().as_str(), "primary");
 }
+
+#[test]
+fn project_diff_without_tasks_distinguishes_head_index_and_worktree() {
+    let f = Fixture::new();
+    let original_head = f.git(&["rev-parse", "HEAD"]);
+    fs::write(f.root.join("main/file.txt"), "first\nиндекс\nlast\n").unwrap();
+    f.git(&["add", "file.txt"]);
+    let index = f.git(&["ls-files", "--stage"]);
+    fs::write(f.root.join("main/file.txt"), "first\nрабочий\nlast\n").unwrap();
+    fs::write(f.root.join("main/new.txt"), "new\n").unwrap();
+    fs::remove_file(f.root.join("main/deleted.txt")).unwrap();
+    for (scope, old, new, total) in [
+        ("all", "старое", "рабочий", 3),
+        ("staged", "старое", "индекс", 1),
+        ("unstaged", "индекс", "рабочий", 3),
+    ] {
+        let list = f.service.project_diff("primary", scope).unwrap();
+        assert_eq!(list["total"], total, "{list}");
+        let file = f
+            .service
+            .project_diff_file(
+                "primary",
+                scope,
+                "file.txt",
+                list["revision"].as_str().unwrap(),
+            )
+            .unwrap();
+        let patch = file["patch"].as_str().unwrap();
+        assert!(patch.contains(&format!("-{old}")), "{patch}");
+        assert!(patch.contains(&format!("+{new}")), "{patch}");
+    }
+    assert!(!f.root.join("state").exists());
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), original_head);
+    assert_eq!(f.git(&["ls-files", "--stage"]), index);
+    let list = f.service.project_diff("primary", "all").unwrap();
+    fs::write(f.root.join("main/new.txt"), "changed\n").unwrap();
+    assert!(
+        f.service
+            .project_diff_file(
+                "primary",
+                "all",
+                "file.txt",
+                list["revision"].as_str().unwrap()
+            )
+            .is_err()
+    );
+    assert!(f.service.project_diff("primary", "invalid").is_err());
+    assert!(
+        f.service
+            .project_diff_file("primary", "all", "../password", "")
+            .is_err()
+    );
+}
+#[test]
+fn project_diff_shows_staged_change_even_when_worktree_matches_head() {
+    let f = Fixture::new();
+    let old = fs::read(f.root.join("main/file.txt")).unwrap();
+    fs::write(f.root.join("main/file.txt"), "staged only\n").unwrap();
+    f.git(&["add", "file.txt"]);
+    fs::write(f.root.join("main/file.txt"), old).unwrap();
+    assert_eq!(
+        f.service.project_diff("primary", "all").unwrap()["total"],
+        0
+    );
+    assert_eq!(
+        f.service.project_diff("primary", "staged").unwrap()["total"],
+        1
+    );
+    assert_eq!(
+        f.service.project_diff("primary", "unstaged").unwrap()["total"],
+        1
+    );
+}
+#[test]
+fn project_diff_unborn_head_and_staged_deletions_are_exact() {
+    let f = Fixture::new();
+    f.git(&["checkout", "--orphan", "unborn"]);
+    f.git(&["rm", "-rf", "."]);
+    fs::write(f.root.join("main/new.txt"), "staged new\n").unwrap();
+    f.git(&["add", "new.txt"]);
+    for scope in ["all", "staged"] {
+        let list = f.service.project_diff("primary", scope).unwrap();
+        assert_eq!(list["total"], 1, "{list}");
+        assert_eq!(list["files"][0]["change"], "added");
+        let file = f
+            .service
+            .project_diff_file(
+                "primary",
+                scope,
+                "new.txt",
+                list["revision"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert!(file["patch"].as_str().unwrap().contains("+staged new"));
+    }
+    fs::remove_file(f.root.join("main/new.txt")).unwrap();
+    assert_eq!(
+        f.service.project_diff("primary", "all").unwrap()["total"],
+        0
+    );
+    let list = f.service.project_diff("primary", "unstaged").unwrap();
+    let file = f
+        .service
+        .project_diff_file(
+            "primary",
+            "unstaged",
+            "new.txt",
+            list["revision"].as_str().unwrap(),
+        )
+        .unwrap();
+    assert!(file["patch"].as_str().unwrap().contains("-staged new"));
+    f.git(&["checkout", "-f", "main"]);
+    f.git(&["rm", "file.txt"]);
+    let list = f.service.project_diff("primary", "staged").unwrap();
+    let file = f
+        .service
+        .project_diff_file(
+            "primary",
+            "staged",
+            "file.txt",
+            list["revision"].as_str().unwrap(),
+        )
+        .unwrap();
+    assert!(file["patch"].as_str().unwrap().contains("-старое"));
+}
+#[test]
+fn project_diff_handles_binary_secrets_and_literal_paths() {
+    let f = Fixture::new();
+    fs::write(f.root.join("main/[*].txt"), "literal\n").unwrap();
+    fs::write(f.root.join("main/binary.bin"), b"\0\xff").unwrap();
+    fs::write(
+        f.root.join("main/secret.txt"),
+        "-----BEGIN PRIVATE KEY-----\nsecret\n",
+    )
+    .unwrap();
+    let list = f.service.project_diff("primary", "all").unwrap();
+    for (path, kind) in [
+        ("[*].txt", "text"),
+        ("binary.bin", "binary"),
+        ("secret.txt", "redacted"),
+    ] {
+        let file = f
+            .service
+            .project_diff_file("primary", "all", path, list["revision"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(file["kind"], kind, "{file}");
+    }
+}

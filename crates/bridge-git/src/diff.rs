@@ -97,6 +97,148 @@ pub fn commit_file(
     }
     Ok(Some(Some(CommitObject { mode, data })))
 }
+/// Read the stage-zero blob without following filesystem links or running filters.
+pub fn index_file(repo: &Path, path: &str) -> Result<Option<Option<CommitObject>>, GitError> {
+    let bytes = run_checked_os(
+        repo,
+        &[
+            OsStr::new("--literal-pathspecs"),
+            OsStr::new("ls-files"),
+            OsStr::new("--stage"),
+            OsStr::new("-z"),
+            OsStr::new("--"),
+            OsStr::new(path),
+        ],
+    )?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let row = bytes.strip_suffix(b"\0").ok_or(GitError::MalformedOutput)?;
+    let split = row
+        .iter()
+        .position(|b| *b == b'\t')
+        .ok_or(GitError::MalformedOutput)?;
+    if &row[split + 1..] != path.as_bytes() {
+        return Err(GitError::MalformedOutput);
+    }
+    let fields = std::str::from_utf8(&row[..split])
+        .map_err(|_| GitError::MalformedOutput)?
+        .split(' ')
+        .collect::<Vec<_>>();
+    if fields.len() != 3 || fields[2] != "0" {
+        return Err(GitError::MalformedOutput);
+    }
+    let mode = u32::from_str_radix(fields[0], 8).map_err(|_| GitError::MalformedOutput)?;
+    if !matches!(mode, 0o100644 | 0o100755 | 0o120000) {
+        return Err(GitError::MalformedOutput);
+    }
+    let size = run_checked_os(
+        repo,
+        &[
+            OsStr::new("cat-file"),
+            OsStr::new("-s"),
+            OsStr::new(fields[1]),
+        ],
+    )?;
+    let size = std::str::from_utf8(&size)
+        .map_err(|_| GitError::MalformedOutput)?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| GitError::MalformedOutput)?;
+    if size > FILE_LIMIT {
+        return Ok(Some(None));
+    }
+    let data = run_checked_os(
+        repo,
+        &[
+            OsStr::new("cat-file"),
+            OsStr::new("blob"),
+            OsStr::new(fields[1]),
+        ],
+    )?;
+    if data.len() != size {
+        return Err(GitError::MalformedOutput);
+    }
+    Ok(Some(Some(CommitObject { mode, data })))
+}
+
+/// Fixed read-only comparisons; rename detection is disabled so paths stay independent.
+pub fn project_changes(
+    repo: &Path,
+    scope: &str,
+    head: Option<&str>,
+) -> Result<Vec<(String, String)>, GitError> {
+    use std::collections::BTreeMap;
+    if !matches!(scope, "all" | "staged" | "unstaged") {
+        return Err(GitError::MalformedOutput);
+    }
+    let mut files = BTreeMap::new();
+    let comparisons: Vec<&str> = match scope {
+        "all" if head.is_none() => vec!["staged", "unstaged"],
+        _ => vec![scope],
+    };
+    for comparison in comparisons {
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--name-status",
+            "-z",
+        ];
+        if comparison == "staged" {
+            args.push("--cached");
+        }
+        if comparison != "unstaged"
+            && let Some(head) = head
+        {
+            args.push(head);
+        }
+        args.push("--");
+        let bytes = run_checked_os(repo, &args.iter().map(OsStr::new).collect::<Vec<_>>())?;
+        let fields = bytes.split(|b| *b == 0).collect::<Vec<_>>();
+        if fields.last() != Some(&&b""[..]) || fields.len() % 2 != 1 {
+            return Err(GitError::MalformedOutput);
+        }
+        for pair in fields[..fields.len() - 1].as_chunks::<2>().0 {
+            let status = match pair[0] {
+                b"A" => "added",
+                b"D" => "deleted",
+                b"M" | b"T" | b"U" => "modified",
+                _ => return Err(GitError::MalformedOutput),
+            };
+            let path = std::str::from_utf8(pair[1]).map_err(|_| GitError::MalformedOutput)?;
+            files.insert(path.to_owned(), status.to_owned());
+        }
+    }
+    if scope != "staged" {
+        let bytes = run_checked_os(
+            repo,
+            &[
+                OsStr::new("ls-files"),
+                OsStr::new("--others"),
+                OsStr::new("--exclude-standard"),
+                OsStr::new("-z"),
+            ],
+        )?;
+        for path in bytes.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            files.insert(
+                std::str::from_utf8(path)
+                    .map_err(|_| GitError::MalformedOutput)?
+                    .to_owned(),
+                "added".to_owned(),
+            );
+        }
+    }
+    if scope == "all" && head.is_none() {
+        files.retain(|path, _| fs::symlink_metadata(repo.join(path)).is_ok());
+        for change in files.values_mut() {
+            *change = "added".into();
+        }
+    }
+    Ok(files.into_iter().collect())
+}
+
 struct Inputs(PathBuf);
 impl Drop for Inputs {
     fn drop(&mut self) {

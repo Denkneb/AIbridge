@@ -96,6 +96,20 @@ fn dispatch(args: LaunchArgs, req: Value) -> Result<Value, String> {
                 )
                 .map_err(Into::into);
         }
+        "project_diff" | "project_diff_file" => {
+            let scope = req["scope"].as_str().ok_or("remote_scope_missing")?;
+            return if op == "project_diff" {
+                service.project_diff(&args.project, scope)
+            } else {
+                service.project_diff_file(
+                    &args.project,
+                    scope,
+                    req["path"].as_str().ok_or("remote_path_missing")?,
+                    req["revision"].as_str().ok_or("remote_revision_missing")?,
+                )
+            }
+            .map_err(Into::into);
+        }
         "diff" | "diff_file" => {
             let task = req["task"].as_str().ok_or("remote_task_missing")?;
             let repository = u32::try_from(

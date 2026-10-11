@@ -156,15 +156,6 @@ files, plain-text HTML display, and terminal preservation.
 
 ## Terminal and dashboard
 
-The terminal's **По проектам** checkbox groups all open sessions under their
-project names, with a count for each group. Click a session to select its project
-and terminal, or click a project heading to restore that project's active
-session. Turning grouping off shows only the selected project's sessions.
-The preference is saved locally; switching the view does not restart PTYs or
-discard their output. Close buttons continue to target the individual session.
-The [real WebView proof](../docs/fixtures/runtime/desktop-session-groups-smoke-2026-10-12.json)
-checks grouping, project/session navigation and preserved PTYs across two projects.
-
 **Обзор проектов** shows active projects together, independently of the selected
 terminal project. Stopped projects with no unfinished tasks or pending automatic
 run are hidden. Running services, unfinished work and projects with unavailable
@@ -259,9 +250,8 @@ profile locks until their children exit, so the two controllers can coexist.
 Each terminal tab owns a PTY and xterm buffer; hidden tabs keep draining output.
 Open reuses a running Codex/OpenCode tab for the selected project and opens a new
 Shell tab. Attach reuses the tab for that exact project/task. Closing a tab stops
-only its process. Up to eight tabs across projects are supported. The visible
-terminal belongs to the selected project; the tab list can show that project or
-all sessions grouped by project. Each project remembers its active
+only its process. Up to eight tabs across projects are supported. The tab list and
+visible terminal belong to the selected project. Each project remembers its active
 tab, selected program and environment draft; other PTYs remain mounted and keep
 running with their output buffered in the background. Switching project/tab or
 resizing preserves existing sessions. Output queues and input chunks are bounded;

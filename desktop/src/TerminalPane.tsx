@@ -100,10 +100,8 @@ function TerminalSession({tab,visible,fontSize,clearCount,onStatus}:{tab:Termina
  </div>;
 }
 
-export function TerminalPane({project,attach,onSelectProject}:{project:string;onSelectProject:(project:string)=>void;attach:{task:string;project:string;nonce:number}|null}){
+export function TerminalPane({project,attach}:{project:string;attach:{task:string;project:string;nonce:number}|null}){
  const [tabs,setTabs]=useState<TerminalTab[]>([]),[activeByProject,setActiveByProject]=useState<Record<string,string>>({}),[profiles,setProfiles]=useState<Record<string,string>>({}),[errors,setErrors]=useState<Record<string,string>>({}),[clearCount,setClearCount]=useState(0);
- const [groupByProject,setGroupByProject]=useState(()=>localStorage.getItem('aibridge-session-groups')==='true');
- useEffect(()=>{localStorage.setItem('aibridge-session-groups',String(groupByProject));},[groupByProject]);
  const active=activeByProject[project]??'',profile=profiles[project]??'shell',error=errors[project]??'';
  const setError=(message:string,target=project)=>setErrors(items=>({...items,[target]:message}));
  const setActive=(id:string,target=project)=>setActiveByProject(items=>({...items,[target]:id}));
@@ -177,14 +175,10 @@ export function TerminalPane({project,attach,onSelectProject}:{project:string;on
  {isCodex(profile)&&<details className="terminal-launch-env"><summary>Переменные окружения Codex</summary><p>По одной переменной на строку: NAME=value или export NAME=value. Сохраняются отдельно для каждого проекта в приватном файле с правами 0600. Нажмите «Сохранить»; перед запуском Codex сохранение выполняется автоматически. Значения используются буквально: команды и подстановки $VAR не выполняются.</p><textarea aria-label="Переменные окружения Codex" spellCheck={false} placeholder={'export MY_VARIABLE=value\nOTHER_VARIABLE="значение с пробелами"'} value={launchEnv} disabled={!envReady||envSaving} onChange={e=>setEnvDrafts(items=>({...items,[project]:{...items[project],text:e.target.value}}))}/><button disabled={!envReady||envSaving||!envDirty} onClick={()=>{setError('');void saveEnv().catch(e=>setError(String(e)));}}>{envSaving?'Сохранение…':'Сохранить переменные'}</button><span className="muted">{!envReady?'Загрузка…':envDirty?'Есть несохранённые изменения':'Сохранено для проекта'}</span></details>}
  {error&&<p role="alert" className="error">{error}</p>}
  {serverMessages[project]&&<p role="status" className="muted">{serverMessages[project]}</p>}
- <div className="session-group-toolbar"><label className="check"><input type="checkbox" checked={groupByProject} onChange={e=>setGroupByProject(e.target.checked)}/>По проектам</label><span className="muted">Сессий: {groupByProject?tabs.length:visibleTabs.length}</span></div>
- <div className="terminal-tabs" aria-label="Терминальные сессии">{(groupByProject?[...new Set(tabs.map(tab=>tab.project))]:[project]).map(target=>{
-  const items=tabs.filter(tab=>tab.project===target);if(!items.length)return null;
-  return <div className="session-project-group" key={target} data-project={target}>{groupByProject&&<button className="session-project-title" aria-current={target===project?'true':undefined} onClick={()=>onSelectProject(target)}>{target}<span className="muted">{items.length}</span></button>}<div className="session-project-tabs" role="tablist" aria-label={`Сессии проекта ${target}`}>{items.map(tab=><div className="terminal-tab" key={tab.id}>
-   <button role="tab" id={`terminal-tab-${tab.id}`} aria-controls={`terminal-panel-${tab.id}`} aria-selected={project===target&&active===tab.id} onClick={()=>{setActive(tab.id,target);if(target!==project)onSelectProject(target);}}>{label(tab)}{tab.status==='starting'?' · запуск':tab.status==='stopping'?' · завершение':tab.status==='exited'?' · завершена':tab.status==='error'?' · ошибка':''}</button>
-   <button aria-label={`Закрыть ${label(tab)}`} onClick={()=>close(tab.id)}>×</button>
-  </div>)}</div></div>;
- })}</div>
+ <div className="terminal-tabs" role="tablist" aria-label="Терминальные сессии">{visibleTabs.map(tab=><div className="terminal-tab" key={tab.id}>
+  <button role="tab" id={`terminal-tab-${tab.id}`} aria-controls={`terminal-panel-${tab.id}`} aria-selected={active===tab.id} onClick={()=>setActive(tab.id)}>{label(tab)}{tab.status==='starting'?' · запуск':tab.status==='stopping'?' · завершение':tab.status==='exited'?' · завершена':tab.status==='error'?' · ошибка':''}</button>
+  <button aria-label={`Закрыть ${label(tab)}`} onClick={()=>close(tab.id)}>×</button>
+ </div>)}</div>
  {tabs.map(tab=><TerminalSession key={tab.id} tab={tab} visible={tab.project===project&&active===tab.id} fontSize={fontSize} clearCount={clearCount} onStatus={onStatus}/>)}
  {!visibleTabs.length&&<p className="empty">Выберите программу и нажмите «Открыть»</p>}
  </section>;

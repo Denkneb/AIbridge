@@ -286,12 +286,13 @@
   [...document.querySelectorAll('[aria-label="Просмотр изменений"] button')].find(b=>b.textContent==='Сохранить').click();
   await waitUI(()=>document.querySelector('.project-select option[value="other"]'),'other_project_not_saved');
   document.querySelector('nav button').click();
+  await waitUI(()=>document.querySelector('.dashboard')&&!document.querySelector('[role=dialog]'),'project_dashboard_not_ready_for_shortcut');
   const selectProject=value=>{const select=document.querySelector('.project-select select');select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));};
   const cycleProject=async(key,term,project)=>{
    const data=[];const listener=term.onData(value=>data.push(value));
    const event=new KeyboardEvent('keydown',{key,code:key,shiftKey:true,bubbles:true,cancelable:true});
    term.textarea.dispatchEvent(event);
-   await waitFor(()=>document.querySelector('.project-select select').value===project,'project_shortcut_failed');
+   await waitFor(()=>document.querySelector('.project-select select').value===project,'project_shortcut_failed_'+key+'_'+project+'_prevented='+event.defaultPrevented+'_connected='+term.textarea.isConnected+'_dialogs='+document.querySelectorAll('dialog[open],[role=dialog]').length);
    listener.dispose();if(!event.defaultPrevented||data.length)throw Error('project_shortcut_sent_to_pty');
   };
   proofTerminal.input('\x15');proofTerminal.paste("sleep 1; printf 'PROJECT_BACKGROUND_OUTPUT\\n'");proofTerminal.input('\r');
@@ -323,6 +324,64 @@
   selectProject('proof');await waitFor(()=>document.querySelector('.dashboard')?.getAttribute('aria-label')==='Задачи проекта proof','proof_dashboard_not_restored');
   await waitUI(()=>['proof','other'].every(id=>{const text=document.querySelector(`.project-select option[value="${id}"]`)?.textContent;return text&&text.includes('остановлен');}),'all_project_list_statuses');
   checks.project_workspace_isolation=true;checks.project_switch_preserves_pty=true;checks.project_dashboard_scope=true;
+  // Real IPC and SQLite fixtures stay inside this smoke's disposable state.
+  [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
+  await waitFor(()=>binding()==='proof · shell','overview_shell_not_opened');
+  const overviewTerminal=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
+  await waitFor(()=>bufferText(overviewTerminal).includes('$'),'overview_shell_not_ready');
+  await invoke('lifecycle',{project:'proof',action:'setup'});
+  await invoke('lifecycle',{project:'other',action:'setup'});
+  const smokeRoot=projects[0].workspace.slice(0,projects[0].workspace.lastIndexOf('/'));
+  const oldTask='00000000-0000-4000-8000-000000000111';
+  const overviewShell=async(script,marker)=>{
+   overviewTerminal.input('\x15');overviewTerminal.paste('python3 -c '+quote(script+'\nprint('+JSON.stringify(marker)+')'));overviewTerminal.input('\r');
+   await waitFor(()=>bufferText(overviewTerminal).split('\n').includes(marker),'overview_fixture_'+marker);
+  };
+  await overviewShell(`import sqlite3,uuid,pathlib
+root=pathlib.Path(${JSON.stringify(smokeRoot)})
+for project in ['proof','other']:
+ c=sqlite3.connect(root/'state'/project/'state.sqlite')
+ rows=[(${JSON.stringify(oldTask)},'needs_user','OVERVIEW_SMOKE_OLD','2025-01-01')] if project=='proof' else [(str(uuid.uuid4()),'awaiting_review','OVERVIEW_SMOKE_REVIEW','2026-01-01')]
+ if project=='proof': rows += [(str(uuid.uuid4()),'implementing','OVERVIEW_SMOKE_RUNNING','2026-01-01') for _ in range(105)]
+ c.executemany("INSERT INTO tasks(task_id,project_id,workspace,status,task,allowed_paths,test_commands,created_at,updated_at,revision_count) VALUES(?,?,?,?,?,'[]','[]',?,?,0)",[(id,project,str(root/('main' if project=='proof' else 'other')),status,title,time,time) for id,status,title,time in rows])
+ c.commit();c.close()`, 'OVERVIEW_SEEDED');
+  const overviewNav=()=>[...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Обзор проектов');
+  overviewNav().click();
+  await waitUI(()=>document.querySelector('.overview-summary')?.textContent.includes('2 из 2'),'overview_projects_not_loaded');
+  if(document.querySelectorAll('.overview-project').length!==2||!document.querySelector('.overview-attention').textContent.includes('OVERVIEW_SMOKE_OLD')||!document.querySelector('.overview-attention').textContent.includes('OVERVIEW_SMOKE_REVIEW'))throw Error('overview_attention_missing');
+  const overview=await invoke('project_overview',{project:'proof'});
+  if(overview.active_count!==106||overview.attention_count!==1||overview.tasks.length!==12||overview.attention[0].task_id!==oldTask)throw Error('overview_bounds_or_counts');
+  [...document.querySelectorAll('.overview-attention .overview-task-link')].find(b=>b.textContent.includes('OVERVIEW_SMOKE_OLD')).click();
+  await waitUI(()=>document.querySelector('.detail')?.textContent.includes(oldTask),'overview_old_task_detail_missing');
+  if(document.querySelector('.project-select select').value!=='proof'||document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==overviewTerminal)throw Error('overview_task_route_or_terminal');
+  await overviewShell(`import sqlite3,pathlib
+c=sqlite3.connect(pathlib.Path(${JSON.stringify(smokeRoot)})/'state'/'proof'/'state.sqlite')
+c.execute("UPDATE tasks SET status='awaiting_review' WHERE task_id=?",[${JSON.stringify(oldTask)}]);c.commit();c.close()`, 'OVERVIEW_TASK_UPDATED');
+  await waitUI(()=>document.querySelector('.detail h3')?.textContent==='На проверке','overview_old_task_detail_stale');
+  checks.overview_off_page_detail_refreshes=true;
+
+  overviewNav().click();await waitUI(()=>document.querySelector('.overview-summary')?.textContent.includes('2 из 2'),'overview_reload');
+  [...document.querySelectorAll('.overview-attention .overview-task-link')].find(b=>b.textContent.includes('OVERVIEW_SMOKE_REVIEW')).click();
+  await waitUI(()=>document.querySelector('.dashboard')?.getAttribute('aria-label')==='Задачи проекта other'&&document.querySelector('.detail')?.textContent.includes('OVERVIEW_SMOKE_REVIEW'),'overview_cross_project_task');
+  selectProject('proof');await waitFor(()=>binding()==='proof · shell','overview_proof_shell_missing');
+  await overviewShell(`import pathlib,os
+root=pathlib.Path(${JSON.stringify(smokeRoot)})/'state'
+os.rename(root/'other',root/'other-held')
+(root/'other').mkdir()
+(root/'other'/'state.sqlite').write_bytes(b'foreign state')`, 'OVERVIEW_UNAVAILABLE');
+  overviewNav().click();
+  await waitUI(()=>document.querySelector('.overview-project [role="alert"]')&&document.querySelector('.overview-attention').textContent.includes('OVERVIEW_SMOKE_OLD'),'overview_error_hides_other_projects');
+  if(!document.querySelector('.overview-summary').textContent.includes('1 из 2')||!document.querySelector('.overview-attention').textContent.includes('Сводка неполная'))throw Error('overview_missing_not_reported');
+  await overviewShell(`import pathlib,shutil,os,sqlite3
+root=pathlib.Path(${JSON.stringify(smokeRoot)})/'state'
+shutil.rmtree(root/'other');os.rename(root/'other-held',root/'other')
+for project in ['proof','other']:
+ c=sqlite3.connect(root/project/'state.sqlite');c.execute("DELETE FROM tasks WHERE task LIKE 'OVERVIEW_SMOKE_%'");c.commit();c.close()`, 'OVERVIEW_CLEANED');
+  [...document.querySelectorAll('.overview button')].find(b=>b.textContent==='Обновить').click();
+  await waitUI(()=>document.querySelector('.overview-summary')?.textContent.includes('2 из 2')&&document.querySelector('.overview-summary')?.textContent.includes('Активных задач: 0'),'overview_recovery_refresh');
+  document.querySelector('nav button').click();await waitUI(()=>document.querySelector('.dashboard'),'overview_return_dashboard');
+  checks.overview_multi_project_attention=true;checks.overview_opens_task_beyond_first_page=true;checks.overview_cross_project_navigation=true;checks.overview_partial_failure_and_recovery=true;checks.overview_preserves_terminal=true;
+
   closeActive();
   const program=document.querySelector('[aria-label="Программа терминала"]');program.value='codex';program.dispatchEvent(new Event('change',{bubbles:true}));
   await waitUI(()=>document.querySelector('[aria-label="Переменные окружения Codex"]')&&!document.querySelector('[aria-label="Переменные окружения Codex"]').disabled,'codex_env_not_loaded');

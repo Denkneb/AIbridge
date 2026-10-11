@@ -129,6 +129,11 @@ links open the correct project's detail even outside its first list page. Sessio
 links use the existing task attachment lifecycle. Switching views preserves PTYs.
 Remote projects reuse the existing dashboard RPC and route through their local
 registration ID; no new remote protocol operation or database migration is needed.
+The [real WebView proof](../docs/fixtures/runtime/desktop-overview-smoke-2026-10-11.json)
+covers two projects, an older task beyond the first hundred rows, off-page detail
+refresh, cross-project navigation, unavailable state and recovery, and PTY
+preservation. It uses disposable local SQLite state and no models; live SSH is
+not covered by this smoke.
 
 Closing the desktop waits for terminal and project cleanup before exiting.
 Managed MCP/OpenCode servers, task servers, workers and automation supervisors

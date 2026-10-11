@@ -359,6 +359,44 @@ c=sqlite3.connect(pathlib.Path(${JSON.stringify(smokeRoot)})/'state'/'proof'/'st
 c.execute("UPDATE tasks SET status='awaiting_review' WHERE task_id=?",[${JSON.stringify(oldTask)}]);c.commit();c.close()`, 'OVERVIEW_TASK_UPDATED');
   await waitUI(()=>document.querySelector('.detail h3')?.textContent==='На проверке','overview_old_task_detail_stale');
   checks.overview_off_page_detail_refreshes=true;
+  await overviewShell(`import pathlib,subprocess,hashlib,json,sqlite3,stat
+root=pathlib.Path(${JSON.stringify(smokeRoot)});repo=root/'main'
+old=repo/'.smoke-diff-tracked.txt';deleted=repo/'.smoke-diff-deleted.txt'
+old.write_text('first\\nстарое\\nlast\\n');deleted.write_text('deleted line\\n')
+def git(*args):return subprocess.check_output(['git','-C',str(repo),*args])
+git('add','--',old.name,deleted.name);git('-c','core.hooksPath=/dev/null','commit','-m','diff fixture','--only','--',old.name,deleted.name)
+head=git('rev-parse','HEAD').decode().strip();manifest={}
+for name in set(git('ls-files','-z').split(b'\\0')+git('ls-files','--others','--exclude-standard','-z').split(b'\\0')):
+ if not name:continue
+ name=name.decode();p=repo/name
+ if p.is_symlink():data=b'link\\0'+str(p.readlink()).encode()
+ elif p.is_file():data=(b'exec\\0' if p.stat().st_mode&0o111 else b'file\\0')+p.read_bytes()
+ else:continue
+ manifest[name]=hashlib.sha256(data).hexdigest()
+index=hashlib.sha256(git('ls-files','--stage','-z')+b'\\0'+git('ls-files','-v','-z')).hexdigest()
+snapshot={'head':head,'status':git('status','--porcelain=v1','-z').decode(),'dirty_paths':[],'index_fingerprint':index,'manifest':manifest}
+c=sqlite3.connect(root/'state'/'proof'/'state.sqlite');c.execute('UPDATE tasks SET snapshot=?,base_head=?,revision_count=revision_count+1 WHERE task_id=?',[json.dumps(snapshot),head,${JSON.stringify(oldTask)}]);c.commit();c.close()
+old.write_text('first\\nновое\\nlast\\n');deleted.unlink()
+(repo/'.smoke-diff-new.txt').write_text('<script>DIFF_SAFE_TEXT</script>\\n')
+(repo/'.smoke-diff-binary.bin').write_bytes(b'\\0\\xff')`, 'DIFF_SEEDED');
+  await waitUI(()=>document.querySelector('.diff-files')?.textContent.includes('.smoke-diff-tracked.txt'),'diff_file_list_missing');
+  const chooseDiff=name=>[...document.querySelectorAll('.diff-files button')].find(b=>b.textContent.includes(name)).click();
+  chooseDiff('.smoke-diff-tracked.txt');
+  await waitUI(()=>document.querySelector('.diff-line-added code')?.textContent==='новое'&&document.querySelector('.diff-line-deleted code')?.textContent==='старое','diff_unicode_lines');
+  const addedLine=document.querySelector('.diff-line-added');
+  if(addedLine.querySelectorAll('.diff-number')[1].textContent!=='2')throw Error('diff_line_numbers');
+  const contextToggle=document.querySelector('.task-diff input[type="checkbox"]');contextToggle.click();
+  await waitUI(()=>document.querySelectorAll('.diff-line-context').length===0,'diff_context_toggle');
+  chooseDiff('.smoke-diff-new.txt');await waitUI(()=>document.querySelector('.diff-line-added code')?.textContent==='<script>DIFF_SAFE_TEXT</script>','diff_new_file');
+  if(document.querySelector('.task-diff script'))throw Error('diff_html_executed');
+  chooseDiff('.smoke-diff-deleted.txt');await waitUI(()=>document.querySelector('.diff-line-deleted code')?.textContent==='deleted line','diff_deleted_file');
+  chooseDiff('.smoke-diff-binary.bin');await waitUI(()=>document.querySelector('.diff-message')?.textContent.includes('Бинарный'),'diff_binary_message');
+  const diffSearch=document.querySelector('[aria-label="Поиск файлов diff"]');editField(diffSearch,'tracked');
+  await waitUI(()=>document.querySelectorAll('.diff-files button').length===1,'diff_file_search');chooseDiff('.smoke-diff-tracked.txt');
+  await waitUI(()=>document.querySelector('.diff-line-added code')?.textContent==='новое','diff_search_selection');
+  if(document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal!==overviewTerminal)throw Error('diff_recreated_terminal');
+  checks.task_diff_real_ipc=true;checks.task_diff_unicode_numbers=true;checks.task_diff_new_deleted_binary=true;checks.task_diff_search_context=true;checks.task_diff_plain_text=true;
+
 
   overviewNav().click();await waitUI(()=>document.querySelector('.overview-summary')?.textContent.includes('2 из 2'),'overview_reload');
   [...document.querySelectorAll('.overview-attention .overview-task-link')].find(b=>b.textContent.includes('OVERVIEW_SMOKE_REVIEW')).click();

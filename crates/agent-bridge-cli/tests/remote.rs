@@ -675,3 +675,71 @@ fn remote_opencode_stop_rpc_is_project_bound_and_validates_task() {
         }
     }
 }
+
+#[test]
+fn remote_diff_rpc_reads_executor_files_and_rejects_invalid_requests() {
+    let f = Fixture::new();
+    f.remote.initialize().unwrap();
+    let repo = f.root.join("b/repo");
+    let baseline = bridge_git::take_snapshot(&repo).unwrap();
+    let id = uuid::Uuid::new_v4().to_string().parse().unwrap();
+    f.remote
+        .open()
+        .unwrap()
+        .create_task(bridge_storage::CreateTaskInput {
+            task_id: id,
+            project_id: f.remote.project_id().clone(),
+            workspace: repo.to_string_lossy().into(),
+            task: "remote diff".into(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            payload_hash: "fixture".into(),
+            base_head: baseline.head().map(|h| h.as_str().into()),
+            allowed_paths: vec!["check.py".into()],
+            test_commands: vec![],
+            snapshot: Some(baseline.to_json().unwrap()),
+        })
+        .unwrap();
+    fs::write(repo.join("check.py"), "print('executor change')\n").unwrap();
+    let rpc = |request: Value| {
+        let mut child = f
+            .cmd("b", "remote-rpc")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let list = rpc(json!({"op":"diff","task":id.to_string(),"repository":0}));
+    assert_eq!(list["total"], 1, "{list}");
+    assert_eq!(list["files"][0]["path"], "check.py");
+    let file = rpc(
+        json!({"op":"diff_file","task":id.to_string(),"repository":0,"path":"check.py","revision":list["revision"]}),
+    );
+    assert_eq!(file["kind"], "text", "{file}");
+    assert!(
+        file["patch"]
+            .as_str()
+            .unwrap()
+            .contains("+print('executor change')")
+    );
+    for request in [
+        json!({"op":"diff","task":id.to_string(),"repository":-1}),
+        json!({"op":"diff","task":"invalid","repository":0}),
+        json!({"op":"diff_file","task":id.to_string(),"repository":0,"path":"../password","revision":list["revision"]}),
+        json!({"op":"diff_file","task":id.to_string(),"repository":0,"path":"check.py","revision":"stale"}),
+    ] {
+        let response = rpc(request);
+        assert!(response["error"].is_string(), "{response}");
+        assert!(response.get("patch").is_none());
+    }
+    assert!(!f.local.database().exists());
+}

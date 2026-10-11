@@ -122,6 +122,38 @@ not replace OpenCode's complete schema/provider validation. In worktree mode,
 project configuration must also be present in the task checkout. Restart services
 and reopen controllers after changing their configuration.
 
+## Task diff
+
+Open a task from **Задачи** or **Обзор проектов** to view **Изменения**.
+The viewer lists added, modified and deleted files, supports filename search and
+previous/next file navigation, and highlights unified changes with both line
+numbers. **Контекст** toggles unchanged lines; **Обновить diff** reloads the
+comparison. File content loads only when selected and long patches use a bounded
+visible row window. Switching files or tasks keeps terminal sessions alive.
+
+The comparison reads the current checkout against the task's frozen baseline.
+Worktree tasks use their registered isolated checkout; direct tasks use the
+shared workspace and can include manual changes made since admission. Frozen
+external repositories have a separate selector. The viewer does not edit files,
+stage changes, recover tasks or change their status. If the checkout changes
+between listing and loading a file, refresh the comparison.
+
+Original committed bytes must match the baseline hash. For an inherited
+automation baseline, matching bytes may come from the previous step's retained
+checkout. If an initially dirty file's original bytes are unavailable, or a task
+checkout has been removed, the viewer reports that limitation. Completed direct
+tasks still compare against today's files; this is not an archived result.
+Symlinks display their target text without following the target. Binary and
+non-UTF-8 files show an explanatory message, and suspected secret content is
+withheld. Lists show up to 500 files, each side is limited to 256 KiB, and patches
+to 512 KiB with a visible truncation notice.
+
+Remote projects use the executor's checkout through the read-only `diff` and
+`diff_file` RPC operations. Update `agent-bridge` on the executor as well as the
+desktop client. The [real WebView proof](../docs/fixtures/runtime/desktop-diff-smoke-2026-10-11.json)
+covers file selection/search, Unicode, line numbers, context, new/deleted/binary
+files, plain-text HTML display, and terminal preservation.
+
 ## Terminal and dashboard
 
 **Обзор проектов** shows active projects together, independently of the selected

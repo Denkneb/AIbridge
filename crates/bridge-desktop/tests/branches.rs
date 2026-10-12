@@ -428,6 +428,135 @@ fn push_preview_is_read_only_push_sets_upstream_and_fetch_preserves_files() {
     assert_eq!(plan["ahead"], 0);
 }
 #[test]
+fn pull_fast_forwards_current_upstream_and_reports_unchanged_head() {
+    let f = Fixture::new(false);
+    f.remote();
+    f.git(&["push", "-u", "origin", "main"]);
+    let initial = f.view();
+    f.git(&["push", "origin", "feature:main"]);
+    let operation = json!({"action":"pull","remote":"origin","destination":"main"});
+    let next = f.action(operation.clone(), &initial).unwrap();
+    assert_eq!(next["current"], "refs/heads/main");
+    assert_eq!(next["head"], f.git(&["rev-parse", "feature"]));
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "feature\n"
+    );
+    assert_eq!(next["dirty"], 0);
+    assert_eq!(
+        f.action(operation.clone(), &next).unwrap()["head"],
+        next["head"]
+    );
+    assert!(f.action(operation, &initial).unwrap_err().contains("HEAD"));
+}
+
+#[test]
+fn pull_refuses_missing_or_changed_upstream_dirty_files_and_divergence() {
+    let f = Fixture::new(false);
+    f.remote();
+    let operation = json!({"action":"pull","remote":"origin","destination":"main"});
+    assert!(
+        f.action(operation.clone(), &f.view())
+            .unwrap_err()
+            .contains("нет upstream")
+    );
+    f.git(&["push", "-u", "origin", "main"]);
+    assert!(
+        f.action(
+            json!({"action":"pull","remote":"origin","destination":"feature"}),
+            &f.view()
+        )
+        .unwrap_err()
+        .contains("Upstream")
+    );
+    f.git(&["push", "origin", "feature:main"]);
+    let initial = f.view();
+    fs::write(f.root.join("main/tracked.txt"), "local edit\n").unwrap();
+    f.git(&["config", "merge.autostash", "true"]);
+    assert!(
+        f.action(operation.clone(), &initial)
+            .unwrap_err()
+            .contains("незакоммиченные")
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "local edit\n"
+    );
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), initial["head"]);
+    f.git(&["restore", "tracked.txt"]);
+    fs::write(f.root.join("main/untracked.txt"), "keep\n").unwrap();
+    assert!(
+        f.action(operation.clone(), &initial)
+            .unwrap_err()
+            .contains("неотслеживаемые")
+    );
+    fs::remove_file(f.root.join("main/untracked.txt")).unwrap();
+    fs::write(
+        f.root.join("main/.git/MERGE_HEAD"),
+        f.git(&["rev-parse", "feature"]),
+    )
+    .unwrap();
+    assert!(
+        f.action(operation.clone(), &initial)
+            .unwrap_err()
+            .contains("Не завершена")
+    );
+    fs::remove_file(f.root.join("main/.git/MERGE_HEAD")).unwrap();
+    f.git(&["commit", "--allow-empty", "-m", "local divergence"]);
+    let divergent = f.view();
+    assert!(
+        f.action(operation, &divergent)
+            .unwrap_err()
+            .contains("fast-forward")
+    );
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), divergent["head"]);
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "main\n"
+    );
+    assert!(!f.root.join("main/.git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn pull_preserves_ignored_files_and_ignores_configured_local_fetch_mappings() {
+    let f = Fixture::new(false);
+    f.remote();
+    f.git(&["push", "-u", "origin", "main"]);
+    f.git(&["switch", "feature"]);
+    fs::write(f.root.join("main/ignored.txt"), "remote content\n").unwrap();
+    f.git(&["add", "ignored.txt"]);
+    f.git(&["commit", "-m", "remote file"]);
+    f.git(&["push", "origin", "feature:main"]);
+    f.git(&["switch", "main"]);
+    fs::write(f.root.join("main/.git/info/exclude"), "ignored.txt\n").unwrap();
+    fs::write(f.root.join("main/ignored.txt"), "private content\n").unwrap();
+    f.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/heads/*",
+    ]);
+    let initial = f.view();
+    assert_eq!(initial["dirty"], 0);
+    let operation = json!({"action":"pull","remote":"origin","destination":"main"});
+    assert!(f.action(operation.clone(), &initial).is_err());
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), initial["head"]);
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/ignored.txt")).unwrap(),
+        "private content\n"
+    );
+    fs::remove_file(f.root.join("main/ignored.txt")).unwrap();
+    let hook = f.root.join("main/.git/hooks/post-merge");
+    fs::write(&hook, "#!/bin/sh\nprintf hook > hook-ran\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let next = f.action(operation, &f.view()).unwrap();
+    assert_eq!(next["head"], f.git(&["rev-parse", "feature"]));
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/ignored.txt")).unwrap(),
+        "remote content\n"
+    );
+    assert!(!f.root.join("main/hook-ran").exists());
+}
+#[test]
 fn stale_push_approval_changed_remote_and_divergence_are_refused() {
     let f = Fixture::new(false);
     f.remote();
@@ -482,6 +611,7 @@ fn checkout_changes_respect_active_nested_workers_and_transfers_check_binding() 
     for operation in [
         json!({"action":"create","name":"topic","base":"HEAD","switch":true}),
         json!({"action":"switch","reference":"refs/heads/feature"}),
+        json!({"action":"pull","remote":"origin","destination":"main"}),
     ] {
         assert!(f.action(operation, &initial).unwrap_err().contains("peer"));
     }

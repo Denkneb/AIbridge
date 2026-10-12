@@ -20,6 +20,10 @@ pub enum GitAction {
     Fetch {
         remote: String,
     },
+    Pull {
+        remote: String,
+        destination: String,
+    },
     Preview {
         remote: String,
         destination: String,
@@ -102,7 +106,9 @@ impl ProjectService {
         // untouched; Git's own ref/config locks serialize their writes.
         let _runtime = if matches!(
             &request.operation,
-            GitAction::Switch { .. } | GitAction::Create { switch: true, .. }
+            GitAction::Switch { .. }
+                | GitAction::Create { switch: true, .. }
+                | GitAction::Pull { .. }
         ) {
             Some({
                 // Switching a root also changes any configured nested workspace in it.
@@ -134,6 +140,48 @@ impl ProjectService {
             return Err("Ветка или HEAD уже изменились. Обновите список веток".into());
         }
         let reference = match request.operation {
+            GitAction::Pull {
+                remote,
+                destination,
+            } => {
+                let current = state
+                    .current
+                    .as_deref()
+                    .ok_or("Pull недоступен без текущей локальной ветки")?;
+                let head = state
+                    .head
+                    .as_deref()
+                    .ok_or("В текущей ветке ещё нет коммитов")?;
+                let upstream = transfer::upstream(p.workspace())
+                    .map_err(|_| "Не удалось прочитать upstream Git")?
+                    .ok_or(
+                        "У текущей ветки нет upstream. Настройте его через Git или выполните Push",
+                    )?;
+                if upstream != (remote.clone(), destination.clone()) {
+                    return Err("Upstream текущей ветки изменился. Обновите список веток".into());
+                }
+                if !bridge_git::status_porcelain(&root)
+                    .map_err(|_| "Не удалось проверить Git status")?
+                    .is_empty()
+                {
+                    return Err("Есть незакоммиченные или неотслеживаемые файлы. Сохраните изменения в коммите или stash перед Pull".into());
+                }
+                if operation_in_progress(p.workspace())
+                    .map_err(|_| "Не удалось проверить состояние Git")?
+                {
+                    return Err("Не завершена операция Git. Завершите её перед Pull".into());
+                }
+                transfer::pull(p.workspace(), &remote, &destination, current, head)
+                    .map_err(|error| if error == bridge_git::GitError::Timeout {
+                        "Git не ответил за 30 секунд. Pull остановлен; обновите состояние перед повтором".to_owned()
+                    } else {
+                        "Pull отклонён. Проверьте доступ к upstream и состояние Git. При расхождении истории объедините изменения через Git; доступно только fast-forward".to_owned()
+                    })?;
+                return view(
+                    branches(p.workspace()).map_err(|_| "Не удалось прочитать ветки Git")?,
+                    p.workspace(),
+                );
+            }
             GitAction::Create { name, base, switch } => {
                 if switch
                     && !bridge_git::status_porcelain(&root)

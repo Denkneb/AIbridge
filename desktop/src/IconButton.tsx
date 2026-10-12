@@ -1,6 +1,6 @@
 import type {ButtonHTMLAttributes,ReactNode} from 'react';
 
-type IconName='dashboard'|'automation'|'settings'|'check'|'play'|'stop'|'sun'|'moon'|'switch'|'git';
+type IconName='dashboard'|'automation'|'settings'|'check'|'play'|'stop'|'sun'|'moon'|'switch'|'git'|'pull';
 const icons:Record<IconName,ReactNode>={
  dashboard:<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
  automation:<><rect x="9" y="3" width="6" height="5" rx="1"/><path d="M12 8v5M5 16v-3h14v3"/><rect x="2" y="16" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/></>,
@@ -11,6 +11,7 @@ const icons:Record<IconName,ReactNode>={
  sun:<><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></>,
  moon:<path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/>,
  git:<><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 7v10m0-5h6a6 6 0 0 0 6-6"/></>,
+ pull:<><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></>,
  switch:<><path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/></>,
 };
 

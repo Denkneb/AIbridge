@@ -417,6 +417,14 @@ Git hooks. Ignored files that would be overwritten and branches occupied by anot
 worktree are refused by Git. The current HEAD/workspace is rechecked before
 switching; external branch changes require refreshing the selection.
 
+The **Pull** button beside the branch selector updates the current branch from its
+configured upstream in one click, regardless of the selected switch target. It fetches
+that branch and applies only a fast-forward, without merge commits, autostash or hooks.
+The checkout must be clean and have no unfinished Git operation; the same project,
+controller, service and worker fences as branch switching apply. Missing upstream,
+detached HEAD, divergence or changed branch/workspace are refused. Progress, success
+and errors appear in the branch toolbar; there is no extra confirmation dialog.
+
 The **Git** icon beside the branch selector opens branch creation, **Fetch** and
 **Push**. Create from the current HEAD or a selected local/cached remote branch;
 optionally switch immediately. Creation without switching preserves dirty files.

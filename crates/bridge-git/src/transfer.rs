@@ -162,6 +162,68 @@ pub fn fetch(workspace: &Path, remote: &str) -> Result<(), GitError> {
     )?;
     Ok(())
 }
+/// Fetch only the configured upstream and fast-forward a clean, unchanged checkout.
+pub fn pull(
+    workspace: &Path,
+    remote: &str,
+    destination: &str,
+    expected_current: &str,
+    expected_head: &str,
+) -> Result<(), GitError> {
+    require_remote(workspace, remote)?;
+    valid_name(workspace, destination)?;
+    let check = || -> Result<(), GitError> {
+        let state = branches::branches(workspace)?;
+        if state.current.as_deref() != Some(expected_current)
+            || state.head.as_deref() != Some(expected_head)
+            || upstream(workspace)? != Some((remote.into(), destination.into()))
+            || !crate::status_porcelain(workspace)?.is_empty()
+            || branches::operation_in_progress(workspace)?
+        {
+            return Err(GitError::CommandFailed);
+        }
+        Ok(())
+    };
+    check()?;
+    let tracking = format!("refs/remotes/{remote}/{destination}");
+    run_checked(workspace, &["check-ref-format", &tracking])?;
+    let reference = format!("+refs/heads/{destination}:{tracking}");
+    network(
+        workspace,
+        &[
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--refmap=",
+            "--",
+            remote,
+            &reference,
+        ],
+    )?;
+    let target = String::from_utf8(run_checked(
+        workspace,
+        &["rev-parse", "--verify", &format!("{tracking}^{{commit}}")],
+    )?)
+    .map_err(|_| GitError::MalformedOutput)?;
+    check()?;
+    run_checked(
+        workspace,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "submodule.recurse=false",
+            "merge",
+            "--ff-only",
+            "--no-autostash",
+            "--no-edit",
+            "--no-overwrite-ignore",
+            "--",
+            target.trim(),
+        ],
+    )?;
+    Ok(())
+}
 #[derive(PartialEq, Eq)]
 pub struct PushPlan {
     pub current: String,

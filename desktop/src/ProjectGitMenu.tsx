@@ -2,23 +2,24 @@ import {useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {IconButton} from './IconButton';
 import type {Branches} from './ProjectBranches';
+import type {ConsoleCheckout} from './ConsoleCheckoutPicker';
 
 type Operation={action:'create';name:string;base:string;switch:boolean}|{action:'fetch';remote:string}|{action:'preview';remote:string;destination:string}|{action:'push';remote:string;destination:string;fingerprint:string};
 interface Plan {current:string;head:string;remote:string;destination:string;ahead:number;behind:number;new_branch:boolean;set_upstream:boolean;fingerprint:string}
-export function ProjectGitMenu({project,view,busy,onBusy,onResult}:{project:string;view:Branches;busy:boolean;onBusy:(value:boolean)=>void;onResult:(value:Branches)=>void}){
+export function ProjectGitMenu({project,checkout,view,busy,onBusy,onResult}:{project:string;checkout?:ConsoleCheckout;view:Branches;busy:boolean;onBusy:(value:boolean)=>void;onResult:(value:Branches)=>void}){
  const dialog=useRef<HTMLDialogElement>(null),mounted=useRef(true),running=useRef(false);
  const[open,setOpen]=useState(false),[name,setName]=useState(''),[base,setBase]=useState('HEAD'),[switchNow,setSwitchNow]=useState(true);
  const[remote,setRemote]=useState(''),[destination,setDestination]=useState(''),[plan,setPlan]=useState<Plan|null>(null),[approvedView,setApprovedView]=useState<Branches|null>(null),[error,setError]=useState(''),[message,setMessage]=useState('');
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
  useEffect(()=>{if(open)dialog.current?.showModal();else dialog.current?.close();},[open]);
- const show=()=>{setRemote(view.upstream?.remote&&view.remotes.includes(view.upstream.remote)?view.upstream.remote:view.remotes.includes('origin')?'origin':view.remotes[0]??'');setDestination(view.upstream?.destination??view.current?.replace(/^refs\/heads\//,'')??'');setBase('HEAD');setName('');setPlan(null);setError('');setMessage('');setOpen(true);};
+ const show=()=>{setRemote(view.upstream?.remote&&view.remotes.includes(view.upstream.remote)?view.upstream.remote:view.remotes.includes('origin')?'origin':view.remotes[0]??'');setDestination(view.upstream?.destination??view.current?.replace(/^refs\/heads\//,'')??'');setBase('HEAD');setSwitchNow(!checkout);setName('');setPlan(null);setError('');setMessage('');setOpen(true);};
  const run=async(operation:Operation)=>{
   if(running.current||busy)return;
   running.current=true;onBusy(true);setError('');setMessage('');
   const expected=operation.action==='push'?approvedView: view;
   if(!expected){running.current=false;onBusy(false);return;}
   try{
-   const result=await invoke<Branches|Plan>('project_git',{project,request:{workspace:expected.workspace,current:expected.current,head:expected.head,operation}});
+   const result=await invoke<Branches|Plan>('project_git',{project,request:{workspace:expected.workspace,current:expected.current,head:expected.head,operation},checkout});
    if(!mounted.current)return;
    if(operation.action==='preview'){setPlan(result as Plan);setApprovedView(expected);}
    else {const next=result as Branches;onResult(next);if(operation.action==='create'){setName('');setBase('HEAD');if(operation.switch)setDestination(next.current?.replace(/^refs\/heads\//,'')??'');}setPlan(null);setMessage(operation.action==='fetch'?'Удалённые ветки обновлены':operation.action==='create'?'Ветка создана':(result as Branches).upstream_saved===false?'Коммиты отправлены, но upstream сохранить не удалось. Настройте его через Git.':'Коммиты отправлены');}
@@ -32,7 +33,7 @@ export function ProjectGitMenu({project,view,busy,onBusy,onResult}:{project:stri
   <fieldset disabled={busy||!!plan}><legend>Создать ветку</legend>
    <label>Имя ветки<input aria-label="Имя новой ветки" value={name} onChange={e=>setName(e.target.value)} placeholder="feature/new-task"/></label>
    <label>Создать от<select aria-label="Исходная ветка" value={base} onChange={e=>setBase(e.target.value)}><option value="HEAD">Текущий HEAD</option>{view.branches.map(b=><option key={b.reference} value={b.reference}>{b.name}</option>)}</select></label>
-   <label className="git-checkbox"><input type="checkbox" checked={switchNow} onChange={e=>setSwitchNow(e.target.checked)}/>Сразу переключиться</label>
+   <label className="git-checkbox"><input type="checkbox" disabled={!!checkout} checked={switchNow} onChange={e=>setSwitchNow(e.target.checked)}/>Сразу переключиться</label>
    {switchNow&&view.dirty>0&&<p>Для переключения сначала сохраните изменения в коммите или stash.</p>}
    <button type="button" disabled={!name.trim()||!view.head||(switchNow&&view.dirty>0)} onClick={()=>void run({action:'create',name:name.trim(),base,switch:switchNow})}>Создать ветку</button>
   </fieldset>

@@ -304,6 +304,41 @@ states remain distinct. Private paths, logs and suspected secrets are omitted.
 
 ## Checks
 
+### Standalone Codex worktrees
+
+Selecting **Codex без моста** and **Открыть** opens a checkout picker. Choose the
+main checkout or an existing named worktree, or create a worktree from a free
+local branch or a new branch. New branch names default to `codex/task-<id>` and
+are editable before creation; the base can be HEAD or a listed local/cached
+remote branch. Git rejects invalid/duplicate names and branches already checked
+out elsewhere. The main checkout may contain tracked edits and untracked files;
+creating a worktree does not copy those edits or change the main branch.
+
+Created folders live under the project's Rust state directory in
+`codex-worktrees/<uuid>`, outside the main checkout and separate from worker
+`worktrees`. Git's worktree registry provides the persistent list after restart;
+there is no task record or MCP wiring for standalone Codex. Detached/task
+checkouts are displayed separately and cannot be selected for standalone Codex.
+Moving a checkout, substituting a symlink or changing its branch invalidates the
+saved selection; reopen the picker. Worktrees marked locked/prunable are unavailable.
+
+Each standalone tab pins its checkout and branch. Different worktrees support
+parallel consoles; reopening an already active checkout selects its existing tab.
+The backend additionally fences that checkout for the process lifetime, including
+external-terminal launches. A stopped/exited console releases the fence. Tab
+labels show the branch; the full path is available in the tab tooltip. The header
+Git menu, Pull and diff follow the active standalone tab. Pull requires stopping
+that console and a clean checkout; diff is read-only and can be viewed while it
+runs. Switching branches is unavailable for a pinned console: open another
+checkout instead. Other tabs continue running when switching projects or tabs.
+
+Closing/stopping a console and closing the app preserve the worktree and files.
+Automatic worktree removal, commit, acceptance and merge are not included. Review
+the diff, run checks, commit to the branch and merge or open a PR manually. Local
+standalone checkout diffs stay local even if OpenCode execution is configured
+on another PC. Existing OpenCode task checkout creation, attachment, review and
+delivery remain unchanged.
+
 ```sh
 cargo test --offline -p bridge-desktop
 cargo clippy --offline -p bridge-desktop --all-targets -- -D warnings

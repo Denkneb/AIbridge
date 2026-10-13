@@ -52,6 +52,12 @@ def main():
             env['AIBRIDGE_CLI'] = str(Path('target/debug/agent-bridge').resolve())
         env['AIBRIDGE_DESKTOP_SMOKE_RESULT'] = str(root / 'result.json')
         if not args.live_tui:
+            fixture_bin = root / 'bin'
+            fixture_bin.mkdir()
+            fixture_codex = fixture_bin / 'codex'
+            fixture_codex.write_text('#!/bin/sh\nprintf "STANDALONE_CHECKOUT:%s\\n" "$PWD"\nexec /bin/bash --noprofile --norc\n')
+            fixture_codex.chmod(0o700)
+            env['PATH'] = str(fixture_bin) + os.pathsep + env.get('PATH', '')
             # Reproduce a failed console that leaves an owned, unresponsive
             # OpenCode daemon alive. Other CLI commands use the real bridge.
             fixture_cli = root / 'fixture-cli'

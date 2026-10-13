@@ -1,6 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import type {TaskDiffList,TaskFileDiff} from './types';
+import type {ConsoleCheckout} from './ConsoleCheckoutPicker';
 
 interface Line {kind:'context'|'added'|'deleted'|'hunk'|'note';text:string;old:number|null;next:number|null}
 function parsePatch(patch:string):Line[]{
@@ -18,7 +19,7 @@ function parsePatch(patch:string):Line[]{
  return rows;
 }
 const changes={added:'Добавлен',modified:'Изменён',deleted:'Удалён'};
-export function TaskDiff({project,task,revision=''}:{project:string;task?:string;revision?:string}){
+export function TaskDiff({project,task,revision='',checkout}:{project:string;task?:string;revision?:string;checkout?:ConsoleCheckout}){
  const [scope,setScope]=useState('all');
  const [expanded,setExpanded]=useState(true),[repository,setRepository]=useState(0),[list,setList]=useState<TaskDiffList|null>(null),[repositories,setRepositories]=useState<TaskDiffList['repositories']>([]),[selected,setSelected]=useState(''),[file,setFile]=useState<TaskFileDiff|null>(null),[search,setSearch]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(false),[fileLoading,setFileLoading]=useState(false),[refresh,setRefresh]=useState(0),[context,setContext]=useState(true),[scroll,setScroll]=useState(0);
  const listGeneration=useRef(0),fileGeneration=useRef(0),viewer=useRef<HTMLDivElement>(null);
@@ -27,21 +28,21 @@ export function TaskDiff({project,task,revision=''}:{project:string;task?:string
   setList(null);setFile(null);setError('');
   if(!expanded){setLoading(false);return;}
   setLoading(true);
-  invoke<TaskDiffList>(task?'task_diff':'project_diff',task?{project,task,repository}:{project,scope}).then(next=>{
+  invoke<TaskDiffList>(task?'task_diff':'project_diff',task?{project,task,repository}:{project,scope,checkout}).then(next=>{
    if(request!==listGeneration.current)return;
    setList(next);setRepositories(next.repositories);setSelected(previous=>next.files.some(f=>f.path===previous)?previous:(next.files[0]?.path??''));
   }).catch(e=>{if(request===listGeneration.current)setError(String(e));}).finally(()=>{if(request===listGeneration.current)setLoading(false);});
   return()=>{++listGeneration.current;};
- },[project,task,revision,repository,refresh,expanded,scope]);
+ },[project,task,revision,repository,refresh,expanded,scope,checkout]);
  useEffect(()=>{
   const request=++fileGeneration.current;setFile(null);setFileLoading(false);setError('');
   if(!list||!selected||!expanded)return;
   setFileLoading(true);
-  invoke<TaskFileDiff>(task?'task_diff_file':'project_diff_file',task?{project,task,repository,path:selected,expectedRevision:list.revision}:{project,scope,path:selected,expectedRevision:list.revision}).then(next=>{
+  invoke<TaskFileDiff>(task?'task_diff_file':'project_diff_file',task?{project,task,repository,path:selected,expectedRevision:list.revision}:{project,scope,checkout,path:selected,expectedRevision:list.revision}).then(next=>{
    if(request===fileGeneration.current){setFile(next);setError('');}
   }).catch(e=>{if(request===fileGeneration.current)setError(String(e));}).finally(()=>{if(request===fileGeneration.current)setFileLoading(false);});
   return()=>{++fileGeneration.current;};
- },[project,task,repository,list,selected,expanded,scope]);
+ },[project,task,repository,list,selected,expanded,scope,checkout]);
  useEffect(()=>{setScroll(0);if(viewer.current)viewer.current.scrollTop=0;},[selected,file,context]);
  const currentFile=file?.path===selected?file:null;
  const parsed=useMemo(()=>parsePatch(currentFile?.patch??''),[currentFile]);

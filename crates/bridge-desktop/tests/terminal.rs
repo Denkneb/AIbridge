@@ -5,6 +5,50 @@ use std::{
     time::{Duration, Instant},
 };
 #[test]
+fn normal_process_exit_releases_checkout_lease_before_tab_close() {
+    use std::{fs, os::fd::AsRawFd};
+    let root = std::env::temp_dir().join(format!("bridge-console-lease-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let lease = fs::File::create(root.join("lock")).unwrap();
+    nix::fcntl::flock(
+        lease.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .unwrap();
+    let probe = fs::File::open(root.join("lock")).unwrap();
+    let terms = Terminals::default();
+    let mut cmd = CommandBuilder::new("/bin/bash");
+    cmd.args(["--noprofile", "--norc", "-c", "read value; exit 0"]);
+    let session = terms
+        .open_with_checkout_lease(cmd, 24, 80, Some(lease))
+        .unwrap();
+    assert!(
+        nix::fcntl::flock(
+            probe.as_raw_fd(),
+            nix::fcntl::FlockArg::LockExclusiveNonblock
+        )
+        .is_err()
+    );
+    terms.write(&session, b"done\n".to_vec()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !terms
+        .read(&session)
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, Event::Exit { code: 0 }))
+    {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    nix::fcntl::flock(
+        probe.as_raw_fd(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .unwrap();
+    terms.close(&session).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
 fn real_pty_input_unicode_resize_and_ordered_large_output() {
     let terms = Terminals::default();
     let mut cmd = CommandBuilder::new("/bin/bash");

@@ -486,6 +486,45 @@ for project in ['proof','other']:
   checks.automation_plan_preview_and_invalidation=true;checks.automation_invalid_plan_refused=true;
   [...document.querySelectorAll('nav button')].find(b=>b.getAttribute('aria-label')==='Dashboard').click();
   const options=await invoke('smoke_options');
+  if(!options.live_tui){
+   const chooseProfile=value=>{const select=document.querySelector('[aria-label="Программа терминала"]');select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));};
+   chooseProfile('codex-standalone');await new Promise(r=>setTimeout(r,100));
+   const launchWorktree=async name=>{
+    [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Открыть').click();
+    await waitUI(()=>document.querySelector('[aria-label="Режим рабочей папки Codex"]')&&!document.querySelector('.console-checkout-dialog fieldset').disabled,'codex_worktree_picker');
+    const mode=document.querySelector('[aria-label="Режим рабочей папки Codex"]');mode.value='new';mode.dispatchEvent(new Event('change',{bubbles:true}));
+    await waitUI(()=>document.querySelector('[aria-label="Название ветки Codex"]'),'codex_branch_name_field');
+    editField(document.querySelector('[aria-label="Название ветки Codex"]'),name);await new Promise(r=>setTimeout(r,50));
+    [...document.querySelectorAll('.console-checkout-dialog button')].find(b=>b.textContent==='Создать и открыть Codex').click();
+    await waitUI(()=>!document.querySelector('.console-checkout-dialog'),'codex_worktree_create');
+    await waitUI(()=>document.querySelector('.terminal-tabs [aria-selected="true"]')?.textContent.includes(name)&&!document.querySelector('.terminal-tabs [aria-selected="true"]').textContent.includes(' · запуск'),'codex_worktree_tab');
+    const tab=document.querySelector('.terminal-tabs [aria-selected="true"]');
+    const term=document.querySelector('.terminal-session:not([hidden]) .terminal-host').smokeTerminal;
+    await waitUI(()=>bufferText(term).includes('STANDALONE_CHECKOUT:'),'codex_checkout_launch');
+    return {tab,term};
+   };
+   const first=await launchWorktree('codex/ui-custom-one');
+   first.term.paste("printf 'first\\n' > codex-isolation.txt; printf 'CODEX_ONE_READY\\n'");first.term.input('\r');
+   await waitUI(()=>bufferText(first.term).split('\n').includes('CODEX_ONE_READY'),'codex_first_ready');
+   const second=await launchWorktree('codex/ui-custom-two');
+   second.term.paste("if test -e codex-isolation.txt; then echo CODEX_LEAK; else echo CODEX_TWO_ISOLATED; fi; printf 'second\\n' > codex-isolation.txt");second.term.input('\r');
+   await waitUI(()=>bufferText(second.term).split('\n').includes('CODEX_TWO_ISOLATED'),'codex_worktree_isolation');
+   await waitUI(()=>document.querySelector('.project-branches select').value==='refs/heads/codex/ui-custom-two','codex_header_checkout');
+   first.tab.click();
+   await waitUI(()=>document.querySelector('.project-branches select').value==='refs/heads/codex/ui-custom-one','codex_header_tab_switch');
+   [...document.querySelectorAll('.project-branches button')].find(b=>b.textContent==='Изменения').click();
+   await waitUI(()=>document.querySelector('.project-diff-dialog .diff-files')?.textContent.includes('codex-isolation.txt'),'codex_scoped_diff');
+   await waitUI(()=>document.querySelector('.project-diff-dialog .diff-line-added code')?.textContent==='first','codex_diff_wrong_checkout');
+   [...document.querySelectorAll('.project-diff-dialog button')].find(b=>b.textContent==='Закрыть').click();
+   [...document.querySelectorAll('.terminal-pane button')].find(b=>b.textContent==='Завершить консоль').click();
+   await waitUI(()=>first.tab.textContent.includes(' · завершена'),'codex_console_stop');
+   first.tab.parentElement.querySelector('button[aria-label^="Закрыть"]').click();
+   second.tab.click();closeActive();
+   const folders=await invoke('console_checkouts',{project:'proof'});
+   if(!folders.some(folder=>folder.current==='refs/heads/codex/ui-custom-one'&&folder.available)||!folders.some(folder=>folder.current==='refs/heads/codex/ui-custom-two'&&folder.available))throw Error('codex_worktree_not_preserved');
+   chooseProfile('shell');
+   checks.codex_custom_branch_names=true;checks.codex_parallel_worktree_isolation=true;checks.codex_active_checkout_git_and_diff=true;checks.codex_worktrees_preserved_on_close=true;
+  }
   if(options.live_tui){
    for(const profile of ['codex','opencode']){
     const select=document.querySelector('[aria-label="Программа терминала"]');select.value=profile;select.dispatchEvent(new Event('change',{bubbles:true}));await new Promise(r=>setTimeout(r,50));

@@ -19,6 +19,7 @@ pub enum Event {
     Error { message: &'static str },
 }
 struct Session {
+    checkout_lease: Arc<Mutex<Option<std::fs::File>>>,
     tree: Arc<bridge_runtime::process_tree::ProcessTree>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
@@ -30,7 +31,7 @@ struct Session {
 pub struct Terminals {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     closing: AtomicBool,
-    external: Mutex<Vec<bridge_runtime::process_tree::ProcessTree>>,
+    external: Mutex<Vec<Arc<bridge_runtime::process_tree::ProcessTree>>>,
 }
 fn enqueue(tx: &SyncSender<Event>, mut event: Event, cancel: &AtomicBool) -> bool {
     loop {
@@ -50,6 +51,15 @@ fn enqueue(tx: &SyncSender<Event>, mut event: Event, cancel: &AtomicBool) -> boo
 impl Terminals {
     /// Commands come from the trusted Rust router, never frontend argv or shell text.
     pub fn open(&self, cmd: CommandBuilder, rows: u16, cols: u16) -> Result<String, &'static str> {
+        self.open_with_checkout_lease(cmd, rows, cols, None)
+    }
+    pub fn open_with_checkout_lease(
+        &self,
+        cmd: CommandBuilder,
+        rows: u16,
+        cols: u16,
+        lease: Option<std::fs::File>,
+    ) -> Result<String, &'static str> {
         size(rows, cols)?;
         let mut sessions = self
             .sessions
@@ -104,6 +114,8 @@ impl Terminals {
         let read_child = child.clone();
         let read_tx = tx.clone();
         let read_tree = tree.clone();
+        let checkout_lease = Arc::new(Mutex::new(lease));
+        let read_lease = checkout_lease.clone();
         std::thread::spawn(move || {
             let mut sequence = 0;
             let mut bytes = [0u8; 8192];
@@ -141,6 +153,9 @@ impl Terminals {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             };
+            if let Ok(mut lease) = read_lease.lock() {
+                lease.take();
+            }
             enqueue(&read_tx, Event::Exit { code }, &read_cancel);
         });
         let write_cancel = cancel.clone();
@@ -172,6 +187,7 @@ impl Terminals {
         sessions.insert(
             id.clone(),
             Arc::new(Session {
+                checkout_lease,
                 tree,
                 master: Mutex::new(pair.master),
                 child,
@@ -235,10 +251,21 @@ impl Terminals {
         child
             .wait()
             .map_err(|_| "terminal process cleanup failed")?;
+        s.checkout_lease
+            .lock()
+            .map_err(|_| "checkout lock unavailable")?
+            .take();
         Ok(())
     }
     /// External terminal launchers are owned by the same shutdown fence.
-    pub fn open_external(&self, mut command: std::process::Command) -> Result<(), &'static str> {
+    pub fn open_external(&self, command: std::process::Command) -> Result<(), &'static str> {
+        self.open_external_with_checkout_lease(command, None)
+    }
+    pub fn open_external_with_checkout_lease(
+        &self,
+        mut command: std::process::Command,
+        lease: Option<std::fs::File>,
+    ) -> Result<(), &'static str> {
         let _sessions = self
             .sessions
             .lock()
@@ -254,16 +281,24 @@ impl Terminals {
         let mut child = command
             .spawn()
             .map_err(|_| "external terminal unavailable: install x-terminal-emulator")?;
-        match bridge_runtime::process_tree::ProcessTree::capture(child.id()) {
-            Ok(tree) => external.push(tree),
+        let monitor = match bridge_runtime::process_tree::ProcessTree::capture(child.id()) {
+            Ok(tree) => {
+                let tree = Arc::new(tree);
+                external.push(tree.clone());
+                tree
+            }
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("external terminal ownership unavailable");
             }
-        }
+        };
         std::thread::spawn(move || {
             let _ = child.wait();
+            if lease.is_some() {
+                let _ = monitor.stop();
+            }
+            drop(lease);
         });
         Ok(())
     }

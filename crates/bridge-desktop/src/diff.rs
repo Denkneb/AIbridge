@@ -250,17 +250,30 @@ impl ProjectService {
         })
     }
     pub fn project_diff(&self, project: &str, scope: &str) -> Result<Value> {
+        self.project_diff_at(project, scope, None)
+    }
+    pub fn project_diff_at(
+        &self,
+        project: &str,
+        scope: &str,
+        checkout: Option<&crate::ConsoleCheckout>,
+    ) -> Result<Value> {
         let _activity = self.activity_guard()?;
         check_scope(scope)?;
         let (entry, _) = self.project(project)?;
-        if let Some(remote) = entry.remote_execution() {
+        if checkout.is_none()
+            && let Some(remote) = entry.remote_execution()
+        {
             return bridge_automation::remote::rpc(
                 remote,
                 &json!({"op":"project_diff","scope":scope}),
             )
             .map_err(|_| "Diff второго ПК недоступен; обновите agent-bridge и проверьте SSH");
         }
-        let root = entry.workspace();
+        let selected = checkout
+            .map(|checkout| self.resolve_console_checkout(project, checkout))
+            .transpose()?;
+        let root = selected.as_deref().unwrap_or(entry.workspace());
         let current = bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?;
         let changes =
             bridge_git::diff::project_changes(root, scope, current.head().map(|h| h.as_str()))
@@ -288,14 +301,29 @@ impl ProjectService {
         path: &str,
         expected_revision: &str,
     ) -> Result<Value> {
+        self.project_diff_file_at(project, scope, path, expected_revision, None)
+    }
+    pub fn project_diff_file_at(
+        &self,
+        project: &str,
+        scope: &str,
+        path: &str,
+        expected_revision: &str,
+        checkout: Option<&crate::ConsoleCheckout>,
+    ) -> Result<Value> {
         let _activity = self.activity_guard()?;
         check_scope(scope)?;
         safe_path(path)?;
         let (entry, _) = self.project(project)?;
-        if let Some(remote) = entry.remote_execution() {
+        if checkout.is_none()
+            && let Some(remote) = entry.remote_execution()
+        {
             return bridge_automation::remote::rpc(remote,&json!({"op":"project_diff_file","scope":scope,"path":path,"revision":expected_revision})).map_err(|_|"Diff второго ПК недоступен; обновите agent-bridge и проверьте SSH");
         }
-        let root = entry.workspace();
+        let selected = checkout
+            .map(|checkout| self.resolve_console_checkout(project, checkout))
+            .transpose()?;
+        let root = selected.as_deref().unwrap_or(entry.workspace());
         let current = bridge_git::take_snapshot(root).map_err(|_| "Git проекта недоступен")?;
         if revision(&current) != expected_revision {
             return Err("Файлы изменились — обновите diff");

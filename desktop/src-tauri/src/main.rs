@@ -115,11 +115,43 @@ async fn opencode_key_save(
     .map_err(|_| "Не удалось сохранить ключ".to_owned())?
 }
 #[tauri::command]
-async fn project_branches(state: State<'_, AppState>, project: String) -> Result<Value, String> {
+async fn project_branches(
+    state: State<'_, AppState>,
+    project: String,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
+) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.project_branches(&project))
+    tauri::async_runtime::spawn_blocking(move || p.project_branches_at(&project, checkout.as_ref()))
         .await
         .map_err(|_| "Не удалось загрузить ветки проекта".to_owned())?
+}
+#[tauri::command]
+async fn console_checkouts(
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<Vec<bridge_desktop::ConsoleCheckoutView>, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.console_checkouts(&project).map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить worktree".to_owned())?
+}
+#[tauri::command]
+async fn console_checkout_create(
+    state: State<'_, AppState>,
+    project: String,
+    branch: String,
+    base: Option<String>,
+    expected_workspace: String,
+) -> Result<bridge_desktop::ConsoleCheckout, String> {
+    let p = state.projects.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        p.create_console_checkout(&project, &branch, base.as_deref(), &expected_workspace)
+            .map_err(str::to_owned)
+    })
+    .await
+    .map_err(|_| "Не удалось создать worktree".to_owned())?
 }
 #[tauri::command]
 async fn project_branch_switch(
@@ -148,11 +180,14 @@ async fn project_git(
     state: State<'_, AppState>,
     project: String,
     request: bridge_desktop::GitRequest,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
 ) -> Result<Value, String> {
     let p = state.projects.clone();
-    tauri::async_runtime::spawn_blocking(move || p.project_git(&project, request))
-        .await
-        .map_err(|_| "Не удалось выполнить операцию Git".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        p.project_git_at(&project, request, checkout.as_ref())
+    })
+    .await
+    .map_err(|_| "Не удалось выполнить операцию Git".to_owned())?
 }
 #[tauri::command]
 async fn task_set_status(
@@ -202,10 +237,12 @@ async fn project_diff(
     state: State<'_, AppState>,
     project: String,
     scope: String,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
 ) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        p.project_diff(&project, &scope).map_err(str::to_owned)
+        p.project_diff_at(&project, &scope, checkout.as_ref())
+            .map_err(str::to_owned)
     })
     .await
     .map_err(|_| "Не удалось загрузить diff проекта".to_owned())?
@@ -217,11 +254,18 @@ async fn project_diff_file(
     scope: String,
     path: String,
     expected_revision: String,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
 ) -> Result<Value, String> {
     let p = state.projects.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        p.project_diff_file(&project, &scope, &path, &expected_revision)
-            .map_err(str::to_owned)
+        p.project_diff_file_at(
+            &project,
+            &scope,
+            &path,
+            &expected_revision,
+            checkout.as_ref(),
+        )
+        .map_err(str::to_owned)
     })
     .await
     .map_err(|_| "Не удалось загрузить файл diff".to_owned())?
@@ -444,7 +488,8 @@ fn terminal_command(
     profile: &str,
     task: Option<String>,
     launch_env: Option<String>,
-) -> Result<portable_pty::CommandBuilder, String> {
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
+) -> Result<(portable_pty::CommandBuilder, Option<std::fs::File>), String> {
     let (entry, _) = p.project(project).map_err(str::to_owned)?;
     let executable = std::env::var_os("AIBRIDGE_CLI")
         .map(PathBuf::from)
@@ -452,6 +497,9 @@ fn terminal_command(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agent-bridge")
         });
     let variables = launch_env::parse(launch_env.as_deref().unwrap_or(""))?;
+    if checkout.is_some() && profile != "codex-standalone" {
+        return Err("Выбор worktree доступен только для Codex без моста".into());
+    }
     if !variables.is_empty() && !matches!(profile, "codex" | "codex-standalone") {
         return Err("Переменные запуска доступны для Codex".into());
     }
@@ -500,7 +548,14 @@ fn terminal_command(
         }
         _ => return Err("unsupported terminal profile".into()),
     };
-    cmd.cwd(entry.workspace());
+    let lease = if profile == "codex-standalone" {
+        let (workspace, lease) = p.standalone_console_context(project, checkout.as_ref())?;
+        cmd.cwd(workspace);
+        Some(lease)
+    } else {
+        cmd.cwd(entry.workspace());
+        None
+    };
     cmd.env("TERM", "xterm-256color");
     for key in [
         "OPENCODE_SERVER_PASSWORD",
@@ -512,7 +567,7 @@ fn terminal_command(
     for (name, value) in variables {
         cmd.env(name, value);
     }
-    Ok(cmd)
+    Ok((cmd, lease))
 }
 #[tauri::command]
 async fn terminal_external(
@@ -521,11 +576,13 @@ async fn terminal_external(
     profile: String,
     task: Option<String>,
     launch_env: Option<String>,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
 ) -> Result<(), String> {
     let p = state.projects.clone();
     let t = state.terminals.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cmd = terminal_command(&p, &project, &profile, task, launch_env.clone())?;
+        let (cmd, lease) =
+            terminal_command(&p, &project, &profile, task, launch_env.clone(), checkout)?;
         let emulator = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .find_map(|dir| std::fs::canonicalize(dir.join("x-terminal-emulator")).ok())
             .unwrap_or_else(|| PathBuf::from("x-terminal-emulator"));
@@ -549,7 +606,8 @@ async fn terminal_external(
         for (name, value) in launch_env::parse(launch_env.as_deref().unwrap_or(""))? {
             external.env(name, value);
         }
-        t.open_external(external).map_err(str::to_owned)
+        t.open_external_with_checkout_lease(external, lease)
+            .map_err(str::to_owned)
     })
     .await
     .map_err(|_| "external terminal launch failed".to_owned())?
@@ -563,12 +621,15 @@ async fn terminal_open(
     rows: u16,
     cols: u16,
     launch_env: Option<String>,
+    checkout: Option<bridge_desktop::ConsoleCheckout>,
 ) -> Result<String, String> {
     let p = state.projects.clone();
     let t = state.terminals.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cmd = terminal_command(&p, &project, &profile, task, launch_env.clone())?;
-        t.open(cmd, rows, cols).map_err(str::to_owned)
+        let (cmd, lease) =
+            terminal_command(&p, &project, &profile, task, launch_env.clone(), checkout)?;
+        t.open_with_checkout_lease(cmd, rows, cols, lease)
+            .map_err(str::to_owned)
     })
     .await
     .map_err(|_| "terminal launch failed".to_owned())?
@@ -780,6 +841,8 @@ fn main() {
             projects,
             project_suggest_endpoints,
             project_branches,
+            console_checkouts,
+            console_checkout_create,
             project_branch_switch,
             project_git,
             codex_env_read,

@@ -6,6 +6,122 @@ use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 static GIT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn standalone_console_leases_isolate_checkouts_and_release_after_pty_close() {
+    let f = Fixture::new(false);
+    let workspace = f.view()["workspace"].as_str().unwrap().to_owned();
+    let first = f
+        .service
+        .create_console_checkout("primary", "codex/one", Some("HEAD"), &workspace)
+        .unwrap();
+    let second = f
+        .service
+        .create_console_checkout("primary", "codex/two", Some("HEAD"), &workspace)
+        .unwrap();
+    let (path, lease) = f
+        .service
+        .standalone_console_context("primary", Some(&first))
+        .unwrap();
+    let terms = bridge_desktop::terminal::Terminals::default();
+    let mut command = portable_pty::CommandBuilder::new("/bin/bash");
+    command.args([
+        "--noprofile",
+        "--norc",
+        "-c",
+        "printf first > session.txt; read value",
+    ]);
+    command.cwd(&path);
+    let session = terms
+        .open_with_checkout_lease(command, 24, 80, Some(lease))
+        .unwrap();
+    assert!(
+        f.service
+            .standalone_console_context("primary", Some(&first))
+            .is_err()
+    );
+    let (_, second_lease) = f
+        .service
+        .standalone_console_context("primary", Some(&second))
+        .unwrap();
+    let view = f
+        .service
+        .project_branches_at("primary", Some(&first))
+        .unwrap();
+    let request = serde_json::from_value(json!({"workspace":view["workspace"],"current":view["current"],"head":view["head"],"operation":{"action":"switch","reference":"refs/heads/feature"}})).unwrap();
+    assert!(
+        f.service
+            .project_git_at("primary", request, Some(&first))
+            .unwrap_err()
+            .contains("работает Codex")
+    );
+    terms.close(&session).unwrap();
+    assert!(
+        f.service
+            .standalone_console_context("primary", Some(&first))
+            .is_ok()
+    );
+    drop(second_lease);
+}
+
+#[test]
+fn scoped_git_and_diff_preserve_main_with_live_opencode_worker() {
+    let f = Fixture::new(false);
+    f.remote();
+    f.git(&["push", "-u", "origin", "feature"]);
+    let original = f.view();
+    let checkout = f
+        .service
+        .create_console_checkout(
+            "primary",
+            "feature",
+            None,
+            original["workspace"].as_str().unwrap(),
+        )
+        .unwrap();
+    let (_, layout) = f.service.project("primary").unwrap();
+    layout.initialize().unwrap();
+    let bridge_worker::WorkerLockOutcome::Acquired(_worker) =
+        bridge_worker::WorkerLock::try_acquire(&layout).unwrap()
+    else {
+        panic!("worker lock");
+    };
+    let selected = f
+        .service
+        .project_branches_at("primary", Some(&checkout))
+        .unwrap();
+    let request = serde_json::from_value(json!({"workspace":selected["workspace"],"current":selected["current"],"head":selected["head"],"operation":{"action":"pull","remote":"origin","destination":"feature"}})).unwrap();
+    f.service
+        .project_git_at("primary", request, Some(&checkout))
+        .unwrap();
+    fs::write(
+        PathBuf::from(&checkout.workspace).join("tracked.txt"),
+        "checkout edit\n",
+    )
+    .unwrap();
+    fs::write(f.root.join("main/tracked.txt"), "main edit\n").unwrap();
+    let diff = f
+        .service
+        .project_diff_at("primary", "all", Some(&checkout))
+        .unwrap();
+    let file = f
+        .service
+        .project_diff_file_at(
+            "primary",
+            "all",
+            "tracked.txt",
+            diff["revision"].as_str().unwrap(),
+            Some(&checkout),
+        )
+        .unwrap();
+    assert!(file["patch"].as_str().unwrap().contains("+checkout edit"));
+    assert!(!file["patch"].as_str().unwrap().contains("main edit"));
+    assert_eq!(f.view()["head"], original["head"]);
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "main edit\n"
+    );
+}
+
+#[test]
 fn standalone_worktrees_preserve_dirty_main_and_reopen_after_restart() {
     let f = Fixture::new(false);
     let workspace = f.view()["workspace"].as_str().unwrap().to_owned();

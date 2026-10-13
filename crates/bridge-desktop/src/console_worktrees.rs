@@ -4,6 +4,7 @@ use bridge_git::{branches::repository_root, console_worktrees};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
@@ -23,6 +24,46 @@ pub struct ConsoleCheckoutView {
 }
 
 impl ProjectService {
+    /// One active standalone writer or checkout-changing Git action per worktree.
+    pub(crate) fn console_checkout_guard(&self, root: &Path) -> Result<fs::File, &'static str> {
+        let root = repository_root(root).map_err(|_| "Git checkout недоступен")?;
+        let key = bridge_git::diff::file_digest(0, root.as_os_str().as_encoded_bytes());
+        let dir = self.state.join("desktop-checkout-locks");
+        fs::create_dir_all(&dir).map_err(|_| "Каталог блокировок checkout недоступен")?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+            .open(dir.join(key))
+            .map_err(|_| "Блокировка checkout недоступна")?;
+        if !file
+            .metadata()
+            .map_err(|_| "Блокировка checkout недоступна")?
+            .is_file()
+        {
+            return Err("Блокировка checkout недоступна");
+        }
+        nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockExclusiveNonblock)
+            .map_err(|_| "В этой рабочей папке уже работает Codex или операция Git. Завершите консоль перед изменением checkout")?;
+        Ok(file)
+    }
+
+    pub fn standalone_console_context(
+        &self,
+        project: &str,
+        selection: Option<&ConsoleCheckout>,
+    ) -> Result<(PathBuf, fs::File), &'static str> {
+        let _activity = self.activity_guard()?;
+        let _config = self.config_file_guard()?;
+        let path = match selection {
+            Some(selection) => self.resolve_console_checkout(project, selection)?,
+            None => self.project(project)?.0.workspace().to_path_buf(),
+        };
+        let guard = self.console_checkout_guard(&path)?;
+        Ok((path, guard))
+    }
     fn console_kind(&self, path: &Path, main: &Path, owned: &Path, named: bool) -> &'static str {
         if path == main {
             "main"

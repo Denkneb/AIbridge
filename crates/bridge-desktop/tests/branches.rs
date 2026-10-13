@@ -5,6 +5,135 @@ use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
 static GIT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[test]
+fn standalone_worktrees_preserve_dirty_main_and_reopen_after_restart() {
+    let f = Fixture::new(false);
+    let workspace = f.view()["workspace"].as_str().unwrap().to_owned();
+    fs::write(f.root.join("main/tracked.txt"), "main edit\n").unwrap();
+    fs::write(f.root.join("main/untracked.txt"), "main new file\n").unwrap();
+    let first = f
+        .service
+        .create_console_checkout("primary", "codex/custom-name", Some("HEAD"), &workspace)
+        .unwrap();
+    let second = f
+        .service
+        .create_console_checkout("primary", "feature", None, &workspace)
+        .unwrap();
+    assert_ne!(first.workspace, second.workspace);
+    assert_eq!(
+        fs::read_to_string(PathBuf::from(&first.workspace).join("tracked.txt")).unwrap(),
+        "main\n"
+    );
+    assert_eq!(
+        fs::read_to_string(PathBuf::from(&second.workspace).join("tracked.txt")).unwrap(),
+        "feature\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("main/tracked.txt")).unwrap(),
+        "main edit\n"
+    );
+    assert!(
+        !PathBuf::from(&first.workspace)
+            .join("untracked.txt")
+            .exists()
+    );
+    fs::write(
+        PathBuf::from(&first.workspace).join("tracked.txt"),
+        "codex edit\n",
+    )
+    .unwrap();
+    let reopened = ProjectService::new(f.root.join("projects.toml"), f.root.join("state")).unwrap();
+    assert_eq!(
+        reopened
+            .resolve_console_checkout("primary", &first)
+            .unwrap(),
+        PathBuf::from(&first.workspace)
+    );
+    assert!(
+        reopened
+            .console_checkouts("primary")
+            .unwrap()
+            .iter()
+            .any(|record| record.workspace == first.workspace && record.kind == "codex")
+    );
+    assert_eq!(
+        fs::read_to_string(PathBuf::from(&first.workspace).join("tracked.txt")).unwrap(),
+        "codex edit\n"
+    );
+}
+
+#[test]
+fn standalone_worktrees_reject_busy_branches_foreign_paths_and_task_checkouts() {
+    let f = Fixture::new(false);
+    let workspace = f.view()["workspace"].as_str().unwrap().to_owned();
+    for (name, base) in [
+        ("main", None),
+        ("bad..name", Some("HEAD")),
+        ("feature", Some("HEAD")),
+        ("new", Some("--bad")),
+    ] {
+        assert!(
+            f.service
+                .create_console_checkout("primary", name, base, &workspace)
+                .is_err()
+        );
+    }
+    let checkout = f
+        .service
+        .create_console_checkout("primary", "topic", Some("HEAD"), &workspace)
+        .unwrap();
+    let mut stale = checkout.clone();
+    stale.current = Some("refs/heads/other".into());
+    assert!(
+        f.service
+            .resolve_console_checkout("primary", &stale)
+            .is_err()
+    );
+    let foreign = bridge_desktop::ConsoleCheckout {
+        workspace: f.root.to_str().unwrap().into(),
+        current: None,
+    };
+    assert!(
+        f.service
+            .resolve_console_checkout("primary", &foreign)
+            .is_err()
+    );
+    let task_path = f.root.join("task checkout");
+    f.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        task_path.to_str().unwrap(),
+        "HEAD",
+    ]);
+    assert!(
+        f.service
+            .console_checkouts("primary")
+            .unwrap()
+            .iter()
+            .any(|record| record.workspace == task_path.to_str().unwrap()
+                && record.kind == "task"
+                && !record.available)
+    );
+    assert!(
+        f.service
+            .resolve_console_checkout(
+                "primary",
+                &bridge_desktop::ConsoleCheckout {
+                    workspace: task_path.to_str().unwrap().into(),
+                    current: None
+                }
+            )
+            .is_err()
+    );
+    fs::rename(&checkout.workspace, f.root.join("moved")).unwrap();
+    assert!(
+        f.service
+            .resolve_console_checkout("primary", &checkout)
+            .is_err()
+    );
+}
+
 struct Fixture {
     _lock: std::sync::MutexGuard<'static, ()>,
     root: PathBuf,

@@ -1,6 +1,8 @@
 //! UI-independent project settings, read-only dashboard and bounded PTY services.
 mod automation;
 mod branches;
+mod console_worktrees;
+pub use console_worktrees::{ConsoleCheckout, ConsoleCheckoutView};
 mod diff;
 mod overview;
 pub use branches::{GitAction, GitRequest};
